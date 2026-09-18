@@ -1,0 +1,52 @@
+{
+  "name": "ai-comic-studio",
+  "version": "0.1.0",
+  "description": "AI 漫剧制作工具 — 小说转漫剧的本地生产流水线",
+  "main": "electron/main.cjs",
+  "private": true,
+  "scripts": {
+    "dev:vite": "vite",
+    "dev": "concurrently -k \"vite\" \"cross-env VITE_DEV=1 electron .\"",
+    "build:ui": "vite build",
+    "smoke": "vite build && electron ../test/smoke-ui.cjs",
+    "e2e": "cross-env ELECTRON_RUN_AS_NODE=1 electron ../test/e2e-flow.cjs",
+    "e2e:chapter": "electron ../test/e2e-chapter.cjs",
+    "start": "electron .",
+    "dist": "vite build && electron-builder --win"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "pinia": "^2.2.2",
+    "vue": "^3.4.38"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.2",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^30.4.0",
+    "electron-builder": "^24.13.3",
+    "vite": "^5.4.2"
+  },
+  "build": {
+    "appId": "com.dragon.comicstudio",
+    "productName": "飞鱼AI漫剧",
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/ffmpeg",
+        "to": "ffmpeg"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
