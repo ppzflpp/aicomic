@@ -10,6 +10,8 @@ const logger = require('./logger.cjs');
 const metrics = require('./metrics.cjs');
 const session = require('./session.cjs');
 const orchestrator = require('./orchestrator.cjs');
+const skills = require('./skills.cjs');
+const promptFiles = require('./prompts.cjs');
 const { writeUnique } = require('./assetStore.cjs');
 
 /** 注册全部 IPC。getWin 返回主窗口（用于目录选择对话框），测试环境可传 () => null。 */
@@ -46,7 +48,7 @@ function registerIpc(db, getWin, fallbackWorkspace) {
   });
 
   ipcMain.handle('tree:get', (e, workspace) => projects.getTree(db, workspace));
-  ipcMain.handle('project:create', (e, workspace, name) => projects.createProject(db, workspace, name));
+  ipcMain.handle('project:create', (e, workspace, name, res) => projects.createProject(db, workspace, name, res));
   ipcMain.handle('project:delete', (e, workspace, projectId) => projects.deleteProject(db, workspace, projectId));
   ipcMain.handle('folder:add', (e, workspace, projectId, parentId, name) => projects.addFolder(db, workspace, projectId, parentId, name));
   ipcMain.handle('folder:delete', (e, workspace, folderId) => projects.deleteFolder(db, workspace, folderId));
@@ -57,9 +59,110 @@ function registerIpc(db, getWin, fallbackWorkspace) {
   ipcMain.handle('episode:saveState', (e, episodeId, done, active, meta) => projects.saveState(db, episodeId, done, active, meta));
   ipcMain.handle('episode:saveArtifact', (e, workspace, episodeId, kind, data) => projects.saveArtifact(db, workspace, episodeId, kind, data));
 
+  /* ---- 项目媒体（左侧树：assets 角色图 / 分镜视频 / 成片视频），按需懒加载 ---- */
+
+  /** 列举 root 下各子目录里的媒体文件（角色名/场景名 → 文件列表） */
+  const listAssetGroups = (root, re) => {
+    if (!root || !fs.existsSync(root)) return [];
+    const out = [];
+    let subs = [];
+    try { subs = fs.readdirSync(root, { withFileTypes: true }); } catch (_) { return []; }
+    for (const d of subs) {
+      if (!d.isDirectory()) continue;
+      const dir = path.join(root, d.name);
+      let files = [];
+      try { files = fs.readdirSync(dir); } catch (_) { continue; }
+      const items = files.filter(f => re.test(f)).map(f => {
+        const abs = path.join(dir, f);
+        let st = null;
+        try { st = fs.statSync(abs); } catch (_) {}
+        return st ? { file: f, path: abs, size: st.size, mtimeMs: st.mtimeMs } : null;
+      }).filter(Boolean).sort((a, b) => a.file.localeCompare(b.file, 'zh'));
+      if (items.length) out.push({ name: d.name, dir, files: items });
+    }
+    return out;
+  };
+
+  // 项目资产：角色图（assets/characters/<角色名>/）+ 场景图（assets/scenes/<场景名>/）
+  ipcMain.handle('project:assets', (e, workspace, projectId) => {
+    const root = projects.ensureProjectDirs(db, workspace, projectId);
+    if (!root) return { characters: [], scenes: [] };
+    const re = /\.(png|jpg|jpeg|webp)$/i;
+    return {
+      characters: listAssetGroups(path.join(root, 'assets', 'characters'), re),
+      scenes: listAssetGroups(path.join(root, 'assets', 'scenes'), re)
+    };
+  });
+
+  // 镜头视频 / 成片：项目下各集目录（<项目>/分镜/<集>/、<项目>/成片/<集>/），带分辨率与时长
+  const listEpisodeMedia = async (workspace, projectId, kind) => {
+    const root = projects.ensureProjectDirs(db, workspace, projectId);
+    if (!root) return [];
+    const eps = projects.listProjectEpisodes(db, workspace, projectId);
+    const out = [];
+    for (const ep of eps) {
+      const dir = kind === 'film' ? ep.filmDir : ep.shotDir;
+      let files = [];
+      try { files = await inference.listVideosWithMeta(dir); } catch (_) { files = []; }
+      if (files.length) out.push({ episodeId: ep.id, name: ep.name, dir, files });
+    }
+    return out;
+  };
+  ipcMain.handle('project:shots', (e, workspace, projectId) => listEpisodeMedia(workspace, projectId, 'shot'));
+  ipcMain.handle('project:films', (e, workspace, projectId) => listEpisodeMedia(workspace, projectId, 'film'));
+
+  /* ---- 项目级提示词规范文件（<项目>/prompts/*.md）：五个模块的风格规范，用户可编辑；
+          文件缺失 / 还是旧版结构时，主进程自动从内置 skills/prompts/ 补齐或重播 ---- */
+  ipcMain.handle('prompt:list', (e, workspace, projectId) => {
+    const root = projects.ensureProjectDirs(db, workspace, projectId);
+    if (!root) return [];
+    promptFiles.seedAt(root);          // 列表顺带播种（老项目打开树即完成升级）
+    return promptFiles.listAt(root);
+  });
+  ipcMain.handle('prompt:read', (e, workspace, projectId, name) => {
+    const root = projects.ensureProjectDirs(db, workspace, projectId);
+    return root ? promptFiles.readAt(root, name) : '';
+  });
+  ipcMain.handle('prompt:save', (e, workspace, projectId, name, content) => {
+    const root = projects.ensureProjectDirs(db, workspace, projectId);
+    return root ? promptFiles.saveAt(root, name, content) : false;
+  });
+
+  /* ---- 分辨率配置（项目级 = 新建剧集的初始模板；剧集级 = 本集生效值）---- */
+  ipcMain.handle('res:options', () => models.resOptions());
+  ipcMain.handle('project:res:get', (e, projectId) => projects.getProjectRes(db, projectId));
+  ipcMain.handle('project:res:set', (e, projectId, res) => projects.setProjectRes(db, projectId, res));
+  ipcMain.handle('episode:res:get', (e, episodeId) => projects.getEpisodeRes(db, episodeId));
+  ipcMain.handle('episode:res:set', (e, episodeId, kind, value) => projects.setEpisodeRes(db, episodeId, kind, value));
+
+  /* ---- 第三方 Skill（提示词扩展）---- */
+  ipcMain.handle('skill:list', () => skills.list(db));
+  ipcMain.handle('skill:install', async () => {
+    const win = getWin ? getWin() : null;
+    if (!win) throw new Error('没有可用窗口');
+    const r = await dialog.showOpenDialog(win, {
+      title: '安装 Skill（选择含 SKILL.md 的文件夹）',
+      properties: ['openDirectory']
+    });
+    if (r.canceled || !r.filePaths.length) return null;
+    const id = skills.install(r.filePaths[0]);
+    logger.info('已安装第三方 skill：' + id);
+    return id;
+  });
+  ipcMain.handle('skill:remove', (e, id) => skills.remove(db, id));
+  ipcMain.handle('skill:toggle', (e, id, on) => skills.setEnabled(db, id, on));
+  ipcMain.handle('skill:read', (e, id) => skills.readFull(id));
+
   /* ---- 设置 / 环境检测 ---- */
   ipcMain.handle('models:check', () => models.check());
   ipcMain.handle('models:setPath', (e, key, dir) => models.setPath(key, dir));
+  // 生图工作流模板：列表（含激活标记）与切换（切换后返回最新环境检测结果）
+  ipcMain.handle('models:imageTemplates', () => models.imageTemplates());
+  ipcMain.handle('models:setImageTemplate', (e, key) => {
+    if (!models.IMAGE_TEMPLATES[key]) throw new Error('未知生图工作流模板：' + key);
+    db.setSetting('imageTemplate', key);
+    return models.check();
+  });
   // ComfyUI 模型根目录（用户只需设置这一个）
   ipcMain.handle('models:setRoot', (e, dir) => models.setModelsRoot(dir));
   ipcMain.handle('models:detectRoot', () => {
@@ -149,12 +252,14 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     const r = await inference.comfyGenerate({ templateKey, dir, baseName, params });
     return r;
   });
-  ipcMain.handle('export:video', async (e, { outDir, outName, videos, subtitles }) => {
+  ipcMain.handle('export:video', async (e, { outDir, outName, videos, subtitles, width, height }) => {
     logger.setTag('阶段7 组装成片');
     await orchestrator.ensure(6);
-    return inference.exportVideo(outDir, outName, videos, { subtitles });
+    return inference.exportVideo(outDir, outName, videos, { subtitles, width, height });
   });
   ipcMain.handle('ffmpeg:find', () => inference.findFfmpeg());
+  // 组装成片模块：列出某目录全部视频（含生成时间/大小/分辨率，探测结果缓存）
+  ipcMain.handle('media:list', (e, dir) => inference.listVideosWithMeta(dir));
   ipcMain.handle('file:readBase64', (e, abs) => {
     if (!fs.existsSync(abs)) return null;
     return fs.readFileSync(abs).toString('base64');

@@ -1,0 +1,14 @@
+{
+  "1": { "class_type": "LoadImage", "inputs": { "image": "__IMAGE__" } },
+  "2": { "class_type": "VAEEncode", "inputs": { "pixels": ["1", 0], "vae": ["21", 0] } },
+  "3": { "class_type": "KSampler", "inputs": { "seed": "__SEED__", "steps": 8, "cfg": 1, "sampler_name": "res_multistep", "scheduler": "simple", "denoise": __DENOISE__, "model": ["11", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": __LATENT__ } },
+  "5": { "class_type": "EmptySD3LatentImage", "inputs": { "width": "__WIDTH__", "height": "__HEIGHT__", "batch_size": 1 } },
+  "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "__PROMPT__", "clip": ["20", 0] } },
+  "7": { "class_type": "CLIPTextEncode", "inputs": { "text": "__NEGATIVE__", "clip": ["20", 0] } },
+  "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["21", 0] } },
+  "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "comic/char", "images": ["8", 0] } },
+  "10": { "class_type": "UNETLoader", "inputs": { "unet_name": "__Z_UNET__", "weight_dtype": "default" } },
+  "11": { "class_type": "ModelSamplingAuraFlow", "inputs": { "shift": 3, "model": ["10", 0] } },
+  "20": { "class_type": "CLIPLoader", "inputs": { "clip_name": "__Z_CLIP__", "type": "lumina2", "device": "default" } },
+  "21": { "class_type": "VAELoader", "inputs": { "vae_name": "__Z_VAE__" } }
+}

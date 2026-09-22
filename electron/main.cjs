@@ -9,6 +9,7 @@ const launcher = require('./launcher.cjs');
 const logger = require('./logger.cjs');
 const metrics = require('./metrics.cjs');
 const session = require('./session.cjs');
+const skills = require('./skills.cjs');
 const { registerIpc } = require('./ipc.cjs');
 
 const isDev = !!process.env.VITE_DEV;
@@ -26,10 +27,46 @@ let win = null;
 /** 窗口几何的立即保存函数（退出路径兜底用，由 session.trackWindow 返回） */
 let saveWinState = null;
 
+/* ------------------------------------------------------------------
+   崩溃可观测：把「软件自己闪退」变成日志里能查到原因的事件。
+   主进程的未捕获异常默认会直接结束进程（表现就是窗口瞬间消失），
+   这里兜住并留痕，让软件继续活着（真正的致命错误才会在日志里反复出现）。
+   ------------------------------------------------------------------ */
+process.on('uncaughtException', (err) => {
+  try {
+    logger.error('主进程未捕获异常（已兜住，未退出）：' + ((err && (err.stack || err.message)) || err));
+  } catch (_) { /* 日志失败也不能再抛 */ }
+});
+process.on('unhandledRejection', (reason) => {
+  try {
+    const r = reason || {};
+    logger.error('主进程未处理的 Promise 拒绝：' + (r.stack || r.message || String(r)));
+  } catch (_) { /* 同上 */ }
+});
+
 // Windows 上用无边框 + 深色原生窗口控件，让标题栏与暗黑主题融为一体
 const darkChrome = process.platform === 'win32'
   ? { titleBarStyle: 'hidden', titleBarOverlay: { color: '#0a0d13', symbolColor: '#9aa6b8', height: 40 } }
   : {};
+
+/* ------------------------------------------------------------------
+   单实例锁：重复启动（例如点了两下图标、旧实例还在后台）会出现两个软件同时
+   抢同一个 SQLite / llama 端口 / ComfyUI 队列 / 日志文件，表现就是「无缘无故
+   闪退、数据错乱」。这里保证只跑一个：第二次启动直接聚焦已有窗口。
+   ------------------------------------------------------------------ */
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+  process.exit(0);
+}
+app.on('second-instance', () => {
+  try {
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    }
+  } catch (_) { /* 忽略 */ }
+});
 
 function createWindow() {
   // 窗口按上次退出时的位置/大小还原（越界或换屏后由 session.windowState() 自动回落）
@@ -71,6 +108,7 @@ app.whenReady().then(() => {
   models.init(db);
   inference.init(db);
   launcher.init(db);
+  skills.init(app.getPath('userData'));   // 内置 skill 播种（含 H3 官方提示词 skill）
   inference.ensureDefaultTemplates();
   registerIpc(db, () => win);
 
@@ -81,6 +119,23 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+
+/**
+ * 渲染进程 / GPU 等子进程异常退出也留痕：
+ * 「界面突然没了」「白屏」这类现象，多数是渲染进程 gone（常见原因 OOM）或 GPU 进程崩，
+ * 有这两条日志就能一眼判断，不必再猜。
+ */
+app.on('render-process-gone', (e, webContents, details) => {
+  try {
+    logger.error('渲染进程退出：reason=' + details.reason + ' exitCode=' + details.exitCode +
+      '（reason=oom 表示内存不足）');
+  } catch (_) { /* 忽略 */ }
+});
+app.on('child-process-gone', (e, details) => {
+  try {
+    logger.error('子进程退出：type=' + details.type + ' reason=' + details.reason + ' exitCode=' + details.exitCode);
+  } catch (_) { /* 忽略 */ }
+});
 
 /**
  * 退出前收尾：llama-server 现在是**静默启动**（没有控制台窗口可以让用户手动关），

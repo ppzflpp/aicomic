@@ -50,6 +50,15 @@ function init(userDataDir, documents) {
   // 表结构升级（老库也要能跑）：新增列用「先查 pragma 再 ALTER」的方式
   addColumn('episodes', 'stage_meta', "TEXT NOT NULL DEFAULT '{}'");
 
+  // 分辨率配置（2026-09-20）：项目级 = 新建剧集的初始模板；剧集级 = 实际生效值。
+  // 格式统一为 '宽x高' 字符串（如 '864x480'），宽高比由前端选项文案标注。
+  addColumn('projects', 'res_img', "TEXT NOT NULL DEFAULT '1216x832'");
+  addColumn('projects', 'res_vid', "TEXT NOT NULL DEFAULT '864x480'");
+  addColumn('projects', 'res_out', "TEXT NOT NULL DEFAULT '1920x1080'");
+  addColumn('episodes', 'res_img', "TEXT NOT NULL DEFAULT '1216x832'");
+  addColumn('episodes', 'res_vid', "TEXT NOT NULL DEFAULT '864x480'");
+  addColumn('episodes', 'res_out', "TEXT NOT NULL DEFAULT '1920x1080'");
+
   // 历史路径迁移（目录改为纯英文路径后，把库里残留的旧路径改写成新路径）
   migratePaths();
 

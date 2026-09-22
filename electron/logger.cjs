@@ -58,19 +58,18 @@ function filePath() {
   return dir ? path.join(dir, 'studio-' + dayKey() + '.log') : '';
 }
 
-/** 按天轮转的追加流（懒创建；跨天自动换文件） */
+/**
+ * 按天轮转的**同步**落盘。
+ * 用 appendFileSync 而不是写入流：软件异常退出（闪退）时，写入流里还没刷盘的
+ * 最后几条日志会丢——而那恰恰是排查闪退最需要的部分。日志量很小，同步写可接受。
+ */
 function writeFile(line) {
   try {
     const dir = logsDir();
     if (!dir) return;
     const day = dayKey();
-    if (!stream || streamDay !== day) {
-      try { if (stream) stream.end(); } catch (_) {}
-      streamDay = day;
-      stream = fs.createWriteStream(path.join(dir, 'studio-' + day + '.log'), { flags: 'a' });
-      stream.on('error', () => { stream = null; });
-    }
-    stream.write(line + '\n');
+    streamDay = day;
+    fs.appendFileSync(path.join(dir, 'studio-' + day + '.log'), line + '\n');
   } catch (_) { /* 日志失败绝不影响主流程 */ }
 }
 

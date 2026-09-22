@@ -325,6 +325,10 @@ function pickStrict(key, re) {
 function workflowModels() {
   return {
     ckpt: pick('checkpoints'),
+    // —— Z-Image Turbo 三件套（生图模板 character_zimage_turbo.json 用）——
+    z_unet: pickStrict('diffusion_models', /z_image/i),
+    z_clip: pickStrict('text_encoders', /qwen_3_4b/i),
+    z_vae: pickStrict('vae', /^ae[\._-]/i),
     h3_model: pick('diffusion_models', /fl2va/i) || pick('diffusion_models'),
     h3_fl2va: pickStrict('diffusion_models', /fl2va/i),
     h3_ref2va: pickStrict('diffusion_models', /ref2va/i),
@@ -343,22 +347,128 @@ function workflowModels() {
 }
 
 /* ------------------------------------------------------------------ *
+ * 分辨率档位（按当前模型过滤）
+ *   图片：看底模 —— SDXL 系给 1024 档，SD1.5 系给 512 档
+ *   视频：看 diffusion_models —— 检出 H3（fl2va/ref2va）给 H3 档，否则给通用档
+ *   输出：成片导出档位（与模型无关）
+ * 返回 [{ value:'WxH', label:'宽×高（比）' }]，value 直接存库/传生成。
+ * ------------------------------------------------------------------ */
+const RES_SDXL = [
+  ['1024x1024', '1024×1024（1:1）'],
+  ['1216x832',  '1216×832（3:2）'],
+  ['832x1216',  '832×1216（2:3）'],
+  ['1344x768',  '1344×768（16:9）'],
+  ['768x1344',  '768×1344（9:16）'],
+  ['1152x896',  '1152×896（9:7）'],
+  ['896x1152',  '896×1152（7:9）']
+];
+const RES_SD15 = [
+  ['512x512', '512×512（1:1）'],
+  ['768x512', '768×512（3:2）'],
+  ['512x768', '512×768（2:3）'],
+  ['640x640', '640×640（1:1）']
+];
+const RES_H3 = [
+  ['864x480', '864×480（16:9）'],
+  ['480x864', '480×864（9:16）'],
+  ['960x544', '960×544（16:9）'],
+  ['544x960', '544×960（9:16）'],
+  ['768x768', '768×768（1:1）'],
+  ['640x640', '640×640（1:1）']
+];
+const RES_VID_GENERIC = [
+  ['1280x720',  '1280×720（16:9）'],
+  ['720x1280',  '720×1280（9:16）'],
+  ['1024x1024', '1024×1024（1:1）']
+];
+const RES_OUT = [
+  ['1920x1080', '1920×1080（16:9）'],
+  ['1280x720',  '1280×720（16:9）'],
+  ['2560x1440', '2560×1440（16:9）'],
+  ['1080x1920', '1080×1920（9:16）'],
+  ['720x1280',  '720×1280（9:16）']
+];
+const toOpts = (a) => a.map(([value, label]) => ({ value, label }));
+
+/* ------------------------------------------------------------------ *
+ * 生图工作流模板（插件化：新增工作流 = electron/workflows/ 放模板文件 + 这里加一行）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 生图工作流模板注册表。
+ * file   : workspace/workflows/ 下的模板文件（缺省时由 ensureDefaultTemplates 从内置播种）
+ * resTier: 分辨率档位 —— '1024' 固定 1024 档（Z-Image / SDXL），'ckpt' 按底模文件名判断
+ * 模板内占位符契约：__PROMPT__ __NEGATIVE__ __SEED__ __WIDTH__ __HEIGHT__
+ *                   __IMAGE__（图生图支路，节点1/2）__LATENT__（节点5 空潜变量）__DENOISE__
+ *                   __CKPT__（SDXL）/ __Z_UNET__ __Z_CLIP__ __Z_VAE__（Z-Image 三件套）
+ */
+const IMAGE_TEMPLATES = {
+  'zimage-turbo': {
+    key: 'zimage-turbo', label: 'Z-Image Turbo（中文提示词 · 8 步）',
+    file: 'workflows/character_zimage_turbo.json', resTier: '1024'
+  },
+  'sdxl': {
+    key: 'sdxl', label: 'SDXL 底模（旧版，animagine-xl）',
+    file: 'workflows/character.json', resTier: 'ckpt'
+  }
+};
+const DEFAULT_IMAGE_TEMPLATE = 'zimage-turbo';
+
+/** 当前激活的生图模板 key（设置缺失 / 非法时回默认） */
+function activeImageTemplate() {
+  const k = db.getSetting('imageTemplate');
+  return (k && IMAGE_TEMPLATES[k]) ? k : DEFAULT_IMAGE_TEMPLATE;
+}
+
+function imageTemplateInfo() { return IMAGE_TEMPLATES[activeImageTemplate()]; }
+
+/** 给设置界面的下拉列表：全部候选 + 当前激活标记 */
+function imageTemplates() {
+  const act = activeImageTemplate();
+  return Object.values(IMAGE_TEMPLATES).map(t => ({ key: t.key, label: t.label, active: t.key === act }));
+}
+
+function resOptions() {
+  const act = activeImageTemplate();
+  // Z-Image 原生 1024 档，与 SDXL 同档；SD1.5 才降到 512 档
+  const isXL = IMAGE_TEMPLATES[act].resTier === '1024' ||
+    /xl|pony|illustrious|noob|z_image/i.test(String(pick('checkpoints') || ''));
+  const wm = workflowModels();
+  const vid = (wm.h3_fl2va || wm.h3_ref2va || /h3/i.test(String(wm.h3_model || ''))) ? RES_H3 : RES_VID_GENERIC;
+  return { img: toOpts(isXL ? RES_SDXL : RES_SD15), vid: toOpts(vid), out: toOpts(RES_OUT) };
+}
+
+/* ------------------------------------------------------------------ *
  * 对外接口
  * ------------------------------------------------------------------ */
 
 function check() {
   const root = modelsRoot();
+  const act = activeImageTemplate();
   const items = ITEMS.map(it => {
     const dir = resolveDir(it.key);
     const files = (dir && fs.existsSync(dir)) ? listFiles(it.key) : [];
+    // checkpoints（SDXL 底模）只在激活 SDXL 模板时才算必需；Z-Image 模板下由下面的动态项接管
+    const required = it.key === 'checkpoints' ? act !== 'zimage-turbo' : !!it.required;
     return {
       key: it.key, label: it.label, short: it.short, group: it.group,
-      hint: it.hint, required: !!it.required, sub: it.sub,
+      hint: it.hint, required, sub: it.sub,
       path: dir || '', ok: files.length > 0, count: files.length,
       sample: files.slice(0, 3).map(f => f.name),
       isCustom: !!db.getSetting('modelpath.' + it.key)
     };
   });
+  if (act === 'zimage-turbo') {
+    const zmain = workflowModels().z_unet;
+    items.push({
+      key: 'zimage', label: 'Z-Image Turbo 主模型 diffusion_models', short: '生图主模', group: 'comfy',
+      hint: '第 4 块「角色库」出图用的 Z-Image Turbo 主模型（z_image_turbo_*.safetensors）',
+      required: true, sub: 'diffusion_models',
+      path: resolveDir('diffusion_models') || '',
+      ok: !!zmain, count: zmain ? 1 : 0, sample: zmain ? [zmain] : [],
+      isCustom: !!db.getSetting('modelpath.diffusion_models')
+    });
+  }
   const required = items.filter(i => i.required);
   return {
     ready: required.every(i => i.ok),
@@ -402,5 +512,7 @@ function ensure() {
 module.exports = {
   init, check, setPath, resolveDir, ensure,
   modelsRoot, setModelsRoot, redetect, detectModelsRoot,
-  listFiles, pick, pickStrict, workflowModels, scoreRoot, drives, ITEMS, ROOT_KEY, AUTO_KEY
+  listFiles, pick, pickStrict, workflowModels, scoreRoot, drives, ITEMS, ROOT_KEY, AUTO_KEY,
+  IMAGE_TEMPLATES, activeImageTemplate, imageTemplateInfo, imageTemplates,
+  resOptions
 };

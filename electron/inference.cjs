@@ -234,11 +234,15 @@ function warmFfmpeg() {
 /* ---------------- ComfyUI 工作流执行 ---------------- */
 
 const WORKFLOW_TEMPLATES = {
-  character: 'workflows/character.json',   // 角色图（SD 文生图）
   video: 'workflows/video_h3.json'         // H3 视频（M0 spike 后落地）
 };
 
 function workflowPath(key) {
+  // 角色图走「生图工作流模板注册表」：按 设置→生图工作流 激活的模板解析文件
+  if (key === 'character') {
+    const info = models.imageTemplateInfo();
+    return path.join(ws() || '', info.file);
+  }
   const p = path.join(ws() || '', WORKFLOW_TEMPLATES[key] || ('workflows/' + key + '.json'));
   return p;
 }
@@ -256,7 +260,7 @@ function defaultCharacterTemplate() {
     "2": { "class_type": "VAEEncode", "inputs": { "pixels": ["1", 0], "vae": ["4", 2] } },
     "3": { "class_type": "KSampler", "inputs": { "seed": "__SEED__", "steps": 28, "cfg": 6, "sampler_name": "euler_ancestral", "scheduler": "normal", "denoise": "@@DENOISE@@", "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": "@@LATENT@@" } },
     "4": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "__CKPT__" } },
-    "5": { "class_type": "EmptyLatentImage", "inputs": { "width": 1216, "height": 832, "batch_size": 1 } },
+    "5": { "class_type": "EmptyLatentImage", "inputs": { "width": "__WIDTH__", "height": "__HEIGHT__", "batch_size": 1 } },
     "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "__PROMPT__", "clip": ["4", 1] } },
     "7": { "class_type": "CLIPTextEncode", "inputs": { "text": "__NEGATIVE__", "clip": ["4", 1] } },
     "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["4", 2] } },
@@ -298,22 +302,68 @@ function ensureDefaultTemplates() {
     } catch (_) { /* 忽略 */ }
   }
 
+  // —— Z-Image Turbo：官方三件套结构（UNETLoader + CLIPLoader lumina2 + VAELoader）。
+  // 判定「还是我们内置的那份」：含 UNETLoader 就是 Z-Image 版（用户可自行改参数，不动）；
+  // 缺失 / 是老 SDXL 结构 → 播种内置版（SDXL 版本仍保留在 character.json，可随时切回）。
+  const bzi = path.join(__dirname, 'workflows', 'character_zimage_turbo.json');
+  const tzi = path.join(dir, 'character_zimage_turbo.json');
+  let needZi = !fs.existsSync(tzi);
+  if (!needZi) {
+    try {
+      const cur = fs.readFileSync(tzi, 'utf-8');
+      if (!cur.includes('"UNETLoader"')) needZi = true;
+    } catch (_) { needZi = true; }
+  }
+  if (needZi && fs.existsSync(bzi)) {
+    try {
+      fs.copyFileSync(bzi, tzi);
+      logger.info('Z-Image Turbo 工作流模板已就位（workflows/character_zimage_turbo.json）');
+    } catch (_) { /* 忽略 */ }
+  }
+
   // —— 角色图：老内置模板没有「图生图」支路，节点集合完全一致时升级 ——
+  // ⚠️ 模板里含**裸占位符**（"denoise": __DENOISE__），整体不是合法 JSON，
+  //    所以这里一律用文本匹配判断/改写，不能 JSON.parse（以前用 parse → 永远抛错 → 升级静默失效）。
   const charFile = path.join(dir, 'character.json');
   let upgradeChar = false;
+  let charText = '';
   if (fs.existsSync(charFile)) {
-    try {
-      const o = JSON.parse(fs.readFileSync(charFile, 'utf-8'));
-      const ids = Object.keys(o).sort();
-      upgradeChar = ids.length === LEGACY_CHAR_IDS.length && ids.every((k, i) => k === LEGACY_CHAR_IDS[i]);
-    } catch (_) { upgradeChar = false; }
+    try { charText = fs.readFileSync(charFile, 'utf-8'); } catch (_) { charText = ''; }
+    const hasLoad = /"class_type"\s*:\s*"LoadImage"/.test(charText);
+    const hasEnc = /"class_type"\s*:\s*"VAEEncode"/.test(charText);
+    const hasLat = /__LATENT__/.test(charText);
+    upgradeChar = !(hasLoad && hasEnc && hasLat);   // 老版本没有「图生图」支路 → 整体升级
   }
-  if (!fs.existsSync(charFile) || upgradeChar) {
+  if (!charText || upgradeChar) {
     try {
       fs.writeFileSync(charFile, defaultCharacterTemplate(), 'utf-8');
       if (upgradeChar) logger.info('角色图工作流已升级：新增「图生图」（按已选图重绘）支持');
     } catch (_) { /* 忽略 */ }
+  } else {
+    // 2026-09-20：node5 宽高写死数字 → 改成 __WIDTH__/__HEIGHT__ 占位符（让每张图的分辨率真正生效）
+    const fixed = upgradeCharTemplateText(charText);
+    if (fixed !== charText) {
+      try {
+        fs.writeFileSync(charFile, fixed, 'utf-8');
+        logger.info('角色图工作流已升级：宽高改为占位符（支持逐张/逐集分辨率配置）');
+      } catch (_) { /* 忽略 */ }
+    }
   }
+}
+
+/**
+ * 角色模板升级：把 EmptyLatentImage 里写死的 width/height 改成占位符。
+ * ⚠️ 纯文本改写 —— 模板含裸占位符（"denoise": __DENOISE__），整体不是合法 JSON，
+ *    JSON.parse 会抛错（老实现就是这么静默失效的）。
+ */
+function upgradeCharTemplateText(text) {
+  if (!text || /"width"\s*:\s*"__WIDTH__"/.test(text)) return text;
+  const blk = text.match(/"class_type"\s*:\s*"EmptyLatentImage"[\s\S]{0,200}?\}/);
+  if (!blk || !/"width"\s*:\s*\d+/.test(blk[0])) return text;
+  const patched = blk[0]
+    .replace(/"width"\s*:\s*\d+/, '"width": "__WIDTH__"')
+    .replace(/"height"\s*:\s*\d+/, '"height": "__HEIGHT__"');
+  return text.replace(blk[0], patched);
 }
 
 /**
@@ -487,7 +537,10 @@ function injectH3Media(wf, media) {
 
 /** 占位符 → 模型目录（用于报错时提示用户去哪补） */
 const PH_TIP = {
-  ckpt: 'checkpoints（角色图底模）',
+  ckpt: 'checkpoints（角色图 SDXL 底模）',
+  z_unet: 'diffusion_models（Z-Image Turbo 主模型，如 z_image_turbo_bf16.safetensors）',
+  z_clip: 'text_encoders（Z-Image 文本编码器 qwen_3_4b.safetensors）',
+  z_vae: 'vae（Z-Image VAE ae.safetensors）',
   image: '本地参考图（图生图时由软件自动注入，模板里无需手填）',
   h3_model: 'diffusion_models（H3 主模型）',
   h3_unet: 'diffusion_models（H3 主模型 fl2va / ref2va）',
@@ -534,6 +587,14 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
   if (isVideo) {
     const wm = models.workflowModels();
     const p = { ...wm, ...h3Params() };
+    // 秒数按「分镜脚本该镜头的 dur」走（渲染端传 seconds，4~15s 含边界）；
+    // 没传才回退设置键 h3.seconds。都自动对齐到 17k+5 帧网格（24fps）。
+    const sec = Number(params.seconds);
+    if (Number.isFinite(sec) && sec > 0) {
+      let L = Math.max(4, Math.min(15, Math.round(sec))) * 24;
+      p.length = L + (5 - (L % 17)) % 17;
+      p.seconds = Math.max(4, Math.min(15, Math.round(sec)));
+    }
     // 权重与加速 LoRA 必须成对：ref2va 只能配 ref2v 的 LoRA，fl2va 只能配 fl2v 的
     p.h3_unet = refMode ? (wm.h3_ref2va || wm.h3_fl2va || wm.h3_model) : (wm.h3_fl2va || wm.h3_model);
     p.h3_lora = refMode
@@ -548,6 +609,9 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
     // 角色图「图生图」：选了已生成的图 → 走 VAEEncode 潜变量 + 0.62 denoise；否则空潜变量 + denoise=1
     realParams.latent = params.image ? '["2", 0]' : '["5", 0]';
     realParams.denoise = params.image ? 0.62 : 1;
+    // 宽高：剧集分辨率配置传入；没传给默认值（模板占位符 __WIDTH__/__HEIGHT__ 必须有值）
+    realParams.width = Number(params.width) > 0 ? Math.round(params.width) : 1216;
+    realParams.height = Number(params.height) > 0 ? Math.round(params.height) : 832;
   }
   if (params.image) realParams.image = await uploadToComfy(params.image);
   if (realParams.seed === undefined || realParams.seed === null) realParams.seed = Math.floor(Math.random() * 1e9);
@@ -574,6 +638,18 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
     if (wf['1'] && wf['1'].class_type === 'LoadImage') delete wf['1'];
     if (wf['2'] && wf['2'].class_type === 'VAEEncode') delete wf['2'];
   }
+  // 图生图：参考图先缩放到本次选定的分辨率再编码 —— 否则「参考图多大就出多大」，
+  // 逐张分辨率选择在 i2i 下形同虚设（crop=center 保持比例不拉伸）
+  if (!isVideo && realParams.image && wf['1'] && wf['2']) {
+    wf['30'] = {
+      class_type: 'ImageScale',
+      inputs: {
+        image: ['1', 0], upscale_method: 'lanczos',
+        width: realParams.width, height: realParams.height, crop: 'center'
+      }
+    };
+    wf['2'].inputs.pixels = ['30', 0];
+  }
 
   if (isVideo) {
     // 没有 Turbo LoRA 就摘掉该节点，模型直接从 UNETLoader 取（质量略降但不报错）
@@ -598,10 +674,11 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
     wf['18'].inputs.conditioning = [inj.condId, 0];
     wf['21'].inputs.latent_image = [inj.latentId, 1];
     const bits = [];
-    if (media.first) bits.push('首帧');
-    if (media.last) bits.push('尾帧');
-    if (media.refImages.length) bits.push('参考图×' + media.refImages.length);
-    if (media.refVideos.length) bits.push('参考视频×' + media.refVideos.length);
+    // 日志里带上本地文件名（而不是只给 ×N）：用户核对「这版视频到底用的哪张图」就靠这行
+    if (media.first) bits.push('首帧：' + path.basename(String(wantFirst)));
+    if (media.last) bits.push('尾帧：' + path.basename(String(wantLast)));
+    if (media.refImages.length) bits.push('参考图×' + media.refImages.length + '：' + refImages.map(p => path.basename(p)).join('、'));
+    if (media.refVideos.length) bits.push('参考视频×' + media.refVideos.length + '：' + refVideos.map(p => path.basename(p)).join('、'));
     logger.info('H3 工作流：' + (inj.mode === 'ref' ? '参考模式 ref2va' : '首尾帧模式 fl2va') +
       '，' + realParams.steps + ' 步，' + realParams.width + 'x' + realParams.height +
       (bits.length ? '，输入：' + bits.join(' + ') : '，纯文字'));
@@ -609,6 +686,16 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
 
   const clientId = 'comic-studio-' + Date.now();
   const tSubmit = Date.now();
+  // 生成配置一览（方便排查「分辨率/秒数不对」这类问题）
+  if (isVideo) {
+    logger.info('本次视频生成配置：' + realParams.width + 'x' + realParams.height +
+      '，' + (realParams.seconds || Math.round(realParams.length / 24)) + 's（' + realParams.length + ' 帧）' +
+      '，' + realParams.steps + ' 步，档位 ' + (realParams.quality || 'fast'));
+  } else {
+    logger.info('本次图片生成配置：' + realParams.width + 'x' + realParams.height +
+      (realParams.image ? '，图生图（denoise ' + realParams.denoise + '）' : '，文生图') +
+      '，工作流 ' + models.activeImageTemplate());
+  }
   logger.info('提交 ComfyUI 工作流：' + (templateKey === 'video' ? 'H3 视频' : '角色图') + ' → ' + baseName);
   let submit;
   try {
@@ -626,10 +713,14 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
   const pid = submit.json.prompt_id;
   logger.detail('prompt_id=' + pid + (realParams.seed !== undefined ? '，seed=' + realParams.seed : ''));
 
-  // 轮询直到完成
+  // 轮询直到完成。
+  // ⚠️ 三种"end"都要立刻跳出，不能只等 completed：任务报错时 completed 永远是 false，
+  //    以前只判断 completed → 报错也傻等到超时（1800s），界面看着像卡死。
+  //    这里：①完成 ②出错 ③任务从队列里消失（连续 3 次看不到）→ 立即结束。
   const t0 = Date.now();
   let lastTick = t0;
   let history = null;
+  let vanished = 0;
   while (Date.now() - t0 < timeoutMs) {
     await new Promise(r => setTimeout(r, 1200));
     if (Date.now() - lastTick >= 30000) {
@@ -640,12 +731,35 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
     try { h = await fetchJson(endpoint('comfyui') + '/history/' + pid, {}, 8000); } catch (_) { continue; }
     if (h.ok && h.json && h.json[pid]) {
       history = h.json[pid];
-      if (history.status && history.status.completed) break;
+      const st = history.status || {};
+      if (st.completed) break;
+      if (st.status_str === 'error') break;      // ② 出错：立刻跳出，下面统一报错
+    } else if (Date.now() - t0 > 15000) {
+      // ③ 既不在 history、也不在队列里 → 任务被中断/ComfyUI 重启过
+      let q = null;
+      try { q = await fetchJson(endpoint('comfyui') + '/queue', {}, 8000); } catch (_) { q = null; }
+      if (q && q.ok && q.json) {
+        const inQueue = ['queue_running', 'queue_pending'].some(k =>
+          Array.isArray(q.json[k]) && q.json[k].some(it => (Array.isArray(it) ? it[1] : it && it.prompt_id) === pid));
+        vanished = inQueue ? 0 : vanished + 1;
+        if (vanished >= 3) throw new Error('任务已从 ComfyUI 队列消失（prompt_id=' + pid + '）：ComfyUI 可能被重启或任务被中断，请重试。');
+      }
     }
   }
   if (!history) throw new Error('ComfyUI 任务超时未完成（prompt_id=' + pid + '）');
   if (history.status && history.status.status_str === 'error') {
-    throw new Error('ComfyUI 执行出错：' + JSON.stringify(history.status.messages || {}).slice(0, 400));
+    const errMsg = (history.status.messages || []).filter(m => m[0] === 'execution_error')[0];
+    const e0 = errMsg ? errMsg[1] : null;
+    const brief = e0
+      ? ('节点 ' + e0.node_type + '[' + e0.node_id + ']：' + String(e0.exception_message || '').trim())
+      : JSON.stringify(history.status.messages || {}).slice(0, 400);
+    const raw = e0 ? String(e0.exception_message || '') : '';
+    const tip = /HostBuffer|read_file_slice/i.test(raw)
+      ? '（ComfyUI 流式加载权重失败，通常重启一次 ComfyUI 就能恢复）'
+      : /out of memory|OutOfMemory|CUDA error/i.test(raw)
+        ? '（显存/显卡出错：关掉其他占用显存的程序，或调低分辨率、时长后重试）'
+        : '';
+    throw new Error('ComfyUI 执行出错：' + brief + tip);
   }
 
   // 拉取产物
@@ -687,23 +801,27 @@ function srtTime(sec) {
 }
 
 /**
- * 真实拼接导出：concat + 统一 1920x1080 + 可选字幕烧录。
+ * 真实拼接导出：concat + 统一输出分辨率 + 可选字幕烧录。
  * videos: [{file, dialogue, dur}]（绝对路径）
+ * opts.width/height：输出分辨率（剧集「输出分辨率」配置），默认 1920x1080。
  */
-async function exportVideo(outDir, outName, videos, { subtitles = true } = {}) {
+async function exportVideo(outDir, outName, videos, { subtitles = true, width = 1920, height = 1080 } = {}) {
   // 导出是一次性长任务：这里同步确认一次 ffmpeg（避免「预热没跑完」被误判成没装）
   const ffmpeg = findFfmpeg({ forceSync: true });
   if (!ffmpeg) throw new Error('未找到 ffmpeg。请将 ffmpeg.exe 放到 workspace/tools/，或到 设置→环境检测 指定路径。');
   fs.mkdirSync(outDir, { recursive: true });
   if (!videos.length) throw new Error('没有可拼接的视频片段');
+  const W = Math.max(16, Math.round(Number(width) || 1920));
+  const H = Math.max(16, Math.round(Number(height) || 1080));
   const tExport = Date.now();
-  logger.info('ffmpeg 组装成片：' + videos.length + ' 个镜头' + (subtitles ? ' + 字幕烧录' : ''));
+  logger.info('ffmpeg 组装成片：' + videos.length + ' 个镜头，输出 ' + W + 'x' + H + (subtitles ? ' + 字幕烧录' : ''));
 
   const tmp = path.join(outDir, '_tmp_' + Date.now());
   fs.mkdirSync(tmp, { recursive: true });
   try {
     // 字幕
     let subArg = [];
+    const vfBase = 'scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2';
     if (subtitles) {
       let t = 0; const lines = [];
       videos.forEach((v, i) => {
@@ -717,11 +835,11 @@ async function exportVideo(outDir, outName, videos, { subtitles = true } = {}) {
         // 两层转义，少一层就把路径后半段当成 original_size 选项（报 Invalid argument）。
         // 解法：spawn 的 cwd 设为临时目录，滤镜里只写裸文件名 subs.srt，无冒号无空格。
         fs.writeFileSync(path.join(tmp, 'subs.srt'), '\ufeff' + lines.join('\n'), 'utf-8');
-        subArg = ['-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,subtitles=subs.srt'];
+        subArg = ['-vf', vfBase + ',subtitles=subs.srt'];
       }
     }
     if (!subArg.length) {
-      subArg = ['-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2'];
+      subArg = ['-vf', vfBase];
     }
 
     // concat 列表（先统一转码为相同规格，避免拼接黑屏）
@@ -753,17 +871,134 @@ async function exportVideo(outDir, outName, videos, { subtitles = true } = {}) {
     if (res.code !== 0 || !fs.existsSync(finalPath)) {
       throw new Error('ffmpeg 导出失败：' + res.err.slice(-500));
     }
-    logger.done('成片已导出：' + finalName, Date.now() - tExport);
+    const elapsedMs = Date.now() - tExport;
+    logger.done('成片已导出：' + finalName, elapsedMs);
+    // 把本次导出耗时写进目录元信息（.meta.json），「组装成片」卡片上要显示它；
+    // listVideosWithMeta 会读同一份缓存，所以只补字段、不动其它键。
+    try {
+      const cachePath = path.join(outDir, '.meta.json');
+      let cache = {};
+      try { if (fs.existsSync(cachePath)) cache = JSON.parse(fs.readFileSync(cachePath, 'utf-8')) || {}; } catch (_) { cache = {}; }
+      const st = fs.statSync(finalPath);
+      cache[finalName] = { ...(cache[finalName] || {}), mtimeMs: st.mtimeMs, elapsedMs };
+      // 🔴 需求（Dragon 2026-09-22）：重复点击「组装成片」→ 旧成片被**替换**掉，不留历史版本。
+      // 删除本次导出之外的其它成片 mp4，连同各自封面（.xxx.mp4.poster.jpg）与 meta 记录一并清理。
+      // （成片是可随时重新组装的派生产物，不是原始素材；组装失败不会走到这里，旧成片仍保留。）
+      for (const f of fs.readdirSync(outDir)) {
+        if (f === finalName) continue;
+        if (/\.mp4$/i.test(f) || /\.webm$/i.test(f) || /\.mov$/i.test(f)) {
+          try { fs.rmSync(path.join(outDir, f), { force: true }); } catch (_) {}
+          try { fs.rmSync(path.join(outDir, '.' + f + '.poster.jpg'), { force: true }); } catch (_) {}
+          delete cache[f];
+        }
+      }
+      try { fs.writeFileSync(cachePath, JSON.stringify(cache), 'utf-8'); } catch (_) { /* 元信息写失败不影响导出结果 */ }
+    } catch (_) { /* 元信息写失败不影响导出结果 */ }
     return finalPath;
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 }
 
+/**
+ * 列出一个目录下全部视频文件并附带元信息（生成时间 mtimeMs / 大小 / 分辨率）。
+ * 用于「组装成片」模块：重启后也能完整显示本集生成过的所有视频。
+ * 分辨率探测结果缓存在目录内 .meta.json（按 mtimeMs 失效），只对新增/变动的文件真正起探测进程。
+ * 全程异步（execFile），绝不阻塞主进程。
+ */
+async function listVideosWithMeta(dir) {
+  if (!dir || !fs.existsSync(dir)) return [];
+  const files = fs.readdirSync(dir)
+    .filter(f => /\.(mp4|webm|mov)$/i.test(f))
+    .map(f => {
+      const p = path.join(dir, f);
+      let st = null;
+      try { st = fs.statSync(p); } catch (_) {}
+      return st ? { file: f, path: p, mtimeMs: st.mtimeMs, size: st.size } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);   // 最新生成的排前面
+  if (!files.length) return [];
+
+  // 分辨率缓存：mtimeMs 没变就直接用
+  const cachePath = path.join(dir, '.meta.json');
+  let cache = {};
+  try { if (fs.existsSync(cachePath)) cache = JSON.parse(fs.readFileSync(cachePath, 'utf-8')) || {}; } catch (_) { cache = {}; }
+
+  const todo = files.filter(f => !(cache[f.file] && cache[f.file].mtimeMs === f.mtimeMs && cache[f.file].width));
+  if (todo.length) {
+    await Promise.all(todo.map(async f => {
+      const meta = await probeVideo(f.path);
+      // 合并而不是覆盖：elapsedMs（导出耗时）等字段要保留下来
+      cache[f.file] = { ...(cache[f.file] || {}), mtimeMs: f.mtimeMs, width: meta.width, height: meta.height, durationSec: meta.durationSec };
+    }));
+    try { fs.writeFileSync(cachePath, JSON.stringify(cache), 'utf-8'); } catch (_) {}
+  }
+  for (const f of files) {
+    const c = cache[f.file] || {};
+    f.width = c.width || 0; f.height = c.height || 0; f.durationSec = c.durationSec || 0;
+    f.elapsedMs = c.elapsedMs || 0;
+  }
+
+  // 封面图：与 .meta.json 同一套 mtimeMs 缓存逻辑；mtime 变了才重新抽帧。
+  // 封面文件用隐藏式命名（.xxx.poster.jpg），不会被本函数的视频过滤误收。
+  const ffmpeg = findFfmpeg();
+  if (ffmpeg) {
+    await Promise.all(files.map(async f => {
+      const poster = path.join(dir, '.' + f.file + '.poster.jpg');
+      if (cache[f.file] && cache[f.file].mtimeMs === f.mtimeMs && fs.existsSync(poster)) { f.poster = poster; return; }
+      const ok = await extractPoster(ffmpeg, f.path, poster);
+      if (ok) f.poster = poster;
+    }));
+  }
+  return files;
+}
+
+/** ffmpeg 抽一帧做封面（先试 1s 处，超短视频回退到 0s）；成功返回 true */
+async function extractPoster(ffmpeg, video, poster) {
+  const run = (args) => new Promise((resolve) => {
+    execFile(ffmpeg, args, { windowsHide: true, timeout: 30000 }, (err) => resolve(!err && fs.existsSync(poster)));
+  });
+  try {
+    if (await run(['-y', '-ss', '1', '-i', video, '-frames:v', '1', '-q:v', '3', poster])) return true;
+    return await run(['-y', '-i', video, '-frames:v', '1', '-q:v', '3', poster]);
+  } catch (_) { return false; }
+}
+
+/** 用 ffprobe（优先）或 ffmpeg -i 解析视频分辨率与时长；失败返回 0 */
+async function probeVideo(abs) {
+  const ffmpeg = findFfmpeg();
+  if (!ffmpeg) return { width: 0, height: 0, durationSec: 0 };
+  const ffprobe = path.join(path.dirname(ffmpeg), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+  const run = (bin, args) => new Promise((resolve) => {
+    execFile(bin, args, { windowsHide: true, timeout: 30000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+  });
+  try {
+    if (fs.existsSync(ffprobe)) {
+      const r = await run(ffprobe, ['-v', 'error', '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height', '-show_entries', 'format=duration',
+        '-of', 'json', abs]);
+      if (!r.err && r.stdout) {
+        const j = JSON.parse(r.stdout);
+        const s = j.streams && j.streams[0];
+        const dur = j.format && parseFloat(j.format.duration);
+        if (s && s.width) return { width: s.width, height: s.height, durationSec: Number.isFinite(dur) ? dur : 0 };
+      }
+    }
+    // 回退：ffmpeg -i 的 stderr 里找 "1920x1080"
+    const r = await run(ffmpeg, ['-i', abs]);
+    const m = r.stderr.match(/,\s(\d{2,5})x(\d{2,5})[\s,]/);
+    if (m) return { width: +m[1], height: +m[2], durationSec: 0 };
+  } catch (_) { /* 探测失败不致命，显示 0 */ }
+  return { width: 0, height: 0, durationSec: 0 };
+}
+
 module.exports = {
   init, health, llmChat, extractJson, pickArray, endpoint, setEndpoint,
   comfyGenerate, workflowPath, ensureDefaultTemplates, findFfmpeg, exportVideo,
-  applyParams, findPlaceholders, h3Params, forgetWorkspace,
+  applyParams, findPlaceholders, h3Params, forgetWorkspace, listVideosWithMeta,
   // 导出仅为离线自测（test/h3-inject-check.cjs 直接验证连线，不需要显卡/ComfyUI）
-  injectH3Media, defaultCharacterTemplate
+  injectH3Media, defaultCharacterTemplate, upgradeCharTemplateText
 };

@@ -33,7 +33,7 @@ const AUTO_KEY = 'engine.autoOrchestrate';
 /** 阶段表：序号与界面上的 1-7 块一一对应 */
 const PHASES = [
   { key: 'chapter', name: '阶段1 章节输入', engines: [] },
-  { key: 'adapt', name: '阶段2 漫剧化改编', engines: ['llm'] },
+  { key: 'adapt', name: '阶段2 漫剧改编', engines: ['llm'] },
   { key: 'shots', name: '阶段3 分镜脚本', engines: ['llm'] },
   { key: 'chars', name: '阶段4 角色出图', engines: ['comfy'] },
   { key: 'prompts', name: '阶段5 H3提示词', engines: ['llm'] },

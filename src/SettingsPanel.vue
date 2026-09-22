@@ -138,16 +138,44 @@
       <p class="hint">llama-server 加载的 *.gguf（如 Qwen3.5-9B-Q5_K_M）。默认读项目 runtime\models\llm；若 GGUF 也放在 ComfyUI 模型根目录下的 llm\ 里，会自动识别。</p>
     </div>
 
+    <!-- 第三方 Skill（提示词扩展） -->
+    <div class="set-card">
+      <div class="set-head">
+        <h3>第三方 Skill（提示词扩展）</h3>
+        <button class="btn ghost sm" @click="installSkill">安装…</button>
+      </div>
+      <p class="hint">选择含 <b>SKILL.md</b> 的技能包文件夹即可安装（references/ 等附件原样保留，不做任何改写）。
+        启用的 skill 会作为提示词规范供对应阶段使用；已内置 H3 官方提示词 skill。</p>
+      <div class="env-row" v-for="s in skillList" :key="s.id">
+        <label style="display:flex; align-items:center; gap:6px; font-size:12.5px; cursor:pointer">
+          <input type="checkbox" :checked="s.enabled" @change="toggleSkill(s, $event.target.checked)" />
+          启用
+        </label>
+        <span class="env-name" :title="s.id">{{ s.name }}<span v-if="s.builtin" class="hint">（内置）</span></span>
+        <span class="hint" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" :title="s.description">{{ s.description || '（无描述）' }}</span>
+        <button class="btn ghost sm" @click="removeSkill(s)">删除</button>
+      </div>
+      <p v-if="!skillList.length" class="hint">还没有已安装的 skill。</p>
+    </div>
+
     <!-- 工作流 -->
     <div class="set-card">
       <div class="set-head">
         <h3>工作流模板</h3>
       </div>
+      <div class="env-row">
+        <span class="env-name">生图工作流</span>
+        <select v-model="imgTpl" @change="saveImgTpl" style="flex:1">
+          <option v-for="t in imgTpls" :key="t.key" :value="t.key">{{ t.label }}</option>
+        </select>
+      </div>
+      <p class="hint">切换后点「生图」立即生效，无需重启。新增工作流：把 ComfyUI 导出的工作流交给软件转成模板文件即可接入。</p>
+      <p class="hint">负向提示词在 Turbo 类蒸馏模型（cfg=1）下不参与采样，输入框保留备用 —— 换非蒸馏模型时自动生效。</p>
       <p class="hint">角色图与视频生成通过 ComfyUI 工作流执行，模板位于：</p>
-      <p class="hint mono">{{ st.workspace }}\workflows\character.json（角色图，缺省模板已自动生成，可自行替换）</p>
+      <p class="hint mono">{{ st.workspace }}\workflows\character.json（SDXL 版）／character_zimage_turbo.json（Z-Image Turbo 版），可自行修改参数</p>
       <p class="hint mono">{{ st.workspace }}\workflows\video_h3.json（H3 视频，需导出 API 格式工作流）</p>
       <p class="hint">模板里的模型名 <b>不用手填</b>，软件会按下列占位符自动从 ComfyUI 的模型目录里解析：</p>
-      <p class="hint mono">__CKPT__（checkpoints）／__H3_UNET__（diffusion_models，按模式自动选 fl2va / ref2va）／__H3_TEXT_ENCODER__（text_encoders）／__H3_VIDEO_VAE__·__H3_AUDIO_VAE__（vae）／__H3_LORA__（loras，按模式自动配对 4step / 8step）</p>
+      <p class="hint mono">__CKPT__（checkpoints）／__Z_UNET__·__Z_CLIP__·__Z_VAE__（Z-Image 三件套）／__H3_UNET__（diffusion_models，按模式自动选 fl2va / ref2va）／__H3_TEXT_ENCODER__（text_encoders）／__H3_VIDEO_VAE__·__H3_AUDIO_VAE__（vae）／__H3_LORA__（loras，按模式自动配对 4step / 8step）</p>
       <p class="hint mono">__PROMPT__ __NEGATIVE__ __SEED__ __IMAGE__ __WIDTH__ __HEIGHT__（运行时填入）</p>
     </div>
   </div>
@@ -173,7 +201,10 @@ export default {
       comfyDir: '',
       llamaArgs: '',
       starting: { llama: false, comfyui: false },
-      autoOrch: true
+      autoOrch: true,
+      imgTpl: '',
+      imgTpls: [],
+      skillList: []
     }
   },
   computed: {
@@ -212,12 +243,45 @@ export default {
     this.modelsRoot = this.models.modelsRoot || this.modelsRoot
     this.detectedRoot = this.models.detectedRoot || ''
     await this.refreshEngine()
+    await this.refreshImgTpls()
     try { this.autoOrch = await window.studio.getAutoOrchestrate() } catch (_) {}
+    await this.refreshSkills()
   },
   methods: {
+    /* ---- 第三方 Skill ---- */
+    async refreshSkills() {
+      try { this.skillList = await window.studio.skillsList() || [] } catch (_) { this.skillList = [] }
+    },
+    async installSkill() {
+      try {
+        const id = await window.studio.skillsInstall()
+        if (id) { this.$root.toast('已安装 skill：' + id); await this.refreshSkills() }
+      } catch (e) { this.st.fail(e) }
+    },
+    async toggleSkill(s, on) {
+      try { await window.studio.skillsToggle(s.id, on); s.enabled = !!on } catch (e) { this.st.fail(e) }
+    },
+    async removeSkill(s) {
+      if (!window.confirm('确定删除 skill「' + s.name + '」？' + (s.builtin ? '（内置版，删除后下次启动不会自动恢复）' : ''))) return
+      try { await window.studio.skillsRemove(s.id); this.$root.toast('已删除'); await this.refreshSkills() } catch (e) { this.st.fail(e) }
+    },
     h(k) { return !!this.health[k] },
     portOf(url) { try { return new URL(url).port || '8080' } catch (_) { return '8080' } },
     /* ---- 阶段引擎编排 ---- */
+    async refreshImgTpls() {
+      try {
+        const list = await window.studio.imageTemplates() || []
+        this.imgTpls = list
+        const act = list.find(t => t.active)
+        if (act) this.imgTpl = act.key
+      } catch (_) { /* 环境接口不可用时静默 */ }
+    },
+    async saveImgTpl() {
+      try {
+        const st = await window.studio.setImageTemplate(this.imgTpl)
+        if (st) { this.st.models = st; this.$root.toast('生图工作流已切换：' + this.imgTpl) }
+      } catch (e) { this.st.fail(e) }
+    },
     async saveAutoOrch() {
       const on = await window.studio.setAutoOrchestrate(this.autoOrch)
       this.autoOrch = !!on

@@ -6,7 +6,7 @@ contextBridge.exposeInMainWorld('studio', {
   chooseWorkspace: () => ipcRenderer.invoke('workspace:choose'),
 
   getTree: (ws) => ipcRenderer.invoke('tree:get', ws),
-  createProject: (ws, name) => ipcRenderer.invoke('project:create', ws, name),
+  createProject: (ws, name, res) => ipcRenderer.invoke('project:create', ws, name, res),
   deleteProject: (ws, id) => ipcRenderer.invoke('project:delete', ws, id),
   addFolder: (ws, projectId, parentId, name) => ipcRenderer.invoke('folder:add', ws, projectId, parentId, name),
   deleteFolder: (ws, id) => ipcRenderer.invoke('folder:delete', ws, id),
@@ -17,8 +17,34 @@ contextBridge.exposeInMainWorld('studio', {
   saveState: (id, done, active, meta) => ipcRenderer.invoke('episode:saveState', id, done, active, meta),
   saveArtifact: (ws, id, kind, data) => ipcRenderer.invoke('episode:saveArtifact', ws, id, kind, data),
 
+  // 项目媒体（左侧树懒加载）：角色图/场景图、各集镜头视频、各集成片
+  projectAssets: (ws, projectId) => ipcRenderer.invoke('project:assets', ws, projectId),
+  projectShots: (ws, projectId) => ipcRenderer.invoke('project:shots', ws, projectId),
+  projectFilms: (ws, projectId) => ipcRenderer.invoke('project:films', ws, projectId),
+
+  // 项目级提示词文件（<项目>/prompts/*.md）：四个模块的提示词，可编辑；缺失自动补内置版
+  promptsList: (ws, projectId) => ipcRenderer.invoke('prompt:list', ws, projectId),
+  readPrompt: (ws, projectId, name) => ipcRenderer.invoke('prompt:read', ws, projectId, name),
+  savePrompt: (ws, projectId, name, content) => ipcRenderer.invoke('prompt:save', ws, projectId, name, content),
+
+  // 分辨率配置：项目级（新建剧集的初始模板）/ 剧集级（本集生效）+ 按模型过滤的档位
+  resOptions: () => ipcRenderer.invoke('res:options'),
+  getProjectRes: (projectId) => ipcRenderer.invoke('project:res:get', projectId),
+  setProjectRes: (projectId, res) => ipcRenderer.invoke('project:res:set', projectId, res),
+  getEpisodeRes: (episodeId) => ipcRenderer.invoke('episode:res:get', episodeId),
+  setEpisodeRes: (episodeId, kind, value) => ipcRenderer.invoke('episode:res:set', episodeId, kind, value),
+
+  // 第三方 Skill（提示词扩展）：安装/列表/启停/删除/读全文
+  skillsList: () => ipcRenderer.invoke('skill:list'),
+  skillsInstall: () => ipcRenderer.invoke('skill:install'),
+  skillsRemove: (id) => ipcRenderer.invoke('skill:remove', id),
+  skillsToggle: (id, on) => ipcRenderer.invoke('skill:toggle', id, on),
+  skillsRead: (id) => ipcRenderer.invoke('skill:read', id),
+
   checkModels: () => ipcRenderer.invoke('models:check'),
   setModelPath: (key, dir) => ipcRenderer.invoke('models:setPath', key, dir),
+  imageTemplates: () => ipcRenderer.invoke('models:imageTemplates'),
+  setImageTemplate: (key) => ipcRenderer.invoke('models:setImageTemplate', key),
   chooseModelDir: (key) => ipcRenderer.invoke('models:chooseDir', key),
   setModelsRoot: (dir) => ipcRenderer.invoke('models:setRoot', dir),
   detectModelsRoot: () => ipcRenderer.invoke('models:detectRoot'),
@@ -74,6 +100,7 @@ contextBridge.exposeInMainWorld('studio', {
   comfyGenerate: (args) => ipcRenderer.invoke('comfy:generate', args),
   exportVideo: (args) => ipcRenderer.invoke('export:video', args),
   findFfmpeg: () => ipcRenderer.invoke('ffmpeg:find'),
+  listMedia: (dir) => ipcRenderer.invoke('media:list', dir),
   readFileBase64: (abs) => ipcRenderer.invoke('file:readBase64', abs),
   deleteFile: (abs) => ipcRenderer.invoke('file:delete', abs),
   pickFiles: (kind) => ipcRenderer.invoke('file:pick', kind),
