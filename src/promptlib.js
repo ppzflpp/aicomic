@@ -169,3 +169,56 @@ export function joinSystem({ identity = '', specs = [], contract = '', fallback 
   if (contract) blocks.push('', '【输出格式】', contract)
   return blocks.join('\n')
 }
+
+/**
+ * 分镜行时长软校验（纯函数，2026-09-23）：
+ * shots.md 的「时长规则」要求时长与内容匹配，但此前程序侧零校验——
+ * LLM 心算失误或手改过小时，台词会被挤到镜头时长之外直接丢掉
+ * （时长不够的视频里，台词/笑声都会被截）。只提示、不拦截、不覆盖手改。
+ *
+ * 校验三条（对应 shots.md「时长规则」）：
+ *   1) 台词：字数 ÷ 4.5 字/秒 + 起止停顿 1s（对白行「说话人名：台词」，只计台词正文）
+ *   2) 台词外发声表演（大笑/痛哭/惊呼/喘息…）：每段 +2s
+ *   3) 复合运镜（camera 出现 ≥2 个运镜动词，或「随后/然后/再」衔接两段运镜）：建议 ≥6s
+ * @param {object} s 单个镜头 { dur, dialogue, camera, action }
+ * @returns {Array<string>} 违规说明列表，空数组 = 通过
+ */
+export function durWarnings(s) {
+  const o = s || {}
+  const dur = Math.round(Number(o.dur) || 0)
+  const out = []
+  if (!dur) return out
+
+  // 台词正文字数：跳过「说话人名：」前缀，汉字每字记 1，连续英数串记 1
+  let chars = 0
+  for (const ln of String(o.dialogue || '').split(/\r?\n/)) {
+    const line = ln.trim()
+    if (!line) continue
+    const body = line.indexOf('：') >= 0 ? line.slice(line.indexOf('：') + 1) : line
+    const cjk = (body.match(/[\u4e00-\u9fa5]/g) || []).length
+    const lat = (body.match(/[A-Za-z0-9]+/g) || []).length
+    chars += cjk + lat
+  }
+  // 发声表演段数（大笑、痛哭这类有明确声源的发声，只写画面动词=无声）
+  const act = String(o.action || '')
+  const sounds = (act.match(/大笑|狂笑|痛哭|哭喊|嚎啕|惊呼|尖叫|喘息|抽泣|呜咽|长叹/g) || []).length
+
+  let need = 0
+  if (chars > 0) need += Math.ceil(chars / 4.5) + 1
+  if (sounds > 0) need += sounds * 2
+  if (need > 0 && dur < need) {
+    const why = []
+    if (chars > 0) why.push('台词约 ' + chars + ' 字')
+    if (sounds > 0) why.push(sounds + ' 段发声表演')
+    out.push(why.join(' + ') + ' ≈ 至少需 ' + need + 's（当前 ' + dur + 's），声音会被截')
+  }
+
+  // 复合运镜：≥2 个不同运镜动词，或用「随后/然后/再」衔接两段运镜
+  const cam = String(o.camera || '')
+  const verbs = new Set((cam.match(/推|拉|摇|移|跟|环绕|甩|升降/g) || []))
+  const compound = verbs.size >= 2 || /随后|然后|，再|、再/.test(cam)
+  if (compound && dur < 6) {
+    out.push('复合运镜（' + cam.slice(0, 20) + (cam.length > 20 ? '…' : '') + '）建议 ≥6s（当前 ' + dur + 's）')
+  }
+  return out
+}

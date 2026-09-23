@@ -3,7 +3,7 @@
     <div v-if="busy" class="progress"><div class="bar indeterminate"></div></div>
 
     <!-- 镜头格 × N + 成片格 × 1：格子数跟着镜头数走（10 个镜头就是 10 个格子 + 1 个成片格）。
-         已「采用」的镜头在对应格子里显示那版视频；未采用的显示「待采用」占位符。
+         已选中的镜头在对应格子里显示那版视频；还没生成的显示「待生成」占位符。
          成片格在组装完成后显示最终成片（只显示最新一版；历史成片仍留在磁盘上，可用「打开所在文件夹」查看）。 -->
     <div v-if="cells.length || films.length" class="film-grid">
       <div v-for="c in cells" :key="'s' + c.i" class="vcard" :class="{ confirmed: c.confirmed }">
@@ -11,13 +11,21 @@
           <video v-if="c.path && srcMap[c.path]" :src="srcMap[c.path]" controls></video>
           <div v-else class="ph">
             <span v-if="c.path && loadingSrc[c.path]" class="busy-txt"><i class="spin"></i>加载中…</span>
-            <template v-else>镜头 {{ c.i + 1 }}<br>{{ c.confirmed ? '加载中…' : '待采用' }}</template>
+            <template v-else>镜头 {{ c.i + 1 }}<br>{{ c.confirmed ? '加载中…' : '待生成' }}</template>
           </div>
         </div>
         <div class="vmeta">
-          <b>镜头 {{ c.i + 1 }}</b>
-          <span v-if="c.confirmed" class="gen-ms">已采用</span>
-          <div class="hint" style="margin-top:3px">{{ c.chars ? c.chars + ' · ' : '' }}{{ c.dur }}s<template v-if="c.file"> · {{ c.file }}</template></div>
+          <!-- 第 1 行：镜头号 · 角色 · 场景；第 2 行：时长 · 分辨率 · 生成耗时 -->
+          <div class="vm-l1">
+            <b>镜头 {{ c.i + 1 }}</b>
+            <span v-if="c.chars">{{ c.chars }}</span>
+            <span v-if="c.scene" class="vm-scene">{{ c.scene }}</span>
+          </div>
+          <div class="vm-l2">
+            <span>{{ c.dur }}s</span>
+            <span>{{ resText(c.res) }}</span>
+            <span v-if="c.genMs" class="gen-ms">耗时 {{ fmtMs(c.genMs) }}</span>
+          </div>
         </div>
       </div>
 
@@ -26,35 +34,45 @@
           <video v-if="latest && srcMap[latest.path]" :src="srcMap[latest.path]" controls></video>
           <div v-else class="ph">
             <span v-if="latest && loadingSrc[latest.path]" class="busy-txt"><i class="spin"></i>加载中…</span>
-            <template v-else>成片<br>{{ busy ? '组装中…' : (exportable ? '即将自动开始组装…' : '待采用全部镜头') }}</template>
+            <template v-else>成片<br>{{ busy ? '组装中…' : (exportable ? '点「导出成片」开始组装' : '待选齐全部镜头') }}</template>
           </div>
         </div>
         <div class="vmeta">
-          <b>成片</b>
-          <span v-if="latest && latest.elapsedMs" class="gen-ms">耗时 {{ fmtMs(latest.elapsedMs) }}</span>
-          <div class="hint" style="margin-top:3px">
-            {{ latest ? fmtTime(latest.mtimeMs) + ' · ' + res(latest) + (latest.size ? ' · ' + fmtSize(latest.size) : '') : '整集拼接后的最终成片' }}
+          <!-- 第 1 行：成片 · 生成时间；第 2 行：时长 · 分辨率 · 导出耗时 -->
+          <div class="vm-l1">
+            <b>成片</b>
+            <span v-if="latest">{{ fmtTime(latest.mtimeMs) }}</span>
+            <span v-else class="hint">整集拼接后的最终成片</span>
+          </div>
+          <div class="vm-l2" v-if="latest">
+            <span>{{ durText(latest) }}</span>
+            <span>{{ res(latest) }}</span>
+            <span v-if="latest.elapsedMs" class="gen-ms">耗时 {{ fmtMs(latest.elapsedMs) }}</span>
           </div>
         </div>
       </div>
     </div>
 
-    <div v-if="!cells.length && !films.length" class="placeholder">本集还没有镜头；请先在第 4 块生成分镜、生成视频并「采用」。</div>
+    <div v-if="!cells.length && !films.length" class="placeholder">本集还没有镜头；请先在第 4 块生成分镜、生成视频。</div>
 
     <!-- 操作条：提示文字靠左，按钮统一靠右 -->
     <div class="ops-bar">
-      <span class="hint">拼接全部已采用镜头 → 统一 {{ outRes.replace('x', '×') }} → 对白字幕烧录 → 导出 MP4；每次导出的成片都保存在 项目/成片/集名/（本块只显示最新一版）</span>
+      <span class="hint">拼接全部已选中镜头 → 统一 {{ outRes.replace('x', '×') }} → 按勾选烧录对白字幕 → 导出 MP4；每次导出的成片都保存在 项目/成片/集名/（本块只显示最新一版）</span>
       <span style="flex:1"></span>
       <label class="res-lab">输出分辨率
         <select class="res-sel" v-model="outRes" :disabled="busy" @change="onRes">
           <option v-for="o in outOpts" :key="o.value" :value="o.value">{{ o.label }}</option>
         </select>
       </label>
+      <!-- 添加字幕：勾选 → 导出时烧录对白字幕；不勾 → 成片不带字幕。按集记住（存在 videos.json 的 opts） -->
+      <label class="res-lab subs-lab" title="勾选后导出的成片会烧录对白字幕；不勾则不加任何字幕">
+        <input type="checkbox" v-model="subsEnabled" :disabled="busy" @change="onSubs" /> 添加字幕
+      </label>
       <button class="btn" :class="{ regen: !!exportFile }" :disabled="busy || !exportable" @click="exportFilm">
         <span v-if="busy" class="busy-txt"><i class="spin"></i>导出中…</span>
-        <span v-else>{{ exportFile ? '重新导出成片' : '组装成片' }}</span>
+        <span v-else>导出成片</span>
       </button>
-      <button class="btn ghost" v-if="films.length" @click="reveal">打开所在文件夹</button>
+      <button class="btn sec" v-if="films.length" @click="reveal">打开所在文件夹</button>
     </div>
   </div>
 </template>
@@ -75,7 +93,7 @@ export default {
     ep() { return this.st.current },
     shots() { return this.ep ? this.ep.shots : [] },
     videoState() { return this.ep ? this.ep.videoState : {} },
-    /** 镜头格：一格一个镜头。已「采用」→ 带上该版本视频的绝对路径；未采用 → path 为 null（显示占位符） */
+    /** 镜头格：一格一个镜头。已选中的版本 → 带上该版本视频的绝对路径；否则 path 为 null（显示占位符） */
     cells() {
       const dir = this.ep ? this.ep.shotDir : ''
       return this.shots.map((s, i) => {
@@ -84,13 +102,14 @@ export default {
         return {
           i, confirmed: !!v.confirmed, file,
           path: file && dir ? dir + '\\' + file : null,
-          chars: s.chars || '', dur: s.dur || 8
+          chars: s.chars || '', scene: s.scene || '', dur: s.dur || 8,
+          res: v.res || '', genMs: v.genMs || 0
         }
       })
     },
     /** 成片格显示最新一版成片（listMedia 按生成时间倒序） */
     latest() { return this.films.length ? this.films[0] : null },
-    /** 「已采用镜头」的路径串（只用于 watch：变了就补读 base64） */
+    /** 「已选中镜头」的路径串（只用于 watch：变了就补读 base64） */
     cellPaths() { return this.cells.map(c => c.path || '').join('|') },
     exportable() {
       return this.shots.length > 0 && this.shots.every((_, i) => this.videoState[i] && this.videoState[i].confirmed)
@@ -105,6 +124,15 @@ export default {
         list.unshift({ value: this.outRes, label: w + '×' + h + '（' + (w / d) + ':' + (h / d) + '）' })
       }
       return list
+    },
+    /** 添加字幕勾选状态：按集记住（存 videos.json 的 opts.subs；缺省 = 勾选，保持历史行为） */
+    subsEnabled: {
+      get() { const o = (this.videoState || {}).opts; return o ? o.subs !== false : true },
+      set(v) {
+        if (!this.ep) return
+        if (!this.videoState.opts) this.videoState.opts = {}
+        this.videoState.opts.subs = !!v
+      }
     }
   },
   watch: {
@@ -116,20 +144,22 @@ export default {
       this.loadList()   // 换集/重启恢复后都要重扫本集成片
       this.syncCells()
     },
-    // 采用的版本变了 → 对应镜头格子立刻换成那版视频
-    'pl.active'(v) { if (v === 6) { this.autoStart(); this.syncCells() } },
-    // 已采用镜头的路径集合变化（在上一块重新「采用」/取消采用）→ 补齐 base64 预览
+    // 进块 → 补齐镜头格 base64 预览（组装已改手动：不再自动开始导出）
+    'pl.active'(v) { if (v === 6) this.syncCells() },
+    // 已选中镜头的路径集合变化（在上一块点选了别的版本）→ 补齐 base64 预览
     'cellPaths'() { this.syncCells() }
   },
   created() {
     if (this.ep) { this.exportFile = this.ep.exportFile || null; this.outRes = (this.ep.res && this.ep.res.out) || '1920x1080'; this.loadList() }
-    // 启动时就停留在第 7 块（且还没出过成片）→ 也自动组装
-    if (this.pl.active === 6) this.autoStart()
     this.syncCells()
   },
   methods: {
+    fmtMs,   // 🔴 必须注册进 methods：模板看不到模块作用域的导入（曾因漏注册 → 成片格一渲染就抛
+             //     "fmtMs is not a function" → 整个组件卸载 → 组装成片模块全空白，重启也无法恢复）
     /** 切换输出分辨率：只影响本集后续导出 */
     onRes() { this.st.setEpisodeRes('out', this.outRes) },
+    /** 切换「添加字幕」：落库到 videos.json 的 opts（StageShots 的 saveVideos 会原样带过这个键） */
+    async onSubs() { await this.st.saveArtifact('videoState', this.ep.videoState) },
     async loadList() {
       if (!this.ep) return
       const dir = this.ep.filmDir   // <项目>/成片/<集>/
@@ -142,7 +172,7 @@ export default {
         films.forEach(it => { if (!this.srcMap[it.path]) this.loadVideo(it) })
       } catch (e) { this.st.fail(e) }
     },
-    /** 给「已采用镜头」的视频补读 base64（进模块即后台加载，加载完格子直接显示播放控件） */
+    /** 给「已选中镜头」的视频补读 base64（进模块即后台加载，加载完格子直接显示播放控件） */
     syncCells() {
       for (const c of this.cells) if (c.path) this.loadVideo({ path: c.path })
     },
@@ -169,13 +199,13 @@ export default {
       return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
     },
     res(it) { return it.width ? it.width + '×' + it.height : '未知' },
+    /** 镜头格第 2 行的分辨率：该镜头生成视频时选的档位（未生成显示 —） */
+    resText(v) { return v ? String(v).replace(/x/i, '×') : '—' },
+    /** 成片时长：主进程用 ffprobe 实测的 durationSec */
+    durText(f) { const d = f && f.durationSec; return d ? d.toFixed(1) + 's' : '—' },
     fmtSize(bytes) {
       const mb = bytes / 1024 / 1024
       return mb >= 1 ? mb.toFixed(1) + ' MB' : (bytes / 1024).toFixed(0) + ' KB'
-    },
-    autoStart() {
-      if (this.busy || this.exportFile || !this.exportable) return
-      this.exportFilm()
     },
     async exportFilm() {
       this.busy = true
@@ -190,7 +220,7 @@ export default {
         const outDir = this.ep.filmDir   // <项目>/成片/<集>/
         const outName = this.ep.name + '_' + Date.now()
         const [rw, rh] = parseRes(this.outRes)
-        const out = await window.studio.exportVideo({ outDir, outName, videos, subtitles: true, width: rw, height: rh })
+        const out = await window.studio.exportVideo({ outDir, outName, videos, subtitles: this.subsEnabled, width: rw, height: rh })
         this.exportFile = out.split('\\').pop()
         this.pl.markGen(6, Date.now() - t0)
         this.st.invalidateMedia(this.ep.projectId, 'films')   // 左侧树「成片」下次展开刷新

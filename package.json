@@ -29,7 +29,7 @@
   },
   "build": {
     "appId": "com.dragon.comicstudio",
-    "productName": "飞鱼AI漫剧",
+    "productName": "飞鱼AI短剧 Studio",
     "files": [
       "dist/**/*",
       "electron/**/*"

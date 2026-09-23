@@ -4,17 +4,24 @@
     <!-- 脏标记（章节改过 → 建议重新改编）已统一显示在本模块标题后面，见 App.vue 的 stage-head -->
     <textarea v-model="adapted" rows="12" :placeholder="chapter ? '点击下方「生成改编稿」，LLM 将基于本章内容生成改编稿' : '请先在第 1 块粘贴章节原文'"></textarea>
 
-    <!-- 操作条：左侧字数 + 耗时（与章节输入模块一致），按钮统一靠右紧挨「生成分镜」 -->
+    <!-- 操作条：按钮统一靠右；耗时紧贴「生成分镜」按钮左边
+         （字数已上移到本模块标题行右侧，见 App.vue 的 #adapt-count） -->
     <div class="ops-bar">
-      <span class="hint">{{ adapted.trim().length }} 字</span>
-      <span v-if="pl.timeText(1)" class="gen-ms" :class="{ live: pl.genStartAt[1] }">{{ pl.timeText(1) }}</span>
       <span style="flex:1"></span>
       <button v-if="!adapted.trim()" class="btn" :disabled="busy || !chapter" @click="generate">
         <span v-if="busy" class="busy-txt"><i class="spin"></i>改编中…</span>
         <span v-else>生成改编稿</span>
       </button>
+      <span v-if="pl.timeText(1)" class="gen-ms" :class="{ live: pl.genStartAt[1] }">{{ pl.timeText(1) }}</span>
       <button class="btn" :disabled="!adapted.trim() || busy" @click="nextToShots">生成分镜</button>
     </div>
+
+    <!-- 字数胶囊：Teleport 到本模块标题行右侧（App.vue 的 #adapt-count）。
+         🔴 与批量按钮同理：块 2 的 <section :key> 切集时整棵子树先在脱离文档的内存里挂载，
+         mounted 前 document.querySelector('#adapt-count') 必然落空 → 必须等 nextTick 再渲染 -->
+    <Teleport v-if="tpReady" to="#adapt-count">
+      <span class="head-ms" title="改编稿字数">{{ adapted.trim().length }} 字</span>
+    </Teleport>
   </div>
 </template>
 
@@ -42,7 +49,7 @@ const FALLBACK = IDENTITY + '\n' + CONTRACT + `
 
 export default {
   name: 'StageAdapt',
-  data() { return { adapted: '', busy: false } },
+  data() { return { adapted: '', busy: false, tpReady: false } },
   computed: {
     st() { return useProjectStore() },
     pl() { return usePipeline() },
@@ -61,6 +68,11 @@ export default {
   created() {
     // 组件可能晚于标记置位才挂载（换集重挂载）：挂载时兜底检查一次
     if (this.pl.autoAdapt) { this.pl.autoAdapt = false; this.tryAutoAdapt() }
+  },
+  mounted() {
+    // 🔴 标题行的字数胶囊靠 Teleport 挂到 App.vue 的 #adapt-count：必须等 DOM 真正插入文档后再渲染，
+    //    否则切集重挂载时 querySelector('#adapt-count') 落空 → 内容被静默丢弃（标题行看不到字数）
+    this.$nextTick(() => { this.tpReady = true })
   },
   methods: {
     /** 记录「本次改编基于哪个章节版本」+ 清除用户点击的确认 */

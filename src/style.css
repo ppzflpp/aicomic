@@ -1,5 +1,5 @@
 /* ============================================================
-   飞鱼AI漫剧 — Design System v3（暗黑主题 · 黑 + 蓝）
+   飞鱼AI短剧 Studio — Design System v3（暗黑主题 · 黑 + 蓝）
    结构：自绘标题栏 + 深色菜单栏 + 深色工作区
    ============================================================ */
 :root{
@@ -184,12 +184,23 @@ body{
 .shot-row.sel{border-color:rgba(56,189,248,.55); background:linear-gradient(180deg,#1b2536 0%,#172130 100%);
   box-shadow:0 0 0 1px rgba(56,189,248,.22);}
 .shot-row .zone-tag{font-size:10px; font-weight:600; letter-spacing:.14em; color:var(--sub-2); margin-bottom:7px;}
+/* 「分镜」tag：亮色填充块（用户要求明显区分），与灰字镜头号/时拉形成层级 */
+.shot-row .zone-1 .zone-tag{
+  color:#04101f; background:var(--grad); border-radius:6px; padding:2px 9px;
+  box-shadow:0 0 8px rgba(56,189,248,.3); margin-bottom:0;
+}
 /* 行高固定：以中间的「H3 提示词」区为基准（其提示词文本域锁死 6 行高）。
    左「分镜」/ 右「视频生成」都拉齐到同一高度，内容超出各自内部滚动，谁也不撑高整行。 */
 .shot-row .zone-1,.shot-row .zone-2,.shot-row .zone-3{min-width:0;}
 .shot-row .zone-1{display:flex; flex-direction:column; gap:7px; height:100%; min-height:0; overflow-y:auto;}
-.shot-row .zone-2{display:flex; flex-direction:column; gap:7px;}
+.shot-row .zone-2{display:flex; flex-direction:column; gap:7px; height:100%; min-height:0;}
 .shot-row .zone-2 .f{flex:0 0 auto;}
+/* H3 提示词框：高度自适应，占满本区剩余空间（整行高度仍由 grid 决定，内容超出在框内滚动） */
+.shot-row .zone-2 .f.ta-main{flex:1 1 auto; min-height:0; display:flex; flex-direction:column;}
+.shot-row .zone-2 .f.ta-main textarea{flex:1 1 auto; min-height:130px; height:auto;}
+/* 视频分辨率挪到本区底部（「生成视频」按钮左边）：去掉上外边距、与按钮同排对齐 */
+.shot-row .zone-2 .zone-foot .card-res{flex:0 0 auto; margin:0;}
+.shot-row .zone-2 .zone-foot .card-res select{max-width:126px;}
 /* 提示词区上方的镜头摘要：强制单行 —— 长对白若换行会把整行撑高，行高就不固定了 */
 .shot-row .zone-2 .vmeta .hint{
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%;
@@ -220,11 +231,12 @@ body{
   border-bottom:1px solid var(--line-soft);
 }
 .s-num{
-  width:24px; height:24px; border-radius:8px; background:rgba(255,255,255,.05);
-  display:flex; align-items:center; justify-content:center; font-size:11.5px;
-  font-weight:600; color:var(--sub); flex-shrink:0; transition:all .22s;
+  width:34px; height:34px; border-radius:10px; background:var(--grad);
+  display:flex; align-items:center; justify-content:center; font-size:18px;
+  font-weight:800; color:#04101f; flex-shrink:0; transition:all .22s;
+  box-shadow:0 0 12px rgba(56,189,248,.35);
 }
-.stage.done .s-num{background:var(--grad); color:#04101f; box-shadow:0 0 14px rgba(56,189,248,.45);}
+.stage.done .s-num{background:var(--grad); color:#04101f; box-shadow:0 0 18px rgba(56,189,248,.6);}
 .s-title{font-size:14px; font-weight:600; letter-spacing:.01em; color:#e2e8f2;}
 /* 模块标题后面的脏标签（统一位置：App.vue 的 stage-head；窄卡片时允许折行） */
 .stage-head .stale{flex-shrink:1; min-width:0; white-space:normal; line-height:1.45;}
@@ -421,6 +433,12 @@ input[type=search]:focus{
   border:1px solid rgba(56,189,248,.2); border-radius:6px; padding:1px 7px;
   font-variant-numeric:tabular-nums;
 }
+/* 时长软校验 ⚠（台词/发声/复合运镜与 dur 不匹配；只提示不拦截，见 promptlib.durWarnings） */
+.shot-row .dur-warn{
+  font-size:11px; color:#f5c66d; background:rgba(245,198,109,.09);
+  border:1px solid rgba(245,198,109,.28); border-radius:6px; padding:1px 7px;
+  cursor:help; white-space:nowrap;
+}
 .scard .f{display:flex; flex-direction:column; gap:4px; min-width:0;}
 .scard .f label{font-size:10.5px; color:#7c8798; letter-spacing:.04em;}
 .scard .row2{display:grid; grid-template-columns:1fr 88px; gap:9px;}
@@ -430,19 +448,37 @@ input[type=search]:focus{
 .del-btn:hover{opacity:1;}
 
 /* ---- 角色卡片 ---- */
-/* 「角色 & 场景」：模块内分组标题（脏标签统一移到模块标题行，见 App.vue 的 stage-head） */
+/* 「角色 & 场景」：卡片网格（模块内不再有分组标题行，与模块标题栏区分） */
 .grp{margin-bottom:18px;}
 .grp .char-grid{margin-bottom:0;}
-.grp-head{display:flex; align-items:baseline; gap:10px; margin:0 0 10px; font-size:13px; color:#e2e8f2;}
-.grp-head b{font-size:13.5px; letter-spacing:.3px;}
-.grp-head .hint{font-size:11.5px;}
 .kind-tag{
   font-size:11px; font-weight:600; border-radius:99px; padding:2px 8px; margin-right:5px;
   color:#93c5fd; background:rgba(59,130,246,.14); border:1px solid rgba(59,130,246,.28);
 }
 .kind-tag.scene{color:#c4b5fd; background:rgba(139,92,246,.16); border-color:rgba(139,92,246,.32);}
-/* 大预览图左上角的类型标签（绝对定位版） */
-.kind-tag-pos{position:absolute; left:6px; top:6px; z-index:2;}
+/* 大预览图左上角的角标：名称与定位各一枚独立徽标（外层 .kind-wrap 绝对定位，内部横向排列、分开显示）。
+   字号与卡片里的「分辨率」标签同号（11.5px），并加深色半透明底 + 毛玻璃 —— 压在图上也要看得清 */
+.kind-wrap{
+  position:absolute; left:6px; top:6px; z-index:2;
+  display:flex; align-items:flex-start; gap:5px; flex-wrap:wrap;
+  max-width:calc(100% - 12px);
+}
+.kind-tag-pos{
+  font-size:11.5px; font-weight:600; line-height:1.3;
+  padding:3px 9px; border-radius:99px;
+  color:#dbeafe; background:rgba(11,16,25,.74);
+  border:1px solid rgba(59,130,246,.45);
+  backdrop-filter:blur(5px);
+}
+.kind-tag-pos.scene{color:#ece4ff; border-color:rgba(167,139,250,.5);}
+/* 定位徽标：独立一枚、弱一档（底色更淡），与名称徽标一眼可分 */
+.role-tag-pos{
+  font-size:11.5px; font-weight:600; line-height:1.3;
+  padding:3px 9px; border-radius:99px;
+  color:#c7d2fe; background:rgba(11,16,25,.6);
+  border:1px solid rgba(129,140,248,.42);
+  backdrop-filter:blur(5px);
+}
 .char-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(430px,1fr)); gap:14px;}
 /* 卡片左右结构：左大预览图（按原图比例完整显示）+ 右参数列（生图按钮固定右下角） */
 .ccard{
@@ -452,6 +488,11 @@ input[type=search]:focus{
   transition:box-shadow .22s, border-color .22s;
 }
 .ccard:hover{box-shadow:var(--sh-md); border-color:#2b3646;}
+/* 卡片按类型配色（角色=蓝调 / 场景=紫调）：不用看文字也能分辨这是两类不同的东西 */
+.ccard.character{border-color:rgba(59,130,246,.3); background:linear-gradient(180deg,rgba(37,99,235,.14) 0%,#131822 64%);}
+.ccard.character:hover{border-color:rgba(96,165,250,.55);}
+.ccard.scene{border-color:rgba(139,92,246,.34); background:linear-gradient(180deg,rgba(124,58,237,.16) 0%,#131822 64%);}
+.ccard.scene:hover{border-color:rgba(167,139,250,.6);}
 .cleft{display:flex; flex-direction:column; gap:8px; min-width:0;}
 .bigprev{
   position:relative; flex:1; min-height:240px; border-radius:var(--r-sm); overflow:hidden;
@@ -463,17 +504,36 @@ input[type=search]:focus{
 .bigprev .ph{font-size:36px; color:#2f3949;}
 .cright{display:flex; flex-direction:column; gap:7px; min-width:0;}
 .cright .f label{font-size:10.5px; color:#7c8798; letter-spacing:.04em; display:block; margin-bottom:2px;}
-/* 档案区（角色档案 / 场景档案）：标题行 + 右侧「生成提示词」按钮 + 脏标记，下面是档案文本框 */
-.pf-head{display:flex; align-items:center; gap:7px; margin-bottom:3px;}
+/* 档案区（角色档案 / 场景档案）：在左列（大预览图下方）；标题行 + 右侧「生成提示词」按钮 + 脏标记 */
+.pf-head{display:flex; align-items:center; gap:7px; margin-bottom:3px; flex-wrap:wrap;}
 .pf-head label{margin-bottom:0 !important;}
 .pf-head .btn.sm{flex-shrink:0; white-space:nowrap;}
 .pf-head .stale{font-size:10.5px; padding:2px 8px;}
-.pf-box textarea{line-height:1.55; font-size:11.5px;}
+/* 档案 / 正向 / 负向三个框：宽高固定（宽度=所在列宽），内容超出出滚动条 */
+.pf-box textarea{line-height:1.55; font-size:11.5px; height:150px; overflow-y:auto;}
+.ta-prompt textarea{height:112px; overflow-y:auto;}
+.ta-neg textarea{height:72px; overflow-y:auto;}
 .pg-ms{font-size:10.5px; color:#7c8798; white-space:nowrap;}
 .pg-ms.live{color:#5eead4;}
+/* 正向提示词标题行：标题 + 右侧「刷新提示词」图标按钮（琥珀色、纯图标、悬停有提示）；
+   与下方提示词框之间留一点空隙（margin-bottom），不要贴着 */
+.ta-head{display:flex; align-items:center; gap:7px; margin-bottom:5px;}
+.ta-head label{margin-bottom:0 !important;}
+.ta-head .btn.icon{
+  flex-shrink:0; width:18px; height:18px; padding:0; border-radius:50%;
+  box-shadow:0 2px 8px rgba(245,158,11,.26);
+}
+.ta-head .btn.icon:hover:not(:disabled){
+  box-shadow:0 0 0 3px rgba(245,158,11,.16), 0 3px 10px rgba(245,158,11,.45);
+}
+.ta-head .btn.icon svg{width:10px; height:10px;}
 .ops-row{margin-top:auto; display:flex; align-items:center; justify-content:flex-end; gap:8px;}
-/* 「一键填充」独立一行、靠左（右下角的「生图 / 图生图」按钮位置保持不动） */
+/* 出图耗时：紧贴「生图」按钮左边 */
+.ops-row .gen-ms{margin-right:2px;}
+/* 「一键填充」独立一行、靠左（右下角的「生图 / 图生图」按钮位置保持不动）；
+   2026-09-23：缩成小号胶囊 + 字号再收一档，更精致 */
 .cops.fill-row{justify-content:flex-start; margin-top:2px;}
+.cops.fill-row .btn{padding:3px 9px; font-size:10.5px; line-height:1.35; border-radius:99px; box-shadow:0 2px 10px rgba(34,197,94,.26);}
 .char-img{
   position:relative; width:100%; aspect-ratio:2/3;
   background:radial-gradient(circle at 50% 30%,rgba(59,130,246,.14),rgba(10,13,19,.9));
@@ -493,6 +553,8 @@ input[type=search]:focus{
   border:1px solid rgba(59,130,246,.28);
   border-radius:99px; padding:2px 9px; margin-left:5px; font-weight:500;
 }
+/* 2026-09-23：图下方的名称行（角色名 + 角色定位）已从卡片里删除 ——
+   名称与定位只在图左上角的 .kind-tag-pos 角标上显示一次；上面两条规则保留备用 */
 .ccard textarea{font-size:12px;}
 .thumbs{display:flex; gap:6px;}
 .thumbs img{
@@ -516,9 +578,48 @@ input[type=search]:focus{
 /* 第5块 组装成片：N 个镜头格（镜头数决定）+ 1 个成片格，同一套网格 */
 .film-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px;}
 .film-grid .vcard .vmeta b{font-size:12.5px; color:#e2e8f2;}
-/* 成片格：紫色描边与镜头格区分（导出成功后跟随 .confirmed 变绿） */
-.film-grid .vcard.film-card{border-color:rgba(167,139,250,.35);}
-.film-grid .vcard.film-card .vmeta b{color:#c4b1f8;}
+/* 成片 / 镜头格的两行文案（2026-09-23）：
+   第 1 行 = 主体（镜头号 · 角色 · 场景 ／ 成片 · 生成时间）；第 2 行 = 参数（时长 · 分辨率 · 耗时）。
+   2026-09-23 二改：每个元素都做成小徽标（浅底胶囊 + 描边），一行排开，信息一眼可扫 */
+.film-grid .vcard .vm-l1{display:flex; align-items:center; gap:6px; flex-wrap:wrap; min-width:0;}
+.film-grid .vcard .vm-l1 b{flex-shrink:0;}
+.film-grid .vcard .vm-l1 > span,
+.film-grid .vcard .vm-l2 > span{
+  font-size:11px; line-height:1.3; color:#c3cddd;
+  padding:2px 8px; border-radius:99px;
+  background:rgba(255,255,255,.055); border:1px solid rgba(255,255,255,.09);
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+/* 第 1 行首枚（镜头 N / 成片）：蓝色徽标，作主体标识 */
+.film-grid .vcard .vm-l1 b{
+  font-size:11.5px; color:#dbeafe;
+  padding:2px 9px; border-radius:99px;
+  background:rgba(59,130,246,.2); border:1px solid rgba(59,130,246,.36);
+}
+.film-grid .vcard .vm-l1 .vm-scene{color:#c7d2fe; background:rgba(99,102,241,.2); border-color:rgba(129,140,248,.36);}
+.film-grid .vcard .vm-l1 .hint{color:#9aa5b6; background:rgba(255,255,255,.04); font-size:11px;}
+.film-grid .vcard .vm-l2{
+  display:flex; align-items:center; gap:6px; margin-top:6px; flex-wrap:wrap;
+  font-variant-numeric:tabular-nums;
+}
+.film-grid .vcard .vm-l2 .gen-ms{color:#8b95a9; background:rgba(255,255,255,.04);}
+/* 成片格：金色（亮色）—— 与镜头格形成明显反差，一眼看出这是最终成片 */
+.film-grid .vcard.film-card{
+  border-color:rgba(251,191,36,.55);
+  background:linear-gradient(180deg,rgba(251,191,36,.16) 0%,rgba(38,30,14,.95) 66%);
+  box-shadow:0 0 0 1px rgba(251,191,36,.18), 0 6px 20px rgba(251,191,36,.12);
+}
+.film-grid .vcard.film-card:hover{border-color:rgba(252,211,77,.85);}
+.film-grid .vcard.film-card.confirmed{
+  border-color:rgba(251,191,36,.72);
+  background:linear-gradient(180deg,rgba(251,191,36,.2) 0%,rgba(38,30,14,.95) 66%);
+}
+.film-grid .vcard.film-card .vmeta b{color:#fcd34d;}
+/* 成片格首枚徽标（「成片」）改成金色徽标，与镜头格的蓝色徽标形成反差 */
+.film-grid .vcard.film-card .vm-l1 b{
+  color:#fde68a; background:rgba(251,191,36,.22); border-color:rgba(251,191,36,.45);
+}
+.film-grid .vcard.film-card .video-box{background:radial-gradient(circle at 50% 50%,#241d10,#0d0a05);}
 .video-box .ph.ph-play{cursor:pointer; color:#aab4c8; font-size:14px;}
 .video-box .ph.ph-play:hover{color:#fff;}
 .vcard{
@@ -539,6 +640,9 @@ input[type=search]:focus{
   overflow:hidden; display:flex; align-items:center; justify-content:center;
 }
 .video-box video{width:100%; height:100%; object-fit:contain; background:#070a10;}
+/* 防误播遮挡层：盖住画面区、底部 42px 留给视频自带控制条（点播放按钮才播）；
+   点遮挡层 = 选中该版本（事件冒泡到 .video-box 的 @click） */
+.video-box .vid-shield{position:absolute; left:0; right:0; top:0; bottom:42px; z-index:3; cursor:pointer;}
 /* 分镜行视频区：固定 2 个等高槽位（标题 / 文案 / 采用按钮之外的空间平分），
    每槽一个 16:9 播放框（视频按 contain 完整显示）；只有 1 个视频时占第 1 槽、第 2 槽留空。 */
 .vid-stack{display:flex; flex-direction:column; gap:8px;}
@@ -550,6 +654,8 @@ input[type=search]:focus{
 /* 播放框按列宽撑满、高度由 16:9 反推（槽位比它高时上下留白居中）；
    必须让宽度主导比例 —— 用 height:100% 反推宽度会被 max-width 夹断，比例失真（实测 1.61） */
 .shot-row .zone-3 .video-box{width:100%; aspect-ratio:16/9; max-height:100%; margin:auto;}
+/* 「添加字幕」勾选框：与输出分辨率同排同风格 */
+.subs-lab input{accent-color:#38bdf8; margin-right:5px; cursor:pointer;}
 .zone-3 .vops{justify-content:flex-end; margin-top:auto; padding-top:8px;}
 .video-box.cur{border-color:rgba(56,189,248,.7); box-shadow:0 0 0 1px rgba(56,189,248,.25);}
 .vid-ver{
@@ -653,13 +759,28 @@ input[type=search]:focus{
 .lp-auto{display:flex; align-items:center; gap:4px; cursor:pointer; user-select:none; white-space:nowrap; flex-shrink:0;}
 .lp-head .btn{white-space:nowrap; flex-shrink:0;}
 
-/* ================= 生成中状态（转圈） ================= */
-/* 「重新生成」类按钮统一绿色 —— 一眼区分「首次生成」与「再来一次」 */
-.btn.regen{
+/* ================= 按钮配色体系（2026-09-23 统一） =================
+   蓝（.btn 默认）  = 各模块的顶级功能：改编 / 生图 / 生成视频 / 批量生成 / 导出成片
+   绿（.btn.sec）   = 次级功能：一键填充、打开所在文件夹、添加素材等
+   琥珀（.btn.icon）= 图标类功能按钮（刷新提示词…），只放图标不放文字
+   红（.btn.danger）= 破坏性操作（删除图片 / 停止批量） */
+.btn.sec{
   background:linear-gradient(135deg,#15803d,#22c55e); color:#03170b;
   box-shadow:0 4px 16px rgba(34,197,94,.36);
 }
-.btn.regen:hover:not(:disabled){filter:brightness(1.08); box-shadow:0 6px 22px rgba(34,197,94,.5);}
+.btn.sec:hover:not(:disabled){filter:brightness(1.08); box-shadow:0 6px 22px rgba(34,197,94,.5);}
+.btn.icon{
+  background:linear-gradient(135deg,#b45309,#f59e0b); color:#241300;
+  display:inline-flex; align-items:center; justify-content:center;
+  box-shadow:0 4px 14px rgba(245,158,11,.32);
+}
+.btn.icon:hover:not(:disabled){filter:brightness(1.1); box-shadow:0 6px 18px rgba(245,158,11,.5);}
+/* 顶级功能按钮在「已有内容、点了会重做」时的加强态：仍是蓝色，改用亮描边 + 更强辉光
+   （绿色已征用为「次级功能」的标识色，不再表示「再来一次」） */
+.btn.regen{
+  box-shadow:0 0 0 1.5px rgba(125,211,252,.55), 0 6px 20px rgba(56,189,248,.45);
+}
+.btn.regen:hover:not(:disabled){filter:brightness(1.08); box-shadow:0 0 0 1.5px rgba(125,211,252,.78), 0 8px 26px rgba(56,189,248,.6);}
 .btn.danger{
   background:linear-gradient(135deg,#b91c1c,#ef4444); color:#1a0505;
   box-shadow:0 4px 16px rgba(239,68,68,.36);
@@ -753,7 +874,7 @@ input[type=search]:focus{
   display:flex; align-items:center; justify-content:center; text-align:center; line-height:1.3;
   transition:border-color .14s, color .14s, background .14s;
 }
-.ref-add:hover{border-color:rgba(96,165,250,.6); color:#e8f1ff; background:rgba(59,130,246,.12);}
+.ref-add:hover{border-color:rgba(34,197,94,.6); color:#dcfce7; background:rgba(34,197,94,.13);}
 /* 「+视频」添加按钮跟随视频框形状：4:3 横框 113×85，与参考视频缩略框同形 */
 .ref-add.wide{width:113px; aspect-ratio:4/3;}
 /* 参考视频：与「视频生成」区一致，直接显示播放控件（默认不静音）；
@@ -900,12 +1021,12 @@ input[type=search]:focus{
 .card-res.res-fit{align-self:flex-start; width:auto;}
 .card-res.res-fit select{flex:0 0 auto; width:auto;}
 
-/* 角色库大预览右上角的分辨率角标 */
+/* 角色库大预览右上角的分辨率角标：字号与「分辨率」标签一致（11.5px）、带半透明底 */
 .char-img{position:relative;}
 .dim-tag{
   position:absolute; top:6px; right:6px; z-index:2;
-  padding:2px 7px; border-radius:99px;
-  font-size:10.5px; font-family:Consolas,monospace; color:#dce6f5;
+  padding:3px 9px; border-radius:99px;
+  font-size:11.5px; font-family:Consolas,monospace; color:#dce6f5;
   background:rgba(10,14,22,.72); border:1px solid rgba(255,255,255,.14);
   backdrop-filter:blur(4px); pointer-events:none;
 }
@@ -923,7 +1044,17 @@ input[type=search]:focus{
   color:#bfdbfe; background:rgba(59,130,246,.14);
   border-color:rgba(59,130,246,.34);
 }
-/* 整块生成的模块（改编稿 / 分镜）：耗时挂在产物下方一行 */
+/* 耗时出现在操作条里时紧贴按钮：取消默认左外边距（间距统一交给 .ops-bar 的 gap） */
+.ops-bar .gen-ms{margin-left:0;}
+/* 模块标题行右侧的「N 字」胶囊（章节输入 / 漫剧改编）：
+   与耗时同款式（同形、同字号的小背景），配色走蓝色系以便与耗时区分 */
+.head-ms{
+  padding:1px 8px; border-radius:99px;
+  font-size:10.5px; font-family:Consolas,monospace; font-weight:500;
+  color:#bfdbfe; background:rgba(59,130,246,.14);
+  border:1px solid rgba(59,130,246,.34); white-space:nowrap;
+}
+/* 整块生成的模块（改编稿）耗时：2026-09-23 起分镜块不再显示整块耗时，此规则仅备用 */
 .gen-line{margin:8px 0 0; display:flex;}
 
 /* ---------------------------------------------------------------

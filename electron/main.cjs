@@ -113,7 +113,7 @@ app.whenReady().then(() => {
   registerIpc(db, () => win);
 
   createWindow();
-  logger.info('飞鱼AI漫剧已启动（工作区 ' + db.getSetting('workspace') + '）');
+  logger.info('飞鱼AI短剧 Studio 已启动（工作区 ' + db.getSetting('workspace') + '）');
   metrics.start(1500);
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

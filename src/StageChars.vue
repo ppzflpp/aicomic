@@ -3,64 +3,66 @@
     <div v-if="busy || shotsGening" class="progress"><div class="bar indeterminate"></div></div>
     <div v-if="!busy && !shotsGening && !cards.length" class="placeholder">确认分镜后，从分镜中自动提取角色与场景（含各自的档案与美术提示词）。</div>
 
-    <!-- 单一网格：先摆角色、再摆场景；卡片左右结构（左大图 / 右档案 → 提示词 → 参数），无锁定随时可编辑
+    <!-- 单一网格：先摆角色、再摆场景；卡片左右结构（左：大图+档案 / 右：提示词 → 参数），无锁定随时可编辑
          脏标签（改编稿改过 → 建议重新出图）统一显示在本模块标题后面，见 App.vue 的 stage-head -->
     <div v-if="cards.length" class="grp">
-      <div class="grp-head">
-        <b>角色 &amp; 场景</b>
-      </div>
-
       <div class="char-grid">
         <div v-for="it in ordered" :key="it.c.kind + '|' + it.c.name" class="ccard"
              :class="[it.c.kind, { 'card-busy': it.c._gen }]">
           <span v-if="it.c._gen" class="busy-txt"><i class="spin"></i>正在生成…</span>
 
-          <!-- 左：大预览图（按原图比例完整显示）+ 类型标签 + 名称 -->
+          <!-- 左：大预览图（按原图比例完整显示）+ 图上角标（名称 / 定位 两枚独立徽标、分辨率） -->
           <div class="cleft">
             <div class="bigprev">
               <img v-if="selFile(it.c)" :src="imgSrc(absOf(it.c, selFile(it.c)))" />
               <div v-else class="ph">{{ it.c.name[0] }}</div>
-              <span class="kind-tag-pos" :class="it.c.kind">{{ it.c.kind === 'scene' ? '场景' : '角色' }}</span>
+              <!-- 角标：名称、定位各一枚独立徽标（分开显示，不拼成一串）。
+                   场景卡的定位恒为「场景」（与卡片类型、下方「场景档案」标题重复）→ 只显示名称徽标 -->
+              <div class="kind-wrap">
+                <span class="kind-tag-pos" :class="it.c.kind">{{ it.c.name }}</span>
+                <span v-if="it.c.kind !== 'scene' && it.c.role" class="role-tag-pos" :class="it.c.kind">{{ it.c.role }}</span>
+              </div>
               <span v-if="dimOf(it.c)" class="dim-tag" title="当前预览图片的实际分辨率">{{ dimOf(it.c) }}</span>
             </div>
-            <div class="char-name">
-              {{ it.c.name }}
-              <span v-if="it.c.kind !== 'scene'" class="role-tag">{{ it.c.role }}</span>
-              <span v-if="genText(it.c)" class="gen-ms" :class="{ live: it.c._genAt }">{{ genText(it.c) }}</span>
-            </div>
-          </div>
 
-          <!-- 右：档案（提示词的依据）→ 正向/负向提示词 → 小预览图 → 分辨率 → 生图按钮（固定右下角）
-               链路：档案 → 生成提示词 → 生图；三级都随时可编辑 -->
-          <div class="cright">
+            <!-- 档案（提示词的唯一依据，可手改）：与大预览同列（图下）；
+                 改动 → 脏标记「档案已改 · 提示词待更新」→ 点标题右侧的刷新图标按新档案重算 -->
             <div class="f pf-box">
               <div class="pf-head">
-                <label>{{ it.c.kind === 'scene' ? '场景档案' : '角色档案' }}
-                  <span class="hint" style="font-size:10px">提示词的依据，可手改</span>
-                </label>
-                <span v-if="pgText(it.c)" class="hint pg-ms" :class="{ live: it.c._pgAt }">{{ pgText(it.c) }}</span>
+                <label>{{ it.c.kind === 'scene' ? '场景档案' : '角色档案' }}</label>
                 <span style="flex:1"></span>
                 <span v-if="profStale(it.c)" class="stale" title="档案改动后提示词还没重算；点这里先消除提示"
                       @click="ackProfile(it.i)">档案已改 · 提示词待更新</span>
-                <button class="btn sm" :class="{ regen: it.c._profRevAt > 0 }"
-                        :disabled="busy || !String(it.c.profile || '').trim()"
-                        title="按本卡的档案重新生成正向 / 负向提示词（会覆盖当前提示词，之后仍可手改）"
-                        @click="genPromptFromProfile(it.i)">
-                  <span v-if="it.c._pgGen" class="busy-txt"><i class="spin"></i>生成中…</span>
-                  <span v-else>生成提示词</span>
-                </button>
               </div>
               <textarea v-model="it.c.profile" :rows="it.c.kind === 'scene' ? 5 : 7"
                         placeholder="档案：每行一个字段「字段名：值」（来自剧本提取，可手工修改）…"
                         @change="touchProfile(it.c)"></textarea>
             </div>
+          </div>
 
-            <div class="f ta-prompt"><label>正向提示词<span v-if="it.c.kind === 'scene'" class="hint" style="font-size:10px">场景生成时自动补空镜句（画面不留人物）</span></label>
-              <textarea v-model="it.c.prompt" rows="5"
-                        :placeholder="it.c.kind === 'scene' ? '场景提示词（空间/光线/陈设/氛围）…' : '人物提示词（外貌/服装/气质）…'"
+          <!-- 右：正向/负向提示词 → 小预览图 → 分辨率 → 生图按钮（固定右下角）
+               链路：档案 → 刷新提示词 → 生图；三级都随时可编辑 -->
+          <div class="cright">
+            <div class="f ta-prompt">
+              <!-- 标题行：正向提示词 + 右侧「刷新提示词」图标（按本卡档案重算正/负向提示词，会覆盖当前值） -->
+              <div class="ta-head">
+                <label>正向提示词</label>
+                <span style="flex:1"></span>
+                <button class="btn icon" :class="{ regen: it.c._profRevAt > 0 }"
+                        :disabled="busy || !String(it.c.profile || '').trim()"
+                        title="刷新提示词（按本卡档案重新生成正向 / 负向提示词，会覆盖当前提示词，之后仍可手改）"
+                        @click="genPromptFromProfile(it.i)">
+                  <span v-if="it.c._pgGen" class="busy-txt"><i class="spin"></i></span>
+                  <svg v-else viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor"
+                       stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/>
+                  </svg>
+                </button>
+              </div>
+              <textarea v-model="it.c.prompt" rows="5" placeholder="正向提示词"
                         @change="saveAll()"></textarea></div>
-            <div class="f ta-neg"><label>负向提示词 <span class="hint" style="font-size:10px">Turbo 类模型（cfg=1）下不参与采样，保留备用</span></label>
-              <textarea v-model="it.c.negative" rows="3" placeholder="不希望出现的元素（动漫、插画、低画质、水印…）"
+            <div class="f ta-neg"><label>负向提示词</label>
+              <textarea v-model="it.c.negative" rows="3" placeholder="负向提示词"
                         @change="saveAll()"></textarea></div>
 
             <!-- 小预览图（抽卡记录，最多显示最新 4 张；点击选中作图生图底图，✕ 删除） -->
@@ -81,16 +83,18 @@
               </select>
             </label>
 
-            <!-- 一键填充：把当前选中的这张图，填到所有包含该角色 / 该场景的镜头的参考图区 -->
+            <!-- 一键填充（次级功能：绿色） -->
             <div class="cops fill-row">
-              <button class="btn ghost sm" :disabled="busy || !selFile(it.c)"
+              <button class="btn sec sm" :disabled="busy || !selFile(it.c)"
                       :title="'把当前选中的这张图填到所有包含「' + it.c.name + '」的镜头的参考图区（只填参考图，不动首尾帧）'"
                       @click="fillRefs(it.i)">
                 一键填充
               </button>
             </div>
 
+            <!-- 出图耗时挪到「生图」按钮左边 -->
             <div class="ops-row">
+              <span v-if="genText(it.c)" class="gen-ms" :class="{ live: it.c._genAt }">{{ genText(it.c) }}</span>
               <button class="btn sm" :class="{ regen: it.c.refAsBase && it.c.cur >= 0 }" :disabled="busy" @click="gen(it.i)">
                 {{ it.c.refAsBase && it.c.cur >= 0 ? '图生图' : '生图' }}
               </button>
@@ -103,8 +107,6 @@
     <!-- 操作条：提示文字靠左，按钮统一靠右（「批量生成图片 / 批量生成提示词」已上移到模块标题行，见 App.vue 的 #chars-batch） -->
     <div class="ops-bar">
       <span class="hint">角色图与场景图都保存到项目 assets 下（永不覆盖，可无限重生成）</span>
-      <span style="flex:1"></span>
-      <button class="btn" :disabled="!cards.length" @click="confirm">下一步</button>
     </div>
 
     <!-- 删除单张图：永久删除（物理删盘）/ 删除显示（仅移出列表） -->

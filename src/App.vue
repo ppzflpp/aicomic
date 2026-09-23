@@ -4,7 +4,7 @@
   <header class="titlebar">
     <div class="tb-brand">
       <span class="tb-logo"></span>
-      <span class="tb-name">飞鱼AI漫剧</span>
+      <span class="tb-name">飞鱼AI短剧 Studio</span>
     </div>
     <span class="tb-sep"></span>
     <div class="tb-crumb">
@@ -203,12 +203,12 @@
               <span class="s-num">1</span>
               <span class="s-title">章节输入</span>
               <span style="flex:1"></span>
-              <span class="s-status" :class="blkStatusCls(0)">{{ blkStatusText(0) }}</span>
+              <!-- 字数：与耗时同款式的小胶囊，放在标题行右侧 -->
+              <span class="head-ms" title="章节原文字数">{{ chapter.trim().length }} 字</span>
             </div>
             <div class="stage-body">
               <textarea v-model="chapter" rows="8" placeholder="粘贴小说章节原文…" @change="st.saveChapter(chapter)"></textarea>
               <div class="ops-bar">
-                <span class="hint">{{ chapter.trim().length }} 字</span>
                 <span style="flex:1"></span>
                 <button class="btn" :disabled="chapter.trim().length<50" @click="startAdapt">改编</button>
               </div>
@@ -222,7 +222,8 @@
               <span v-if="headStale('adapt')" class="stale head-stale" title="点击消除提示"
                     @click="ackHead('adapt')">{{ headStale('adapt') }}</span>
               <span style="flex:1"></span>
-              <span class="s-status" :class="blkStatusCls(1)">{{ blkStatusText(1) }}</span>
+              <!-- 字数胶囊落点：StageAdapt 通过 Teleport 把「N 字」挂到这里（切集重挂载时走 tpReady 延迟） -->
+              <span id="adapt-count" style="display:inline-flex;align-items:center"></span>
             </div>
             <div class="stage-body">
               <stage-adapt />
@@ -240,7 +241,6 @@
             <span style="flex:1"></span>
             <!-- 批量按钮落点：StageChars 通过 Teleport 把「批量生成提示词 / 批量生成图片」挂到这里（状态文本左边） -->
             <span id="chars-batch" style="display:inline-flex;gap:8px;align-items:center"></span>
-            <span class="s-status" :class="blkStatusCls(3)">{{ blkStatusText(3) }}</span>
           </div>
           <div class="stage-body">
             <stage-chars />
@@ -258,7 +258,6 @@
             <span style="flex:1"></span>
             <!-- 批量按钮落点：StageShots 通过 Teleport 把「批量生成提示词 / 批量生成视频」挂到这里（状态文本左边） -->
             <span id="shots-batch" style="display:inline-flex;gap:8px;align-items:center"></span>
-            <span class="s-status" :class="blkStatusCls(2, 4, 5)">{{ blkStatusText(2, 4, 5) }}</span>
           </div>
           <div class="stage-body">
             <stage-shots />
@@ -271,7 +270,6 @@
             <span class="s-num">5</span>
             <span class="s-title">组装成片</span>
             <span style="flex:1"></span>
-            <span class="s-status" :class="blkStatusCls(6)">{{ blkStatusText(6) }}</span>
           </div>
           <div class="stage-body">
             <stage-export />
@@ -576,30 +574,11 @@ export default {
       if (this.pl.genStartAt[i]) return true
       return i === 3 && !!this.pl.genStartAt[2]
     },
-    statusText(i) {
-      if (this.pl.done[i]) return '已完成'
-      if (this.isGen(i) || i === this.pl.active) return '进行中'
-      return i < this.pl.active ? '已通过' : '待进行'
-    },
-    statusCls(i) {
-      if (this.pl.done[i]) return 'st-done'
-      if (this.isGen(i) || i === this.pl.active) return 'st-run'
-      return i < this.pl.active ? 'st-idle' : 'st-wait'
-    },
     /** 展示块的样式类：块内全部完成 → done；有进行中 → running（无锁定态） */
     blkCls(...idx) {
       if (idx.every(i => this.pl.done[i])) return { done: true }
       if (idx.some(i => (i === this.pl.active || this.isGen(i)) && !this.pl.done[i])) return { running: true }
       return {}
-    },
-    /** 展示块的状态文字：按块内第一个未完成阶段显示 */
-    blkStatusText(...idx) {
-      const t = idx.find(i => !this.pl.done[i])
-      return t === undefined ? '已完成' : this.statusText(t)
-    },
-    blkStatusCls(...idx) {
-      const t = idx.find(i => !this.pl.done[i])
-      return t === undefined ? 'st-done' : this.statusCls(t)
     },
     /** 模块级脏标签文案（显示在模块标题后面）；无则返回空串 */
     headStale(kind) {

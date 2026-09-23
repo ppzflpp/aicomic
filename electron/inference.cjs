@@ -430,7 +430,8 @@ function h3Params() {
   const width = snap(num('h3.width', 864));
   const height = snap(num('h3.height', 480));
   let length = Math.max(5, Math.round(num('h3.seconds', 5) * 24));
-  length = length + (5 - (length % 17)) % 17;
+  // 对齐 17k+5 帧网格：恒向上取（+17 防负数取模向下减，见 2026-09-23 修复）
+  length = length + ((5 - (length % 17)) + 17) % 17;
   const quality = String(db.getSetting('h3.quality') || 'fast') === 'hq' ? 'hq' : 'fast';
   const steps = Math.max(1, Math.round(num('h3.steps', quality === 'hq' ? 8 : 4)));
   const refImageSize = String(db.getSetting('h3.refImageSize') || '') ||
@@ -592,7 +593,8 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
     const sec = Number(params.seconds);
     if (Number.isFinite(sec) && sec > 0) {
       let L = Math.max(4, Math.min(15, Math.round(sec))) * 24;
-      p.length = L + (5 - (L % 17)) % 17;
+      // 恒向上对齐 17k+5 网格（+17 防负数取模向下减：4s 曾被砍成 3.75s，台词被截）
+      p.length = L + ((5 - (L % 17)) + 17) % 17;
       p.seconds = Math.max(4, Math.min(15, Math.round(sec)));
     }
     // 权重与加速 LoRA 必须成对：ref2va 只能配 ref2v 的 LoRA，fl2va 只能配 fl2v 的

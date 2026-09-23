@@ -17,6 +17,8 @@
             <span class="zone-tag">分镜</span>
             <b>镜头 {{ i + 1 }}</b>
             <span class="dur">{{ s.dur }}s</span>
+            <span v-if="durWarn(i).length" class="dur-warn"
+              :title="durWarn(i).join('\n')">⚠ 时长偏紧</span>
             <span style="flex:1"></span>
             <button class="del-btn" title="删除此镜头" @click="askDelShot(i)">✕</button>
           </div>
@@ -86,13 +88,13 @@
             </div>
           </div>
 
-          <!-- 提示词文本（锁 6 行高，超出在框内滚动） -->
-          <div class="f"><textarea v-model="prompts[i].text" rows="6" placeholder="H3 提示词（英文结构化）…"
-                                   @change="touchPrompt(i)"></textarea></div>
+          <!-- 提示词文本：高度自适应，占满本区剩余空间（内容超出在框内滚动） -->
+          <div class="f ta-main"><textarea v-model="prompts[i].text" rows="6" placeholder="H3 提示词（英文结构化）…"
+                                           @change="touchPrompt(i)"></textarea></div>
 
-          <!-- 「生成提示词」：在提示词框下方，靠左单独一行 -->
+          <!-- 「生成提示词」（次级功能：绿色）：在提示词框下方，靠左单独一行 -->
           <div class="cops gen-p-row">
-            <button class="btn sm" :class="{ regen: prompts[i] && prompts[i].text.trim() }"
+            <button class="btn sec sm"
                     :disabled="pBusy || !prompts[i]" title="按本行分镜与参考素材重新生成本镜头的 H3 提示词"
                     @click="genP(i)">
               <span v-if="prompts[i] && prompts[i]._gen" class="busy-txt"><i class="spin"></i>生成中…</span>
@@ -100,20 +102,19 @@
             </button>
           </div>
 
-          <!-- 视频分辨率（从「视频生成」区移入，紧跟首尾帧下面）；宽度按内容自适应，不撑满父布局 -->
-          <label class="card-res res-fit" v-if="vstate[i]">视频分辨率
-            <select v-model="vstate[i].res" :disabled="vBusy || (vstate[i] && vstate[i].confirmed)" @change="saveVideos()">
-              <option v-for="o in optsFor(i)" :key="o.value" :value="o.value">{{ o.label }}</option>
-            </select>
-          </label>
-
-          <!-- 底部：生成路线提示靠左，生成视频按钮靠右 -->
+          <!-- 底部：生成路线提示靠左｜视频分辨率 + 生成视频按钮靠右 -->
           <div class="cops zone-foot">
             <span class="ref-mode">
               <span v-if="prompts[i]" class="mode-tag" :class="modeOf(prompts[i]).cls">{{ modeOf(prompts[i]).tag }}</span>
               <span v-if="prompts[i]" class="hint">{{ modeOf(prompts[i]).text }}</span>
             </span>
             <span style="flex:1"></span>
+            <!-- 视频分辨率（从提示词上方移入；宽度按内容自适应，不撑满父布局） -->
+            <label class="card-res res-fit" v-if="vstate[i]">视频分辨率
+              <select v-model="vstate[i].res" :disabled="vBusy || (vstate[i] && vstate[i].confirmed)" @change="saveVideos()">
+                <option v-for="o in optsFor(i)" :key="o.value" :value="o.value">{{ o.label }}</option>
+              </select>
+            </label>
             <button class="btn sm" :class="{ regen: vstate[i] && vstate[i].files.length }"
                     :disabled="vBusy || !prompts[i] || !prompts[i].text.trim()" @click="genV(i)">
               生成视频
@@ -121,25 +122,27 @@
           </div>
         </div>
 
-        <!-- 分区3：视频预览 + 采用（生成按钮与分辨率已移入 H3 提示词区；已生成的视频任何状态都能播放）
+        <!-- 分区3：视频预览（生成按钮与分辨率都在左侧 H3 提示词区；已生成的视频任何状态都能播放）
              同一镜头的多个版本上下摆放，最多显示最新 2 个（两者平分上方剩余区域）；
-             点击哪个哪个变当前版本（蓝框），「采用」作用于当前版本，按钮固定在本区右下角 -->
+             点击哪个哪个变当前版本（蓝框）= 即选中（生成完成自动选中最新版，无「采用」按钮） -->
         <div class="zone-3">
           <div class="row-head"><span class="zone-tag">视频生成</span></div>
-          <!-- 固定 2 个等高槽位（标题 / 文案 / 采用按钮之外的空间平分），每槽一个 16:9 播放框；
+          <!-- 固定 2 个等高槽位（标题 / 文案之外的空间平分），每槽一个 16:9 播放框；
                没有视频时两槽都显示占位符；只有 1 个视频时占第 1 槽、第 2 槽仍是占位符 → 行高与份高都不跳动。
-               点击哪个哪个变当前版本（蓝框），「采用」作用于当前版本 -->
+               点击哪个哪个变当前版本（蓝框） -->
           <div class="vid-stack" :class="{ 'card-busy': vstate[i] && vstate[i]._gen }">
             <span v-if="vstate[i] && vstate[i]._gen" class="busy-txt"><i class="spin"></i>生成中…</span>
             <div v-for="(v, si) in slotList(i)" :key="'slot' + si" class="vslot">
-              <div v-if="v" class="video-box"
-                   :class="{ cur: v.k === curIdx(i), stalevid: videoStale(i) }"
-                   :title="'点击选为当前版本（第 ' + (v.k + 1) + ' 版）'" @click="setVideo(i, v.k)">
-                <video v-if="videoSrc(v.f)" :src="videoSrc(v.f)" controls></video>
-                <div v-else class="ph">镜头 {{ i + 1 }}<br>加载中…</div>
-                <span class="vid-ver">{{ v.k + 1 }}/{{ vstate[i].files.length }}</span>
-                <span v-if="v.k === curIdx(i) && vstate[i] && vstate[i].confirmed" class="lock-tag">已采用</span>
-              </div>
+            <div v-if="v" class="video-box"
+                 :class="{ cur: v.k === curIdx(i), stalevid: videoStale(i) }"
+                 :title="'点击选为当前版本（第 ' + (v.k + 1) + ' 版）'" @click="setVideo(i, v.k)">
+              <video v-if="videoSrc(v.f)" :src="videoSrc(v.f)" controls></video>
+              <!-- 防误播遮挡层：盖住画面区（底部控制条除外），点它 = 选中该版本，不会触发播放；
+                   播放只能通过视频自带控制条的播放按钮 -->
+              <div v-if="videoSrc(v.f)" class="vid-shield"></div>
+              <div v-else class="ph">镜头 {{ i + 1 }}<br>加载中…</div>
+              <span class="vid-ver">{{ v.k + 1 }}/{{ vstate[i].files.length }}</span>
+            </div>
               <div v-else class="video-box">
                 <div class="ph">镜头 {{ i + 1 }}<br>待生成</div>
               </div>
@@ -156,11 +159,6 @@
               上游已更新 · <b>生成视频</b>后消失
             </div>
           </div>
-          <!-- 采用 / 取消采用：固定本区右下角 -->
-          <div class="cops vops">
-            <button v-if="vstate[i] && vstate[i].confirmed" class="btn ghost sm" @click="unconfirm(i)">取消采用</button>
-            <button v-else class="btn ghost sm" :disabled="!(vstate[i] && vstate[i].files.length)" @click="confirmOne(i)">采用</button>
-          </div>
         </div>
       </div>
 
@@ -171,35 +169,8 @@
       </div>
     </div>
 
-    <!-- 本次分镜生成耗时（整块生成，挂在产物下方） -->
-    <div v-if="pl.timeText(2)" class="gen-line">
-      <span class="gen-ms" :class="{ live: pl.genStartAt[2] }">{{ pl.timeText(2) }}</span>
-    </div>
-
-    <!-- 同时产出的角色 / 场景档案（本块不展示明细，到上方「角色 & 场景」块可见） -->
-    <div v-if="archiveLine" class="hint" style="margin-top:6px">{{ archiveLine }}</div>
-
-    <!-- 操作条：按当前所处内部阶段（分镜/提示词/视频）显示对应的批量与「下一步」按钮 -->
-    <div class="ops-bar">
-      <span class="hint">{{ opsHint }}</span>
-      <span style="flex:1"></span>
-      <!-- 内部阶段3：编辑分镜 → 下一步（确认后解锁上方「角色 & 场景」） -->
-      <template v-if="!pl.done[2] && pl.active === 2">
-        <button class="btn" :class="{ regen: shots.length }" :disabled="busy || !adapted" @click="generate">
-          <span v-if="busy" class="busy-txt"><i class="spin"></i>生成中…</span>
-          <span v-else>{{ shots.length ? '重新生成分镜' : '生成分镜' }}</span>
-        </button>
-        <button class="btn" :disabled="!shots.length" @click="confirmShots">下一步</button>
-      </template>
-      <!-- 内部阶段5：提示词 → 下一步（批量生成入口已上移到块 3 标题行） -->
-      <template v-else-if="!pl.done[4] && pl.active === 4">
-        <button class="btn" :disabled="!allPromptsFilled" @click="confirmPrompts">下一步</button>
-      </template>
-      <!-- 内部阶段6：视频 → 下一步（进入组装；批量生成入口已上移到块 3 标题行） -->
-      <template v-else-if="!pl.done[5] && pl.active === 5">
-        <button class="btn" :disabled="!allConfirmed" @click="confirmVideos">下一步</button>
-      </template>
-    </div>
+    <!-- 2026-09-23：本块底部的三行说明文字（整块生成耗时 / 角色·场景档案产出条数提示 / 分阶段操作提示）
+         已按需求全部移除，产物下方不再挂任何说明行；批量入口在模块标题行 -->
 
     <!-- 批量按钮：Teleport 到块 3 标题行、状态文本左边（App.vue 的 #shots-batch），常驻可见。
          空闲 = 「批量生成提示词 / 批量生成视频」；跑动中 = 「停止批量」（再点不响应）；
@@ -253,6 +224,7 @@ import { useProject as useProjectStore } from './stores/project.js'
 import { usePipeline, fmtMs } from './stores/pipeline.js'
 import { stepLog, secs, dbgPrompt } from './ulog.js'
 import { composeSystem, normalizeProfile } from './prompts.js'
+import { durWarnings } from './promptlib.js'
 import { parseRes, resLabel, optsWith, clampDur, seg, joinPath } from './resutil.js'
 import { touchRevs, sigEq } from './stale.js'
 
@@ -289,7 +261,7 @@ export default {
   name: 'StageShots',
   data() {
     return {
-      shots: [], archives: { characters: [], scenes: [] }, busy: false,
+      shots: [], busy: false,
       // H3 提示词（原 StagePrompts）
       prompts: [], pBusy: false, _autoEp: null, _ref64: {}, _refv: {},
       // 视频生成（原 StageVideos）
@@ -318,24 +290,12 @@ export default {
     epProjectId() { return this.st.current ? this.st.current.projectId : null },
     /** 依赖每秒自增的 tick，让「生成中 已用 X」实时刷新 */
     live() { return this.pl.tick },
-    /** 角色/场景档案的简要提示（明细在上方「角色 & 场景」块查看） */
-    archiveLine() {
-      const c = this.archives.characters.length, s = this.archives.scenes.length
-      if (!c && !s) return ''
-      return '本次同时产出 → 角色档案 ' + c + ' 个、场景档案 ' + s + ' 个（不在此显示，进入「角色 & 场景」块查看与出图）'
-    },
     allPromptsFilled() { return this.prompts.length > 0 && this.prompts.every(p => p.text.trim()) },
     /** 参考素材上限（模板里显示「最多 N 张/个」用；method 里放常量不会挂到实例上，必须走 computed） */
     maxRefImg() { return MAX_REF_IMG },
     maxRefVid() { return MAX_REF_VID },
     allConfirmed() {
       return this.shots.length > 0 && this.shots.every((_, i) => this.vstate[i] && this.vstate[i].confirmed)
-    },
-    opsHint() {
-      if (!this.pl.done[2] && this.pl.active === 2) return 'LLM 按改编稿拆分镜头，同时生成角色与场景档案（时长 4~15 秒）；可随时手动编辑'
-      if (!this.pl.done[4] && this.pl.active === 4) return '按分镜生成 H3 结构化英文提示词；角色描述引用角色档案，保证一致性'
-      if (!this.pl.done[5] && this.pl.active === 5) return '每个镜头可多次生成、单独重新生成；满意后「采用」固定'
-      return '可随时回到任意镜头编辑；上游内容变化会在对应行标 ⚠'
     }
   },
   watch: {
@@ -394,15 +354,8 @@ export default {
     },
     initShots(ep) {
       this.shots = JSON.parse(JSON.stringify(ep.shots || []))
-      this.archives = {
-        characters: JSON.parse(JSON.stringify(ep.chars || [])),
-        scenes: JSON.parse(JSON.stringify(ep.scenes || []))
-      }
-      // 已出图的档案（有 candidates）也要算进来，方便提示条显示
-      const box = [this.archives.characters, this.archives.scenes]
-      for (const list of box) for (const o of list) {
-        if (!Array.isArray(o.candidates)) o.candidates = []
-      }
+      // 2026-09-23：本块不再展示档案产出条数提示行，
+      // 故不再在本地保存一份档案副本（明细只在「角色 & 场景」块维护）
     },
     /** 分镜数量变化时，同步提示词与视频槽位（补齐/裁掉，保证每行三区都有内容） */
     syncSlots() {
@@ -479,7 +432,6 @@ export default {
         // 角色 / 场景档案：与已有档案合并（出过图、锁定过的绝不丢）
         const chars2 = mergeArchive(normArchive(chars, 'character'), this.st.current.chars)
         const scenes2 = mergeArchive(normArchive(scenes, 'scene'), this.st.current.scenes)
-        this.archives = { characters: chars2, scenes: scenes2 }
 
         await this.st.saveArtifact('shots', this.shots)
         await this.st.saveArtifact('chars', chars2)
@@ -951,6 +903,8 @@ export default {
     optsFor(i) { return optsWith((this.st.resOptions || {}).vid, this.resOf(i)) },
     /** 该镜头实际用于生成的秒数（分镜脚本的 dur，夹取 4~15 含边界） */
     durOf(i) { return clampDur(this.shots[i] && this.shots[i].dur) },
+    /** 时长软校验（只提示不拦截）：台词/发声表演/复合运镜与 dur 不匹配时返回违规说明 */
+    durWarn(i) { return durWarnings(this.shots[i] || {}) },
     genTextV(i) {
       void this.live
       const s = this.vstate[i]
@@ -976,11 +930,12 @@ export default {
       const vs = this.vidList(i)
       return [vs[0] || null, vs[1] || null]
     },
-    /** 点击某个视频 → 选为当前版本（「采用」作用于当前版本） */
+    /** 点击某个视频 → 选为当前版本 = 采用（无独立采用/取消采用按钮，点谁选谁） */
     async setVideo(i, k) {
       const s = this.vstate[i]
       if (!s || s.cur === k) return
       s.cur = k
+      s.confirmed = true
       await this.saveVideos()
     },
     /** 路径 → 文件名（Windows / 通用分隔符都兼容） */
@@ -1094,6 +1049,7 @@ export default {
         this.vstate[i].files = [...this.vstate[i].files, ...r.files]
         while (this.vstate[i].files.length > 4) this.vstate[i].files.shift()
         this.vstate[i].cur = this.vstate[i].files.length - 1
+        this.vstate[i].confirmed = true   // 最新生成默认「采用」（点选其它版本即切换选中，无独立采用按钮）
         const ms = Date.now() - t0
         this.vstate[i].genMs = ms             // 逐条耗时（持久化在 videos.json，显示在该镜头行上）
         // 素材快照：把「这一版视频实际用了哪些参考素材」记下来，行上直接可见
