@@ -340,6 +340,8 @@ function workflowModels() {
     h3_fl2v_lora_hq: pickStrict('loras', /fl2v.*8step/i) || pickStrict('loras', /fl2v/i),
     // ref2v 专用加速 LoRA —— 只能配 ref2va，不能配到 fl2va 上
     h3_ref2v_lora: pickStrict('loras', /ref2v/i),
+    // LoRA 目录文件名清单 —— videoTiers.cjs 档位注册表按它解析「档位 → 具体 LoRA」
+    h3_lora_files: listFiles('loras').map(f => f.name),
     // 兼容旧占位符：默认一律走 fl2v（= 文字/首帧/首尾帧那条线）
     h3_lora: pickStrict('loras', /fl2v/i),
     h3_turbo_lora: pickStrict('loras', /fl2v/i)

@@ -55,10 +55,9 @@
 
     <div v-if="!cells.length && !films.length" class="placeholder">本集还没有镜头；请先在第 4 块生成分镜、生成视频。</div>
 
-    <!-- 操作条：提示文字靠左，按钮统一靠右 -->
-    <div class="ops-bar">
-      <span class="hint">拼接全部已选中镜头 → 统一 {{ outRes.replace('x', '×') }} → 按勾选烧录对白字幕 → 导出 MP4；每次导出的成片都保存在 项目/成片/集名/（本块只显示最新一版）</span>
-      <span style="flex:1"></span>
+    <!-- 操作条：提示文字靠左；「输出分辨率 / 添加字幕 / 导出成片」三个功能 Teleport 到块 4 标题栏靠右（#export-ops）。
+         🔴 Teleport 延迟挂载（tpReady）：section :key 切集整棵重建，脱离文档时 querySelector 拿不到落点会静默丢弃 -->
+    <Teleport v-if="tpReady" to="#export-ops">
       <label class="res-lab">输出分辨率
         <select class="res-sel" v-model="outRes" :disabled="busy" @change="onRes">
           <option v-for="o in outOpts" :key="o.value" :value="o.value">{{ o.label }}</option>
@@ -72,6 +71,10 @@
         <span v-if="busy" class="busy-txt"><i class="spin"></i>导出中…</span>
         <span v-else>导出成片</span>
       </button>
+    </Teleport>
+    <div class="ops-bar">
+      <span class="hint">拼接全部已选中镜头 → 统一 {{ outRes.replace('x', '×') }} → 按勾选烧录对白字幕 → 导出 MP4；每次导出的成片都保存在 项目/成片/集名/（本块只显示最新一版）</span>
+      <span style="flex:1"></span>
       <button class="btn sec" v-if="films.length" @click="reveal">打开所在文件夹</button>
     </div>
   </div>
@@ -86,7 +89,7 @@ function parseRes(v) { const m = /^(\d+)x(\d+)$/i.exec(String(v || '')); return 
 
 export default {
   name: 'StageExport',
-  data() { return { busy: false, exportFile: null, films: [], srcMap: {}, loadingSrc: {}, outRes: '1920x1080' } },
+  data() { return { busy: false, exportFile: null, films: [], srcMap: {}, loadingSrc: {}, outRes: '1920x1080', tpReady: false } },
   computed: {
     st() { return useProjectStore() },
     pl() { return usePipeline() },
@@ -153,6 +156,10 @@ export default {
     if (this.ep) { this.exportFile = this.ep.exportFile || null; this.outRes = (this.ep.res && this.ep.res.out) || '1920x1080'; this.loadList() }
     this.syncCells()
   },
+  /** 🔴 标题栏 Teleport 延迟挂载：mounted 后 DOM 才真正插入文档，#export-ops 此时才可被 querySelector 命中 */
+  mounted() {
+    this.$nextTick(() => { this.tpReady = true })
+  },
   methods: {
     fmtMs,   // 🔴 必须注册进 methods：模板看不到模块作用域的导入（曾因漏注册 → 成片格一渲染就抛
              //     "fmtMs is not a function" → 整个组件卸载 → 组装成片模块全空白，重启也无法恢复）
@@ -162,10 +169,11 @@ export default {
     async onSubs() { await this.st.saveArtifact('videoState', this.ep.videoState) },
     async loadList() {
       if (!this.ep) return
-      const dir = this.ep.filmDir   // <项目>/成片/<集>/
+      const dir = this.ep.filmDir   // <项目>/成片（全项目共用）
+      const pre = this.ep.prefix || ''   // 只列本集的成片（文件名 = <集名>_<时间戳>.mp4）
       try {
         // 元信息（时间/分辨率/导出耗时）与封面抽帧在主进程完成并缓存，目录没变化时几乎零开销
-        const films = await window.studio.listMedia(dir)
+        const films = await window.studio.listMedia(dir, pre)
         if (this.ep && this.ep.filmDir !== dir) return   // 异步期间可能已切到别的集
         this.films = films
         // 与镜头模块一致：视频直接带播放控件展示（成片只显示最新一版，但列表仍全部读回元信息）
@@ -217,10 +225,15 @@ export default {
           dialogue: s.dialogue || '',
           dur: s.dur || 8
         }))
-        const outDir = this.ep.filmDir   // <项目>/成片/<集>/
+        const outDir = this.ep.filmDir   // <项目>/成片（全项目共用；按集名前缀隔离）
         const outName = this.ep.name + '_' + Date.now()
         const [rw, rh] = parseRes(this.outRes)
-        const out = await window.studio.exportVideo({ outDir, outName, videos, subtitles: this.subsEnabled, width: rw, height: rh })
+        const out = await window.studio.exportVideo({
+          outDir, outName, videos,
+          subtitles: this.subsEnabled, width: rw, height: rh,
+          // 🔴 必须带 scope：导出时主进程会删「本集之外的旧成片」，缺了就会删掉别的集的成片
+          scope: this.ep.prefix || this.ep.name
+        })
         this.exportFile = out.split('\\').pop()
         this.pl.markGen(6, Date.now() - t0)
         this.st.invalidateMedia(this.ep.projectId, 'films')   // 左侧树「成片」下次展开刷新

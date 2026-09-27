@@ -14,13 +14,27 @@
              🔴 无锁定：所有分区随时可编辑；上游变化由 ⚠ 脏标记提示。 -->
         <div class="zone-1">
           <div class="row-head">
-            <span class="zone-tag">分镜</span>
-            <b>镜头 {{ i + 1 }}</b>
+            <b class="shot-tag">分镜 {{ i + 1 }}</b>
             <span class="dur">{{ s.dur }}s</span>
-            <span v-if="durWarn(i).length" class="dur-warn"
-              :title="durWarn(i).join('\n')">⚠ 时长偏紧</span>
+            <span v-if="contWarn(i).length" class="dur-warn"
+              :title="contWarn(i).join('\n')">⚠ 连续性 {{ contWarn(i).length }}</span>
+            <span v-if="contTip(i)" class="cont-tag" :class="{ chg: !!s.change }"
+              title="连续性状态快照（点击编辑）：跨镜头必须保持一致的元素" @click.stop="openCont(i)">
+              {{ s.change ? '状态变化' : '状态' }}
+            </span>
+            <span v-if="scWarnOf(s.scene)" class="dur-warn"
+              :title="scWarnOf(s.scene) + ' —— 到「角色与场景」块补档案（档案是场景图的唯一依据，缺了会生成与剧本无关的通用空镜）'">
+              ⚠ 场景档案
+            </span>
             <span style="flex:1"></span>
-            <button class="del-btn" title="删除此镜头" @click="askDelShot(i)">✕</button>
+            <button class="del-btn head-x" title="删除此镜头" @click="askDelShot(i)">✕</button>
+          </div>
+          <!-- 第二行提示区（2026-09-27，Dragon：时长建议 + 可合并提示不挤行头；都无时整行不渲染不占位）。
+               可合并提示可点击 → 打开合并确认弹窗 -->
+          <div v-if="durWarn(i).length || mergeWarn(i)" class="shot-sub">
+            <span v-if="durWarn(i).length" class="dur-warn" :title="durWarn(i).join('\n')">⚠ 时长紧·建议 {{ durSuggest(i) }}s</span>
+            <span v-if="mergeWarn(i)" class="dur-warn mrg" :title="mergeWarn(i) + '：点击查看并确认合并'"
+              @click.stop="openMerge(i)">⚠ {{ mergeWarn(i) }}</span>
           </div>
           <div class="f"><label>场景</label><input v-model="s.scene" @change="touchShot(s)" /></div>
           <div class="f"><label>角色</label><input v-model="s.chars" @change="touchShot(s)" /></div>
@@ -135,11 +149,8 @@
             <div v-for="(v, si) in slotList(i)" :key="'slot' + si" class="vslot">
             <div v-if="v" class="video-box"
                  :class="{ cur: v.k === curIdx(i), stalevid: videoStale(i) }"
-                 :title="'点击选为当前版本（第 ' + (v.k + 1) + ' 版）'" @click="setVideo(i, v.k)">
+                 :title="'点击画面选为当前版本（第 ' + (v.k + 1) + ' 版）'" @click="boxClick($event, i, v.k)">
               <video v-if="videoSrc(v.f)" :src="videoSrc(v.f)" controls></video>
-              <!-- 防误播遮挡层：盖住画面区（底部控制条除外），点它 = 选中该版本，不会触发播放；
-                   播放只能通过视频自带控制条的播放按钮 -->
-              <div v-if="videoSrc(v.f)" class="vid-shield"></div>
               <div v-else class="ph">镜头 {{ i + 1 }}<br>加载中…</div>
               <span class="vid-ver">{{ v.k + 1 }}/{{ vstate[i].files.length }}</span>
             </div>
@@ -172,7 +183,8 @@
     <!-- 2026-09-23：本块底部的三行说明文字（整块生成耗时 / 角色·场景档案产出条数提示 / 分阶段操作提示）
          已按需求全部移除，产物下方不再挂任何说明行；批量入口在模块标题行 -->
 
-    <!-- 批量按钮：Teleport 到块 3 标题行、状态文本左边（App.vue 的 #shots-batch），常驻可见。
+    <!-- 批量按钮：Teleport 到块 3 标题行右边（App.vue 的 #shots-batch）（2026-09-27 三改，Dragon：回到标题栏、恢复普通 .btn 样式）。
+         🔴 Teleport 延迟挂载：切集时 <section :key> 整棵重建，mounted 前 #shots-batch 不在文档里 → 必须 tpReady。
          空闲 = 「批量生成提示词 / 批量生成视频」；跑动中 = 「停止批量」（再点不响应）；
          已请求停止 = 「停止中…」（禁点，当前子任务跑完自动恢复） -->
     <Teleport v-if="tpReady" to="#shots-batch">
@@ -216,6 +228,67 @@
         </div>
       </div>
     </div>
+
+    <!-- 连续性状态编辑（跨镜头一致性的唯一数据源：分镜环节产出，可手改；生成 H3 提示词时逐镜注入）
+         2026-09-27（Dragon）：弹窗加大（modal-lg），内容要能显示全 -->
+    <div v-if="contEdit !== null" class="modal-mask" @click.self="contEdit = null">
+      <div class="modal modal-lg">
+        <div class="modal-title">镜头 {{ contEdit + 1 }} · 连续性状态</div>
+        <div class="modal-body">
+          <div class="hint" style="margin-bottom:7px">
+            每行一条「主体·维度：本镜的状态」。生成 H3 提示词时这是钉住服装 / 随身物的唯一依据 ——
+            无论本镜是否发生变化，都要写全当前状态（上一镜披着蓑衣，本镜就还得写披着蓑衣）。
+          </div>
+          <label style="font-size:10.5px;color:#7c8798">状态快照 continuity</label>
+          <textarea v-model="contForm.continuity" rows="9" style="width:100%;margin-top:3px"
+                    placeholder="顾长风·外观：湿透粗布衣（蓑衣已解开搭在左臂）&#10;顾长风·随身物：残破灯笼（右手）"></textarea>
+          <label style="display:block;font-size:10.5px;color:#7c8798;margin-top:8px">本镜发生的变化 change（无则留空）</label>
+          <textarea v-model="contForm.change" rows="4" style="width:100%;margin-top:3px"
+                    placeholder="顾长风·蓑衣：披在身上 → 已解开搭在左臂（解开蓑衣）"></textarea>
+          <div v-if="contWarn(contEdit).length" class="modal-note" style="white-space:pre-wrap">
+            <b>校验提示</b>{{ '\n' }}{{ contWarn(contEdit).join('\n') }}
+          </div>
+        </div>
+        <div class="modal-ops">
+          <button class="btn" @click="saveCont">保存</button>
+          <button class="btn ghost" @click="contEdit = null">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 镜头合并确认（两镜并排展示 + 合并预览；点「合并成一镜」后程序确定性处理所有字段） -->
+    <div v-if="askMerge !== null && mergePreview" class="modal-mask" @click.self="askMerge = null">
+      <div class="modal">
+        <div class="modal-title">合并镜头 {{ askMerge }} 与 {{ askMerge + 1 }}</div>
+        <div class="modal-body">
+          <div class="hint" style="margin-bottom:7px">
+            合并后的镜头：场景/角色不变，动作拼接、对白逐行保留、时长相加（{{ shots[askMerge - 1].dur }}+{{ shots[askMerge].dur }}={{ mergePreview.dur }}s）、
+            状态快照取后镜。镜头 {{ askMerge + 1 }} 的提示词与视频记录移除（已生成的视频文件仍在磁盘），
+            后续镜头自动前移、不受影响。
+          </div>
+          <div class="merge-cols">
+            <div class="merge-col">
+              <div class="merge-h">镜头 {{ askMerge }}</div>
+              <div class="merge-b">{{ shots[askMerge - 1].action || '（无动作）' }}</div>
+              <div class="merge-b dlg" v-if="shots[askMerge - 1].dialogue">{{ shots[askMerge - 1].dialogue }}</div>
+            </div>
+            <div class="merge-col">
+              <div class="merge-h">镜头 {{ askMerge + 1 }}</div>
+              <div class="merge-b">{{ shots[askMerge].action || '（无动作）' }}</div>
+              <div class="merge-b dlg" v-if="shots[askMerge].dialogue">{{ shots[askMerge].dialogue }}</div>
+            </div>
+          </div>
+          <div class="merge-h" style="margin-top:8px">合并预览</div>
+          <div class="merge-b" style="white-space:pre-wrap">{{ mergePreview.action }}</div>
+          <div class="merge-b dlg" v-if="mergePreview.dialogue" style="white-space:pre-wrap">{{ mergePreview.dialogue }}</div>
+          <div class="merge-b" style="color:#7c8798">时长 {{ mergePreview.dur }}s · {{ mergePreview.camera || '镜头语言沿用' }}</div>
+        </div>
+        <div class="modal-ops">
+          <button class="btn" @click="doMerge(askMerge)">合并成一镜</button>
+          <button class="btn ghost" @click="askMerge = null">取消</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -223,30 +296,17 @@
 import { useProject as useProjectStore } from './stores/project.js'
 import { usePipeline, fmtMs } from './stores/pipeline.js'
 import { stepLog, secs, dbgPrompt } from './ulog.js'
-import { composeSystem, normalizeProfile } from './prompts.js'
-import { durWarnings } from './promptlib.js'
+import { composeSystem, composeUser, normalizeProfile } from './prompts.js'
+import { durWarnings, durSuggest, contWarnings, mergeWarnings, mergeShotPair, sceneAlign, sceneCardIssues, charAlign, stripTailEnNote, profileBrief } from './promptlib.js'
 import { parseRes, resLabel, optsWith, clampDur, seg, joinPath } from './resutil.js'
 import { touchRevs, sigEq } from './stale.js'
 
-// 代码固定的身份说明与输出契约（JSON 三块 + json 模式顶层必须是对象）
-const IDENTITY = '你是资深漫剧分镜师。任务：把漫剧化改编稿拆分为镜头列表，并同时产出角色档案与场景档案。'
-const CONTRACT = `只输出一个 JSON 对象，不要输出任何解释、注释或 Markdown 代码块，格式如下：
-{"shots":[{"scene":"地点·内外-时段","chars":"角色A、角色B","action":"画面与动作描述（可拍摄）","dialogue":"对白，无则空串","camera":"镜头语言(如:中景缓推/特写/全景)","dur":8}],"characters":[{"name":"角色名","role":"主人公/配角/反派","profile":"中文档案，每行一个字段「字段名：值」，全角冒号，字段顺序 姓名/身份/性别/年龄段/身形体态/脸型骨架/发型发饰/胡须/服装/配饰道具/主色调/神态/依据","prompt":"中文生图提示词","negative":"中文负向提示词"}],"scenes":[{"name":"场景名","profile":"中文档案，每行一个字段「字段名：值」，字段顺序 场景名/内外/时段/空间结构/主要陈设/材质细节/光线与色温/天气氛围/空镜声明","prompt":"中文生图提示词","negative":"中文负向提示词"}]}
-硬性约束：shots 至少 1 个且按时间顺序覆盖改编稿全部内容；dur 必须是 4-15 之间的整数秒（含 4 与 15）；shots[].scene 必须写完整场景名，严禁"同上"之类省略写法；scenes[].name 与 shots[].scene 逐字一致；characters[].name 与 shots[].chars 中出现的角色逐字一致；每个角色/场景都必须给 profile（不得留空、不得写"未知"），prompt 必须与其 profile 一致（不得写入 profile 里没有任何线索的关键设定）。`
-
-// 内置兜底：项目提示词文件（shots.md 等）整体丢失且无法补齐时才用到
-const FALLBACK = IDENTITY + '\n' + CONTRACT + `
-补充规则：一个连续动作单元一镜；对白保留原句；时长由内容决定（对白按 字数÷4.5 字/秒 估算），宁短勿长；每 1000 字改编稿约 8-15 个镜头；角色档案先穷举点名（有台词/被称呼/有独立动作），再从台词的自称与他称反推身份，最后做差异化设计（任意两人至少 3 个维度不同、含 1 个剪影级差异、各有 1 个识别锚点）。`
+// 🔴 提示词全部来自项目 prompts/ 下的规范 md：shots.md 承载任务身份与 JSON 输出契约，
+//    profile.md / chars.md / scenes.md 承载档案与提示词写法；代码不再硬编码任何提示词片段
 
 // ---- H3 提示词（原阶段5）----
-// 🔴 提示词格式（三段式/六段式）全部由规范文件承载：h3.md（基础模式 T2VA/I2VA/FL2VA/L2VA）、
-//    h3ref.md（参考模式 Ref2VA 六段），代码不硬编码任何官方格式——按镜头素材分流加载。
-const P_IDENTITY = 'You are a prompt engineer for the MiniMax H3 video generation model. Task: write the video prompt for ONE comic-drama shot, strictly following the official H3 prompt format for the task type given below.'
-// 拼装级契约：只约束「输出什么形态的东西」，不规定段落数与字段名（那是 md 规范的事）
-const P_CONTRACT = `Output ONLY the final prompt text for this single shot, in English (dialogue and on-screen text kept in their original language).
-No explanation, no numbering, no Markdown code block, no extra shots. The section/field structure is defined by the style spec above — follow it exactly.`
-const P_FALLBACK = P_IDENTITY + '\n' + P_CONTRACT + `
-The style spec file is unavailable; follow the official MiniMax H3 prompt structure for the given task type exactly.`
+// 🔴 任务身份、提示词格式（三段式/六段式）与输出契约全部由规范文件承载：h3.md（基础模式 T2VA/I2VA/FL2VA/L2VA）、
+//    h3ref.md（参考模式 Ref2VA 六段），代码不硬编码任何提示词——按镜头素材分流加载。
 
 const MAX_REF_IMG = 9
 const MAX_REF_VID = 3
@@ -271,6 +331,10 @@ export default {
       // batch*N/Total=按钮上的进度（正在生成第 N 个 / 共 Total 个），跑完/停止归零
       batchP: false, batchPStop: false, batchV: false, batchVStop: false, askBatch: null,
       batchPN: 0, batchPTotal: 0, batchVN: 0, batchVTotal: 0,
+      // 连续性状态编辑弹窗（contEdit = 镜头下标，null = 关闭；contForm = 弹窗里的两份草稿）
+      contEdit: null, contForm: { continuity: '', change: '' },
+      // 镜头合并确认弹窗（askMerge = 后镜下标 i，合并 i-1 与 i；null = 关闭）
+      askMerge: null,
       // 🔴 Teleport 延迟挂载开关：块 3 的 <section :key> 切集时整棵重建，Vue 在脱离文档的子树里
       // 挂载本组件时 document.querySelector('#shots-batch') 拿不到目标 → 内容被静默丢弃。
       // 必须 mounted + nextTick（DOM 已插入文档）后再渲染 Teleport
@@ -294,6 +358,27 @@ export default {
     /** 参考素材上限（模板里显示「最多 N 张/个」用；method 里放常量不会挂到实例上，必须走 computed） */
     maxRefImg() { return MAX_REF_IMG },
     maxRefVid() { return MAX_REF_VID },
+    /** 文件名前缀（= 集名）：2026-09-24 扁平化后一个项目共用「分镜/」「成片/」目录，
+     *  视频文件必须带集名前缀才不会被别的集覆盖（主进程也按此前缀归集） */
+    epPrefix() {
+      const ep = this.st.current
+      if (!ep) return 'shot'
+      return ep.prefix || String(ep.name || '').replace(/[\\/:*?"<>|]/g, '_').trim() || 'shot'
+    },
+    /** 连续性校验结果（与 shots 等长的数组的数组）；一次算全表，避免每行重算 O(n²) */
+    contAll() { return contWarnings(this.shots) },
+    mergeAll() { return mergeWarnings(this.shots) },
+    /** 场景档案体检（缺档案 / 空档案 / 挂错名字）→ 「场景名 → 黄标文案」，一次算全表供各行查用 */
+    scIssues() {
+      const ep = this.st.current
+      return sceneCardIssues(this.shots, (ep && ep.scenes) || [])
+    },
+    /** 待合并预览（askMerge = 后镜下标 i，即合并 i 与 i+1... 实际存的是「后镜下标」，合并 i-1 与 i） */
+    mergePreview() {
+      const i = this.askMerge
+      if (i === null || !this.shots[i] || !this.shots[i - 1]) return null
+      return mergeShotPair(this.shots[i - 1], this.shots[i])
+    },
     allConfirmed() {
       return this.shots.length > 0 && this.shots.every((_, i) => this.vstate[i] && this.vstate[i].confirmed)
     }
@@ -312,6 +397,9 @@ export default {
     // 别块（角色&场景的「一键填充」）写过 prompts 工件 → 用最新工件重建本块表单，
     // 否则本块的本地副本会在下次保存时把那次填充覆盖回去（同引用，watch('st.current') 不触发）
     'st.current.promptsSyncAt'() { if (this.st.current && !this.pBusy) this.initPrompts(this.st.current) },
+    // 别块（角色&场景的「写入镜头」/「切换变体」改名）写过 shots 工件 → 按最新工件重建分镜列表，
+    // 否则本块的本地副本会在下次保存时把那次改动覆盖回去（同引用，watch('st.current') 不触发）
+    'st.current.shotsSyncAt'() { if (this.st.current && !this.pBusy && !this.vBusy && !this.batchP && !this.batchV) this.initShots(this.st.current) },
     'shots.length'() { /* 分镜数量变化时同步提示词/视频槽位（保持每行三区对齐） */ this.syncSlots() },
     // 第 2 块点「生成分镜」进来 → 不需要任何操作直接开始生成
     'pl.autoShots'(v) { if (v) { this.pl.autoShots = false; this.tryAutoShots() } },
@@ -374,20 +462,30 @@ export default {
       this.generate()
     },
     addRow() {
-      this.shots.push({ scene: '', chars: '', action: '', dialogue: '', camera: '中景', dur: 8 })
+      this.shots.push({ scene: '', chars: '', action: '', dialogue: '', camera: '中景', dur: 8, continuity: '', change: '' })
     },
     /** 项目里已存在的角色/场景名（项目级资产目录 + 本集档案），让 LLM 跨集沿用同名同设定 */
     async knownNames() {
-      const chars = new Set(), scenes = new Set()
+      const chars = new Map(), scenes = new Set()   // chars: 名字 -> profile（跨集防撞脸用）
       const ep = this.st.current || {}
-      for (const c of ep.chars || []) if (c && c.name) chars.add(c.name)
+      const addChar = c => { if (c && c.name && !chars.has(c.name)) chars.set(c.name, String(c.profile || '')) }
+      for (const c of ep.chars || []) addChar(c)
       for (const s of ep.scenes || []) if (s && s.name) scenes.add(s.name)
+      // 项目库（跨集共享）：库条目自带档案。2026-09-27 rev21：外观摘要一并下发（knownBrief），
+      // 新集建新角色时模型才知道已有角色长什么样，才能按 profile.md 设计自由区错开（防全员同一张脸）
+      try { await this.st.loadLibrary(ep.projectId) } catch (_) {}
+      for (const e of this.st.libEntries(ep.projectId)) {
+        if (!e || !e.name) continue
+        if (e.kind === 'scene') scenes.add(e.name)
+        else addChar(e)
+      }
       try {
         const r = await window.studio.projectAssets(this.st.workspace, ep.projectId)
-        for (const g of (r && r.characters) || []) if (g && g.name) chars.add(g.name)
+        for (const g of (r && r.characters) || []) if (g && g.name && !chars.has(g.name)) chars.set(g.name, '')
         for (const g of (r && r.scenes) || []) if (g && g.name) scenes.add(g.name)
       } catch (_) { /* 拿不到资产目录就用本集档案 */ }
-      return { chars: [...chars], scenes: [...scenes] }
+      const briefs = [...chars].map(([name, profile]) => ({ name, profile }))
+      return { chars: [...chars.keys()], scenes: [...scenes], briefs }
     },
     async generate() {
       this.busy = true
@@ -397,20 +495,23 @@ export default {
       L.start('正在生成分镜：LLM 按改编稿拆分镜头并产出角色/场景档案（改编稿 ' + this.adapted.length + ' 字）')
       try {
         const system = await composeSystem({
-          identity: IDENTITY, specs: ['shots.md', 'profile.md', 'chars.md', 'scenes.md'], contract: CONTRACT, fallback: FALLBACK
+          specs: ['shots.md', 'profile.md', 'chars.md', 'scenes.md'],
+          mustHave: ['"shots"', '"characters"', '"scenes"']
         })
-        // 「整个漫剧的综合信息」：除本集改编稿外，带上项目里已存在的角色/场景名（跨集共享，要求沿用）
+        // 「整个漫剧的综合信息」：除本集剧本稿外，带上项目里已存在的角色/场景名（跨集共享，要求沿用）。
+        // user 消息的文案同样来自规范 md（shots.md 的「## 素材格式」），这里只提供素材本身
         const known = await this.knownNames()
-        const knownLines = []
-        if (known.chars.length) knownLines.push('本项目已存在的角色（剧情中再次出现时请沿用同一名字与设定，不要改名）：' + known.chars.join('、'))
-        if (known.scenes.length) knownLines.push('本项目已存在的场景（同一地点请沿用同一场景名）：' + known.scenes.join('、'))
-        const user = '改编稿：\n\n' + this.adapted +
-          (knownLines.length ? '\n\n【项目已有设定】\n' + knownLines.join('\n') : '')
+        const user = await composeUser('shots.md', {
+          script: this.adapted,
+          knownChars: known.chars.join('、'),
+          knownBrief: profileBrief(known.briefs, null, 16),
+          knownScenes: known.scenes.join('、')
+        })
         dbgPrompt('阶段3 分镜脚本', '文字模型', [['system', system], ['user', user]])
         const text = await window.studio.llmChat([
           { role: 'system', content: system },
           { role: 'user', content: user }
-        ], { temperature: 0.5, maxTokens: 8192, json: true, label: '阶段3 分镜脚本' })
+        ], { temperature: 0.5, maxTokens: 12288, json: true, label: '阶段3 分镜脚本' })
         const parsed = JSON.parse(require_json(text))
         const used = new Set()
         const shots = pickArr(parsed, ['shots', '镜头', '镜头列表'], used)
@@ -425,13 +526,23 @@ export default {
           prev = scene
           return {
             scene, chars: s.chars || '', action: s.action || '',
-            dialogue: s.dialogue || '', camera: s.camera || '', dur: clampDur(s.dur)
+            dialogue: s.dialogue || '', camera: s.camera || '', dur: clampDur(s.dur),
+            continuity: String(s.continuity || '').trim(), change: String(s.change || '').trim()
           }
         })
 
         // 角色 / 场景档案：与已有档案合并（出过图、锁定过的绝不丢）
         const chars2 = mergeArchive(normArchive(chars, 'character'), this.st.current.chars)
-        const scenes2 = mergeArchive(normArchive(scenes, 'scene'), this.st.current.scenes)
+        // 人物名对齐（2026-09-27）：改编稿给同一人写两种名字（「人名（主角）」/「人名」）时，
+        // 镜头侧剥掉定位标签、向角色卡名对齐（卡名是图片目录的 key，绝不能动卡名）；
+        // 卡侧撞键（剥标签后同键的多张卡，可能是两个不同的人）绝不自动归并，只黄标。
+        const charAligned = charAlign(this.shots, chars2)
+        if (charAligned.fixes.length || charAligned.warnings.length) this.shots = charAligned.shots
+        // 场景档案名先对齐镜头里的拼法（模型偶把同一场景写成两种拼法 → 档案挂在没人用的名字上，
+        // 镜头真正在用的那张卡档案为空 → 生图退化成通用空镜。见 promptlib.sceneAlign）
+        const aligned = sceneAlign(this.shots, normArchive(scenes, 'scene'))
+        const scenes2 = mergeArchive(aligned.scenes, this.st.current.scenes)
+        const audit = sceneCardIssues(this.shots, scenes2)
 
         await this.st.saveArtifact('shots', this.shots)
         await this.st.saveArtifact('chars', chars2)
@@ -440,9 +551,21 @@ export default {
         await touchRevs(this.st, r => { r.shotsAdapted = r.adapted || 0 })
         this.syncSlots()
         this.pl.markGen(2, Date.now() - t0)
+        const warnN = Object.keys(audit.byName).length
+        if (charAligned.fixes.length) {
+          L.info('镜头人物名已向角色卡对齐（剥掉定位标签）：' + charAligned.fixes.map(f => f.from + ' → ' + f.to).join('；'))
+        }
+        for (const w of charAligned.warnings) L.warn(w)
+        if (aligned.moves.length) {
+          L.info('场景档案名已对齐到镜头里的写法：' + aligned.moves.map(m => m.from + ' → ' + m.to).join('；'))
+        }
+        if (warnN) {
+          L.warn('场景档案有 ' + warnN + ' 处待补：' + Object.keys(audit.byName).join('、') + '（角色与场景块里有黄标）')
+        }
         L.done('分镜生成完成：' + this.shots.length + ' 个镜头 · 角色档案 ' + chars2.length +
           ' 个 · 场景档案 ' + scenes2.length + ' 个', Date.now() - t0)
-        this.$root.toast('已生成 ' + this.shots.length + ' 个镜头、' + chars2.length + ' 个角色、' + scenes2.length + ' 个场景，请检查编辑后确认')
+        this.$root.toast('已生成 ' + this.shots.length + ' 个镜头、' + chars2.length + ' 个角色、' + scenes2.length + ' 个场景' +
+          (warnN ? '；有 ' + warnN + ' 个场景档案缺失，已打黄标' : '') + '，请检查编辑后确认')
       } catch (e) {
         L.fail('分镜生成失败', Date.now() - t0, e)
         this.st.fail(e)
@@ -648,7 +771,8 @@ export default {
         let name = m[1].trim(), note = ''
         const pm = name.match(/^(.*?)[（(]([^）)]*)[）)]$/)
         if (pm) { name = pm[1].trim(); note = pm[2].trim() }
-        out.push({ name: name, note: note, text: m[2].trim() })
+        // 句尾英文括注剥掉（存量改编稿把画外音英文说明带进了台词；H3 任务与时长计算都不该看到它）
+        out.push({ name: name, note: note, text: stripTailEnNote(m[2].trim()) })
       }
       return out
     },
@@ -746,46 +870,57 @@ export default {
         const mode = this.h3ModeOf(refs)
         // 规范文件按模式分流：基础模式 h3.md（三段式）/ 参考模式 h3ref.md（六段式）——格式细节全在 md 里
         const system = await composeSystem({
-          identity: P_IDENTITY,
           specs: mode === 'Ref2VA' ? ['h3ref.md'] : ['h3.md'],
-          contract: P_CONTRACT, fallback: P_FALLBACK
+          mustHave: ['## 输出格式']
         })
-        let user = 'Character sheets (use as-is):\n' + (this.charProfiles() || '(none)') +
-          '\n\nScene sheets (use as-is):\n' + (this.sceneProfiles() || '(none)') +
-          '\n\nShot ' + (i + 1) + ' (duration ' + s.dur + ' seconds):\n' + JSON.stringify(s, null, 2) +
-          '\n\nOfficial task type for this shot: ' + mode + '. Follow the matching branch of the style spec exactly.\n'
+        // ---- user 消息：结构、标签与所有指令文字都来自规范 md（h3.md / h3ref.md 的「## 素材格式」），
+        //      这里只负责准备素材本身（档案文本、镜头 JSON、对白行、连续性状态、资产清单）----
         // 对白锁人：把「谁说哪句」逐条列清随任务下发，模型不必猜（说话人漂移是本模块最大回归源）
         const dlg = this.dialogueLines(s)
-        if (dlg.length) {
-          const who = (n) => {
-            if (!n) return '(speaker name missing in the shot text)'
-            const hit = (this.chars || []).find(c => c.name === n) || (this.scenes || []).find(c => c.name === n)
-            let pic = ''
-            if (hit && mode === 'Ref2VA') {
-              const k = (refs.images || []).findIndex(f => this.refOwner(f).indexOf(n) >= 0)
-              if (k >= 0) pic = ' → <Picture ' + (k + 1) + '>'
-            }
-            return n + pic
+        const who = (n) => {
+          if (!n) return '(speaker name missing in the shot text)'
+          const hit = (this.chars || []).find(c => c.name === n) || (this.scenes || []).find(c => c.name === n)
+          let pic = ''
+          if (hit && mode === 'Ref2VA') {
+            const k = (refs.images || []).findIndex(f => this.refOwner(f).indexOf(n) >= 0)
+            if (k >= 0) pic = ' → <Picture ' + (k + 1) + '>'
           }
-          user += '\nDialogue lines of this shot. The speaker is FIXED by the name before the colon — the line must be spoken by exactly that person, ' +
-            'never reassigned to whoever the camera focuses on or reacts. Bracketed notes follow the off-screen / voiceover rules of the spec:\n' +
-            dlg.map((l, k) => (k + 1) + '. ' + who(l.name) + (l.note ? ' [' + l.note + ']' : '') + ' says: ' + l.text).join('\n') + '\n'
+          return n + pic
         }
+        const dlgText = dlg.length
+          ? dlg.map((l, k) => (k + 1) + '. ' + who(l.name) + (l.note ? ' [' + l.note + ']' : '') + ' says: ' + l.text).join('\n')
+          : ''
+        // 连续性状态：本镜必须呈现的状态快照 + 本镜发生的变化（每镜独立生成、模型没有跨镜记忆，
+        // 服装/随身物只靠这一块钉住，见 promptlib.contWarnings）
+        const cont = String(s.continuity || '').trim()
+        const chg = String(s.change || '').trim()
+        // 资产清单：参考模式按注入顺序编号（模型据此写 <Subject N> 定义；首尾帧在参考模式下不参与生成）；
+        // 基础模式则给出首/尾帧的对齐句标签
+        let refAssets = '', frames = ''
         if (mode === 'Ref2VA') {
-          // 参考模式：把实际附给模型的资产按顺序编号（与 ref_images/ref_videos 注入顺序一致），
-          // 模型据此写 <Subject N> 定义；首尾帧在参考模式下不参与生成，不提
           const inv = []
           refs.images.forEach((f, k) => inv.push('<Picture ' + (k + 1) + '> = ' + this.baseName(f) + this.refOwner(f)))
           refs.videos.forEach((f, k) => inv.push('<Video ' + (k + 1) + '> = ' + this.baseName(f)))
-          user += '\nThe reference assets below are attached to the model in exactly this order. ' +
-            'Define each reusable subject as <Subject N> sourced from these <Picture N>/<Video N> labels, per the spec:\n' + inv.join('\n')
+          refAssets = inv.join('\n')
         } else {
-          // 基础模式：首/尾帧是真实帧锚点，按官方对齐句标签告知
           const att = []
           if (refs.first) att.push('<Picture 1> = the first frame image attached to the model')
           if (refs.last) att.push('<Picture 2> = the last frame image attached to the model')
-          if (att.length) user += '\nFrame images attached to the model (use these labels in the alignment line and the body):\n' + att.join('\n')
+          frames = att.join('\n')
         }
+        const user = await composeUser(mode === 'Ref2VA' ? 'h3ref.md' : 'h3.md', {
+          characters: this.charProfiles() || '(none)',
+          scenes: this.sceneProfiles() || '(none)',
+          n: i + 1,
+          dur: s.dur,
+          shot: JSON.stringify(s, null, 2),
+          mode,
+          dialogue: dlgText,
+          continuity: (cont || chg) ? (cont || '(none)') : '',
+          change: chg,
+          refAssets,
+          frames
+        })
         dbgPrompt('阶段5 H3提示词', '文字模型 · 第' + (i + 1) + '镜 · ' + mode, [['system', system], ['user', user]])
         const text = await window.studio.llmChat([
           { role: 'system', content: system },
@@ -905,6 +1040,58 @@ export default {
     durOf(i) { return clampDur(this.shots[i] && this.shots[i].dur) },
     /** 时长软校验（只提示不拦截）：台词/发声表演/复合运镜与 dur 不匹配时返回违规说明 */
     durWarn(i) { return durWarnings(this.shots[i] || {}) },
+    durSuggest(i) { return durSuggest(this.shots[i] || {}) },
+    contWarn(i) { return (this.contAll && this.contAll[i]) || [] },
+    mergeWarn(i) { return (this.mergeAll && this.mergeAll[i]) || '' },
+    /** 该镜头场景名的档案体检文案（空串 = 没问题）；见 promptlib.sceneCardIssues */
+    scWarnOf(name) { return (this.scIssues.byName || {})[String(name || '').trim()] || '' },
+    /** 打开合并确认弹窗（i = 后镜下标；合并 i-1 与 i） */
+    openMerge(i) { this.askMerge = i },
+    /** 一键合并 i-1 与 i：确定性字段处理 + 复用 delShot 的下标位移（后续镜头全部继续有效） */
+    async doMerge(i) {
+      this.askMerge = null
+      const a = this.shots[i - 1], b = this.shots[i]
+      if (!a || !b) return
+      const merged = mergeShotPair(a, b)
+      merged._rev = (a._rev || 1) + 1   // 分镜变了 → 第 i 镜提示词/视频的脏标记自动生效
+      this.shots.splice(i - 1, 2, merged)
+      this.prompts.splice(i, 1)         // 提示词槽同步删后镜（i-1 槽保留，因 _rev 变化自动标脏）
+      // vstate 以镜头下标为 key：删 i 槽、后续整体前移（与 delShot 同一套位移）
+      const vs = {}
+      Object.keys(this.vstate).map(Number).sort((x, y) => x - y).forEach(k => {
+        if (k === i) return
+        vs[k > i ? k - 1 : k] = this.vstate[k]
+      })
+      this.vstate = vs
+      await this.saveShots()
+      await this.savePrompts()
+      await this.saveVideos()
+      this.$root.toast('已合并为镜头 ' + i + '，重新生成提示词后生效')
+    },
+    /** 连续性状态的 tooltip / 是否显示「状态」小胶囊（空串 = 该镜没写快照，不显示） */
+    contTip(i) {
+      const s = this.shots[i] || {}
+      const c = String(s.continuity || '').trim()
+      const g = String(s.change || '').trim()
+      return [c, g ? '变化：' + g : ''].filter(Boolean).join('\n')
+    },
+    /** 打开连续性状态编辑弹窗（点击行内的「状态」胶囊；行高固定 491px，编辑只能走弹窗） */
+    openCont(i) {
+      const s = this.shots[i] || {}
+      this.contForm = { continuity: String(s.continuity || ''), change: String(s.change || '') }
+      this.contEdit = i
+    },
+    async saveCont() {
+      const i = this.contEdit
+      this.contEdit = null
+      if (i === null || !this.shots[i]) return
+      const s = this.shots[i]
+      s.continuity = String(this.contForm.continuity || '').trim()
+      s.change = String(this.contForm.change || '').trim()
+      this.touchShot(s)
+      await this.saveShots()
+      this.$root.toast('已保存镜头 ' + (i + 1) + ' 的连续性状态')
+    },
     genTextV(i) {
       void this.live
       const s = this.vstate[i]
@@ -937,6 +1124,17 @@ export default {
       s.cur = k
       s.confirmed = true
       await this.saveVideos()
+    },
+    /**
+     * 视频框点击：点画面 = 选中该版本；点原生控制条（播放/进度/音量…）= 不拦截。
+     * 🔴 不再用遮挡层硬编码 42px 预留控制条 —— 实测这版 Chromium 的控制条更高，
+     * 遮挡层下缘正好切在播放键中间（点播放键上半截没反应）。改为按点击纵坐标判断：
+     * 底部 CTRL_PX 像素内一律视为控制条操作；原生控件若不冒泡事件则本处理器根本不触发，两种情况都正确。
+     */
+    boxClick(e, i, k) {
+      const r = e.currentTarget.getBoundingClientRect()
+      if (e.clientY >= r.bottom - 64) return
+      this.setVideo(i, k)
     },
     /** 路径 → 文件名（Windows / 通用分隔符都兼容） */
     baseName(p) { return String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() },
@@ -1030,7 +1228,8 @@ export default {
         const params = JSON.parse(JSON.stringify({
           prompt, firstFrame, lastFrame, refImages, refVideos,
           width: rw, height: rh,
-          seconds: dur   // 秒数按分镜脚本该镜头的 dur（主进程对齐到 17k+5 帧网格）
+          seconds: dur,               // 秒数按分镜脚本该镜头的 dur（主进程对齐到 17k+5 帧网格）
+          projectId: this.st.current.projectId   // 视频档位是项目级设置，由主进程按它实时读库
         }))
         dbgPrompt('阶段6 H3视频', '视频模型 · 镜头' + (i + 1), [
           ['prompt', prompt],
@@ -1042,7 +1241,7 @@ export default {
           ['refVideos', refVideos.join('\n')]
         ])
         const r = await window.studio.comfyGenerate({
-          templateKey: 'video', dir, baseName: 'shot_' + (i + 1),
+          templateKey: 'video', dir, baseName: this.epPrefix + '_shot_' + (i + 1),
           params,
           label: '阶段6 H3视频'
         })

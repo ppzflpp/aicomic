@@ -11,6 +11,8 @@ const path = require('path');
 const { spawn, spawnSync, execFile } = require('child_process');
 const { writeUnique, sanitize } = require('./assetStore.cjs');
 const models = require('./models.cjs');
+const videoTiers = require('./videoTiers.cjs');
+const projects = require('./projects.cjs');
 const logger = require('./logger.cjs');
 
 let db = null;
@@ -90,6 +92,13 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
   const t0 = Date.now();
   const userLen = messages.reduce((n, m) => n + String(m.content || '').length, 0);
   logger.detail('LLM 请求：输入约 ' + userLen + ' 字，max_tokens=' + maxTokens + (json ? '，JSON 模式' : ''));
+  // 软护栏（2026-09-27）：按本机 Qwen3.5 实测换算率（1 中文字 ≈ 0.64 token）估算总量，
+  // 接近每槽 -c 32768 上限时提前警告（输出预算会被压缩）——只提示、不拦截。
+  const estIn = Math.round(userLen * 0.64);
+  if (estIn + maxTokens > 30000) {
+    logger.warn('LLM 上下文吃紧：输入约 ' + userLen + ' 字（≈' + estIn + ' tok）+ max_tokens=' + maxTokens +
+      ' ≈ ' + (estIn + maxTokens) + ' tok，已接近单槽 32768 上限，建议精简规范或章节原文');
+  }
   // 先快速探活（1.5s），避免连接挂起时用户干等
   let alive = false;
   try { alive = (await fetchJson(endpoint('llm') + '/v1/models', {}, 1500)).ok; } catch (_) {}
@@ -126,7 +135,7 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
     throw new Error('LLM 返回错误 ' + res.status + ': ' + t.slice(0, 300));
   }
 
-  let content = '', reasoning = '';
+  let content = '', reasoning = '', finishReason = '';
   try {
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -144,7 +153,9 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
         if (!payload || payload === '[DONE]') continue;
         let j = null;
         try { j = JSON.parse(payload); } catch (_) { continue; }
-        const d = j.choices && j.choices[0] && j.choices[0].delta;
+        const c0 = j.choices && j.choices[0];
+        const d = c0 && c0.delta;
+        if (c0 && c0.finish_reason) finishReason = c0.finish_reason;
         if (!d) continue;
         if (d.content) { content += d.content; if (onDelta) { try { onDelta(d.content, content); } catch (_) {} } }
         if (d.reasoning_content) reasoning += d.reasoning_content;
@@ -156,7 +167,12 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
     if (reasoning) throw new Error('模型只输出了思考内容、没有正文（max_tokens=' + maxTokens + ' 可能被思考耗尽）。请确认已关闭思考模式或增大 max_tokens。');
     throw new Error('LLM 返回内容为空');
   }
-  logger.done('LLM 返回 ' + content.length + ' 字', Date.now() - t0);
+  // 输出被 max_tokens 掐断时明确报错（此前静默返回半截 JSON / 半篇改编稿，下游才爆错，难排查）
+  if (finishReason === 'length') {
+    throw new Error('LLM 输出被 max_tokens=' + maxTokens + ' 截断（finish_reason=length，已生成 ' +
+      content.length + ' 字）。请到设置里调大输出上限，或精简规范 / 拆短章节。');
+  }
+  logger.done('LLM 返回 ' + content.length + ' 字' + (finishReason ? '（finish=' + finishReason + '）' : ''), Date.now() - t0);
   return content;
 }
 
@@ -416,15 +432,16 @@ function findPlaceholders(x) {
 }
 
 /**
- * H3 视频参数（设置键 h3.width / h3.height / h3.seconds / h3.steps / h3.quality）。
+ * H3 视频参数（设置键 h3.width / h3.height / h3.seconds）。
  * 16GB 显存甜点：864x480、5 秒。
  * length 自动对齐到模型的 17k+5 帧网格（24fps）。
  *
- * 档位：
- *   fast（默认）＝ 4 步 Turbo LoRA + 参考图按生成面积缩放（ref_image_size=match）
- *   hq        ＝ 8 步 Turbo LoRA + 参考图 2048 短边（max，身份保真最好但慢数倍）
+ * 视频档位（三档）是**项目级**设置，在「新建项目 / 项目配置」里和分辨率一起选，
+ * 存 projects.res_tier；生成时按 projectId 实时读库 —— 所以改档位对本项目
+ * 所有剧集立即生效（分辨率不同：那只影响之后新建的剧集）。
+ * 用户只选「快慢质量」，模型 / 步数 / 调度全部由 videoTiers.cjs 注册表解析。
  */
-function h3Params() {
+function h3Params(projectId) {
   const num = (k, d) => { const v = Number(db.getSetting(k)); return Number.isFinite(v) && v > 0 ? v : d; };
   const snap = v => Math.max(32, Math.round(v / 32) * 32);
   const width = snap(num('h3.width', 864));
@@ -432,11 +449,29 @@ function h3Params() {
   let length = Math.max(5, Math.round(num('h3.seconds', 5) * 24));
   // 对齐 17k+5 帧网格：恒向上取（+17 防负数取模向下减，见 2026-09-23 修复）
   length = length + ((5 - (length % 17)) + 17) % 17;
-  const quality = String(db.getSetting('h3.quality') || 'fast') === 'hq' ? 'hq' : 'fast';
-  const steps = Math.max(1, Math.round(num('h3.steps', quality === 'hq' ? 8 : 4)));
-  const refImageSize = String(db.getSetting('h3.refImageSize') || '') ||
-    (quality === 'hq' ? 'max' : 'match');
-  return { width, height, length, steps, quality, refImageSize };
+  const tier = tierOfProject(projectId);
+  // 参考图缩放固定 match（蒸馏模型训练用 match，max 会偏离训练分布）；
+  // 保留设置键仅作高级覆盖（老版本 hq 档默认 max 的行为已废弃）。
+  const refImageSize = String(db.getSetting('h3.refImageSize') || '').trim() || 'match';
+  // 步数由档位注册表给出；h3.steps 仅作高级手动覆盖（设置里默认不写这个键）
+  const rawSteps = Number(db.getSetting('h3.steps'));
+  const stepsOverride = Number.isFinite(rawSteps) && rawSteps > 0 ? Math.round(rawSteps) : null;
+  return { width, height, length, tier, refImageSize, stepsOverride };
+}
+
+/**
+ * 解析本次生成用哪个档位：项目级优先（权威值，实时读库），
+ * 老库/无项目上下文时回退旧的全局设置键 h3.quality，再回注册表默认档。
+ */
+function tierOfProject(projectId) {
+  const pid = Number(projectId);
+  if (Number.isFinite(pid) && pid > 0) {
+    try {
+      const r = projects.getProjectRes(db, pid);
+      if (r && r.tier) return r.tier;
+    } catch (_) { /* 读库失败不阻塞生成，走兜底 */ }
+  }
+  return String(db.getSetting('h3.quality') || '') || videoTiers.DEFAULT_TIER;
 }
 
 /* ---------------- H3 媒体支路（首帧/尾帧/参考图/参考视频） ---------------- */
@@ -587,7 +622,7 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
   let realParams;
   if (isVideo) {
     const wm = models.workflowModels();
-    const p = { ...wm, ...h3Params() };
+    const p = { ...wm, ...h3Params(params.projectId) };
     // 秒数按「分镜脚本该镜头的 dur」走（渲染端传 seconds，4~15s 含边界）；
     // 没传才回退设置键 h3.seconds。都自动对齐到 17k+5 帧网格（24fps）。
     const sec = Number(params.seconds);
@@ -597,11 +632,16 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
       p.length = L + ((5 - (L % 17)) + 17) % 17;
       p.seconds = Math.max(4, Math.min(15, Math.round(sec)));
     }
-    // 权重与加速 LoRA 必须成对：ref2va 只能配 ref2v 的 LoRA，fl2va 只能配 fl2v 的
+    // 权重与加速 LoRA 必须「档位 × 模型族」成对解析（videoTiers.cjs 注册表）：
+    // 有参考媒体 → ref2v 族，否则 fl2v 族；档位只决定「快慢质量」，模型细节用户不可见
+    const family = refMode ? 'ref2v' : 'fl2v';
+    const tierRes = videoTiers.resolveTier(p.tier, family, wm.h3_lora_files);
+    p.tierRes = tierRes;
     p.h3_unet = refMode ? (wm.h3_ref2va || wm.h3_fl2va || wm.h3_model) : (wm.h3_fl2va || wm.h3_model);
-    p.h3_lora = refMode
-      ? wm.h3_ref2v_lora
-      : (p.quality === 'hq' ? wm.h3_fl2v_lora_hq : wm.h3_fl2v_lora_fast);
+    p.h3_lora = tierRes.lora;                       // null = 基础模型直跑（摘 LoRA 节点）
+    p.steps = p.stepsOverride || tierRes.steps;     // h3.steps 仅作高级手动覆盖
+    p.h3_shift = tierRes.shift;                     // [v,a] 需注入 SigmaShift；null 不注入
+    p.tierLabel = videoTiers.LABELS[tierRes.tier] || tierRes.tier;
     // conditioning / latent 的连接目标；注入媒体支路后会由 injectH3Media 改写
     p.cond_id = '16';
     p.latent_id = '16';
@@ -654,15 +694,36 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
   }
 
   if (isVideo) {
-    // 没有 Turbo LoRA 就摘掉该节点，模型直接从 UNETLoader 取（质量略降但不报错）
-    if (!realParams.h3_lora) {
-      delete wf['14'];
+    // Σ-shift 注入：蒸馏 LoRA 的训练 shift ≠ 模型默认（12/3）时才需要（如 768p 系训练 6/3）。
+    // 🔴 节点 20（BasicScheduler）也必须接 shift 后的模型 —— sigma 网格由 model_sampling 生成，
+    //    接错会让「采样网格」和「DiT 内部换算」用两套 shift，画面直接毁。
+    const shift = realParams.h3_shift;
+    if (realParams.h3_lora && Array.isArray(shift) && shift.length === 2) {
+      wf['15'] = {
+        class_type: 'MiniMaxH3SigmaShift',
+        inputs: { model: ['14', 0], shift_video: shift[0], shift_audio: shift[1] }
+      };
       for (const n of ['18', '20']) {
         if (wf[n] && Array.isArray(wf[n].inputs.model) && wf[n].inputs.model[0] === '14') {
+          wf[n].inputs.model = ['15', 0];
+        }
+      }
+    }
+
+    // 没有（或该档位不需要）加速 LoRA → 摘掉 LoRA/Σ-shift 节点，基础模型直跑。
+    // 步数已由注册表兜底为 20（基础模型上跑 4/8 步画面会崩），不报错。
+    if (!realParams.h3_lora) {
+      delete wf['14'];
+      delete wf['15'];
+      for (const n of ['18', '20']) {
+        const m = wf[n] && wf[n].inputs.model;
+        if (Array.isArray(m) && (m[0] === '14' || m[0] === '15')) {
           wf[n].inputs.model = ['10', 0];
         }
       }
-      logger.detail('未找到 Turbo LoRA，本次按原步数采样');
+      if (realParams.tierRes && realParams.tierRes.downgraded) {
+        logger.detail('档位所需的加速 LoRA 缺文件，本次按基础模型 ' + realParams.steps + ' 步采样');
+      }
     }
 
     // 媒体一律上传到 ComfyUI 的 input 目录 —— LoadImage / LoadVideo 只认那里
@@ -692,7 +753,17 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
   if (isVideo) {
     logger.info('本次视频生成配置：' + realParams.width + 'x' + realParams.height +
       '，' + (realParams.seconds || Math.round(realParams.length / 24)) + 's（' + realParams.length + ' 帧）' +
-      '，' + realParams.steps + ' 步，档位 ' + (realParams.quality || 'fast'));
+      '，' + realParams.steps + ' 步，' + (realParams.tierLabel || '平衡') + '档');
+    // 模型一览：排查「出的片不对」第一步就是确认这套组合是不是预期的那套。
+    // 用户平时不需要看，但日志里必须留痕（档位 → 实际权重 / LoRA / 步数 / σ shift 全链路可见）。
+    const tr = realParams.tierRes || {};
+    logger.info('本次使用模型：' + (realParams.h3_unet || '(未解析到权重文件)') +
+      '｜LoRA：' + (realParams.h3_lora || '无（基础模型直跑）') +
+      '｜模型族：' + (tr.family === 'ref2v' ? 'ref2va（参考图 / 参考视频支路）' : 'fl2va（文生图 / 首尾帧支路）') +
+      '｜σ shift：' + (realParams.h3_shift
+        ? realParams.h3_shift[0] + '/' + realParams.h3_shift[1] + '（已注入 MiniMaxH3SigmaShift）'
+        : '模型默认 12/3（不注入节点）') +
+      (tr.downgraded ? '｜⚠ 该档位 LoRA 文件缺失，本次已降级为基础模型 20 步' : ''));
   } else {
     logger.info('本次图片生成配置：' + realParams.width + 'x' + realParams.height +
       (realParams.image ? '，图生图（denoise ' + realParams.denoise + '）' : '，文生图') +
@@ -807,7 +878,7 @@ function srtTime(sec) {
  * videos: [{file, dialogue, dur}]（绝对路径）
  * opts.width/height：输出分辨率（剧集「输出分辨率」配置），默认 1920x1080。
  */
-async function exportVideo(outDir, outName, videos, { subtitles = true, width = 1920, height = 1080 } = {}) {
+async function exportVideo(outDir, outName, videos, { subtitles = true, width = 1920, height = 1080, scope = '' } = {}) {
   // 导出是一次性长任务：这里同步确认一次 ffmpeg（避免「预热没跑完」被误判成没装）
   const ffmpeg = findFfmpeg({ forceSync: true });
   if (!ffmpeg) throw new Error('未找到 ffmpeg。请将 ffmpeg.exe 放到 workspace/tools/，或到 设置→环境检测 指定路径。');
@@ -886,8 +957,12 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
       // 🔴 需求（Dragon 2026-09-22）：重复点击「组装成片」→ 旧成片被**替换**掉，不留历史版本。
       // 删除本次导出之外的其它成片 mp4，连同各自封面（.xxx.mp4.poster.jpg）与 meta 记录一并清理。
       // （成片是可随时重新组装的派生产物，不是原始素材；组装失败不会走到这里，旧成片仍保留。）
+      // 🔴 2026-09-24 扁平化后「成片/」是全项目共用的目录：**只能删本集（scope 前缀）的旧成片**，
+      //    否则导出第 2 集会顺手删掉第 1 集的成片。scope 为空（老调用/测试）时才按「删目录内全部」的旧行为。
+      const scopePre = scope ? String(scope) + '_' : '';
       for (const f of fs.readdirSync(outDir)) {
         if (f === finalName) continue;
+        if (scopePre && !f.startsWith(scopePre)) continue;
         if (/\.mp4$/i.test(f) || /\.webm$/i.test(f) || /\.mov$/i.test(f)) {
           try { fs.rmSync(path.join(outDir, f), { force: true }); } catch (_) {}
           try { fs.rmSync(path.join(outDir, '.' + f + '.poster.jpg'), { force: true }); } catch (_) {}

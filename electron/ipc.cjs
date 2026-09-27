@@ -12,6 +12,8 @@ const session = require('./session.cjs');
 const orchestrator = require('./orchestrator.cjs');
 const skills = require('./skills.cjs');
 const promptFiles = require('./prompts.cjs');
+const library = require('./library.cjs');
+const videoTiers = require('./videoTiers.cjs');
 const { writeUnique } = require('./assetStore.cjs');
 
 /** 注册全部 IPC。getWin 返回主窗口（用于目录选择对话框），测试环境可传 () => null。 */
@@ -48,7 +50,14 @@ function registerIpc(db, getWin, fallbackWorkspace) {
   });
 
   ipcMain.handle('tree:get', (e, workspace) => projects.getTree(db, workspace));
-  ipcMain.handle('project:create', (e, workspace, name, res) => projects.createProject(db, workspace, name, res));
+  ipcMain.handle('project:create', (e, workspace, name, res) => {
+    const p = projects.createProject(db, workspace, name, res);
+    // 项目诞生即落一个空库（不迁移）：把「本项目从此刻开始用库」钉死。
+    // 否则「老项目迁移」的触发时机不可控 —— 若发生在用户已生成图之后，
+    // 本次会话新生成的图会被静默入库、集内卡片当场变只读（e2e 实测踩到）。
+    try { library.initLibrary(db, workspace, p.id); } catch (_) {}
+    return p;
+  });
   ipcMain.handle('project:delete', (e, workspace, projectId) => projects.deleteProject(db, workspace, projectId));
   ipcMain.handle('folder:add', (e, workspace, projectId, parentId, name) => projects.addFolder(db, workspace, projectId, parentId, name));
   ipcMain.handle('folder:delete', (e, workspace, folderId) => projects.deleteFolder(db, workspace, folderId));
@@ -94,22 +103,43 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     };
   });
 
-  // 镜头视频 / 成片：项目下各集目录（<项目>/分镜/<集>/、<项目>/成片/<集>/），带分辨率与时长
+  // 镜头视频 / 成片：项目下「分镜/」「成片/」两个平铺目录，按**集名前缀**归到各集（扁平化后不再有集数子目录）
   const listEpisodeMedia = async (workspace, projectId, kind) => {
     const root = projects.ensureProjectDirs(db, workspace, projectId);
     if (!root) return [];
     const eps = projects.listProjectEpisodes(db, workspace, projectId);
+    const dir = path.join(root, kind === 'film' ? '成片' : '分镜');
+    let all = [];
+    try { all = await inference.listVideosWithMeta(dir); } catch (_) { all = []; }
+    // 长前缀优先匹配：要求「集名 + _」完整命中，所以「第1集下」不会被「第1集」误吞
+    const sorted = eps.slice().sort((a, b) => b.prefix.length - a.prefix.length);
+    const used = new Set();
     const out = [];
-    for (const ep of eps) {
-      const dir = kind === 'film' ? ep.filmDir : ep.shotDir;
-      let files = [];
-      try { files = await inference.listVideosWithMeta(dir); } catch (_) { files = []; }
+    for (const ep of sorted) {
+      const files = all.filter(f => !used.has(f.file) && f.file.startsWith(ep.prefix + '_'));
+      for (const f of files) used.add(f.file);
       if (files.length) out.push({ episodeId: ep.id, name: ep.name, dir, files });
     }
+    out.sort((a, b) => a.episodeId - b.episodeId);   // 与左侧树集数顺序一致
     return out;
   };
   ipcMain.handle('project:shots', (e, workspace, projectId) => listEpisodeMedia(workspace, projectId, 'shot'));
   ipcMain.handle('project:films', (e, workspace, projectId) => listEpisodeMedia(workspace, projectId, 'film'));
+
+  // 剧本工件：项目下「剧本/」平铺目录（章节原文 / 改编稿 / 分镜脚本 / 角色档案 / 场景档案），按集名前缀归集
+  ipcMain.handle('project:scripts', (e, workspace, projectId) => projects.listProjectScripts(db, workspace, projectId));
+
+  /* ---- 项目角色场景库（<项目>/assets/library.json）----
+     跨集共享的角色/场景条目：命中即只读加载，本集新增的卡片可「保存到项目」入库。
+     首次访问会自动迁移老项目（把 assets 下已有图片目录补成库条目）。 */
+  ipcMain.handle('library:list', (e, workspace, projectId) => library.listLibrary(db, workspace, projectId));
+  ipcMain.handle('library:save', (e, workspace, projectId, payload) => library.saveEntry(db, workspace, projectId, payload));
+  ipcMain.handle('library:add', (e, workspace, projectId, kind, name) => library.addEntry(db, workspace, projectId, kind, name));
+  ipcMain.handle('library:rename', (e, workspace, projectId, id, newName) => library.renameEntry(db, workspace, projectId, id, newName));
+  ipcMain.handle('library:usage', (e, workspace, projectId, id) => library.entryUsage(db, workspace, projectId, id));
+  // 「切换变体」：把某一集里旧名换成新名（卡片 + 分镜 chars·scene + 对白人名），不动库条目
+  ipcMain.handle('library:swap', (e, workspace, projectId, episodeId, kind, oldName, newName, newId) =>
+    library.renameInEpisode(db, workspace, projectId, episodeId, kind, oldName, newName, newId));
 
   /* ---- 项目级提示词规范文件（<项目>/prompts/*.md）：五个模块的风格规范，用户可编辑；
           文件缺失 / 还是旧版结构时，主进程自动从内置 skills/prompts/ 补齐或重播 ---- */
@@ -128,8 +158,10 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     return root ? promptFiles.saveAt(root, name, content) : false;
   });
 
-  /* ---- 分辨率配置（项目级 = 新建剧集的初始模板；剧集级 = 本集生效值）---- */
+  /* ---- 分辨率 / 视频档位配置（项目级 = 新建剧集的初始模板；剧集级 = 本集生效值）---- */
   ipcMain.handle('res:options', () => models.resOptions());
+  // 视频档位清单：渲染层下拉直接用主进程给的档位名渲染（UI 不硬编码、不出现模型信息）
+  ipcMain.handle('res:tiers', () => videoTiers.list());
   ipcMain.handle('project:res:get', (e, projectId) => projects.getProjectRes(db, projectId));
   ipcMain.handle('project:res:set', (e, projectId, res) => projects.setProjectRes(db, projectId, res));
   ipcMain.handle('episode:res:get', (e, episodeId) => projects.getEpisodeRes(db, episodeId));
@@ -249,17 +281,31 @@ function registerIpc(db, getWin, fallbackWorkspace) {
   });
   ipcMain.handle('comfy:generate', async (e, { templateKey, dir, baseName, params, label }) => {
     await orchestrator.ensureComfy(label || (templateKey === 'video' ? '阶段6 H3视频' : '阶段4 角色出图'));
+    // 兜底闸门：自动编排被关 / 自动拉起失败时，上面不会报错但 ComfyUI 仍不在线
+    // → 生成前再探一次，没起来就给用户明确出路，而不是让请求打到 8188 上连接挂死
+    const h = await inference.health();
+    if (!h.comfyui) {
+      const m = 'ComfyUI 还没有启动。第一次使用请先手动打开 ComfyUI（双击 Comfy Desktop 图标或便携版启动 bat），等它完全启动后再回来重试；若反复出现，到 设置 → 环境检测 检查 ComfyUI 安装目录与服务地址。';
+      logger.error(m);
+      throw new Error(m);
+    }
     const r = await inference.comfyGenerate({ templateKey, dir, baseName, params });
     return r;
   });
-  ipcMain.handle('export:video', async (e, { outDir, outName, videos, subtitles, width, height }) => {
+  ipcMain.handle('export:video', async (e, { outDir, outName, videos, subtitles, width, height, scope }) => {
     logger.setTag('阶段7 组装成片');
     await orchestrator.ensure(6);
-    return inference.exportVideo(outDir, outName, videos, { subtitles, width, height });
+    return inference.exportVideo(outDir, outName, videos, { subtitles, width, height, scope });
   });
   ipcMain.handle('ffmpeg:find', () => inference.findFfmpeg());
   // 组装成片模块：列出某目录全部视频（含生成时间/大小/分辨率，探测结果缓存）
-  ipcMain.handle('media:list', (e, dir) => inference.listVideosWithMeta(dir));
+  // prefix：只要文件名以该前缀开头的（扁平化后一个项目共用「成片/」目录，必须按集过滤）
+  ipcMain.handle('media:list', async (e, dir, prefix) => {
+    const all = await inference.listVideosWithMeta(dir);
+    if (!prefix) return all;
+    const pre = String(prefix) + '_';
+    return (Array.isArray(all) ? all : []).filter(f => f.file.startsWith(pre));
+  });
   ipcMain.handle('file:readBase64', (e, abs) => {
     if (!fs.existsSync(abs)) return null;
     return fs.readFileSync(abs).toString('base64');

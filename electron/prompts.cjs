@@ -33,7 +33,8 @@ const FILES = {
   'scenes.md': '场景规范',
   'profile.md': '档案规范（角色 / 场景档案）',
   'h3.md': 'H3 提示词规范（基础模式）',
-  'h3ref.md': 'H3 提示词规范（参考模式）'
+  'h3ref.md': 'H3 提示词规范（参考模式）',
+  'promptgen.md': '生图提示词规范（档案 → 提示词）'
 };
 
 function isKnown(name) { return Object.prototype.hasOwnProperty.call(FILES, name); }

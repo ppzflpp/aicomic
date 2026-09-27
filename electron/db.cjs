@@ -59,6 +59,11 @@ function init(userDataDir, documents) {
   addColumn('episodes', 'res_vid', "TEXT NOT NULL DEFAULT '864x480'");
   addColumn('episodes', 'res_out', "TEXT NOT NULL DEFAULT '1920x1080'");
 
+  // 视频生成档位（2026-09-24）：项目级设置，在「新建项目 / 项目配置」里和分辨率一起选。
+  // 与分辨率不同 —— 档位对本项目**所有剧集立即生效**（生成时实时读项目行），
+  // 不做集级快照，因此只在 projects 上建列（episodes 无此列）。
+  addColumn('projects', 'res_tier', "TEXT NOT NULL DEFAULT 'balanced'");
+
   // 历史路径迁移（目录改为纯英文路径后，把库里残留的旧路径改写成新路径）
   migratePaths();
 

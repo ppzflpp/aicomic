@@ -17,10 +17,20 @@ contextBridge.exposeInMainWorld('studio', {
   saveState: (id, done, active, meta) => ipcRenderer.invoke('episode:saveState', id, done, active, meta),
   saveArtifact: (ws, id, kind, data) => ipcRenderer.invoke('episode:saveArtifact', ws, id, kind, data),
 
-  // 项目媒体（左侧树懒加载）：角色图/场景图、各集镜头视频、各集成片
+  // 项目媒体（左侧树懒加载）：角色图/场景图、各集镜头视频、各集成片、各集剧本工件
   projectAssets: (ws, projectId) => ipcRenderer.invoke('project:assets', ws, projectId),
   projectShots: (ws, projectId) => ipcRenderer.invoke('project:shots', ws, projectId),
   projectFilms: (ws, projectId) => ipcRenderer.invoke('project:films', ws, projectId),
+  projectScripts: (ws, projectId) => ipcRenderer.invoke('project:scripts', ws, projectId),
+
+  // 项目角色场景库（跨集共享的角色/场景条目）：命中即只读加载，本集新增可「保存到项目」
+  libraryList: (ws, projectId) => ipcRenderer.invoke('library:list', ws, projectId),
+  librarySave: (ws, projectId, payload) => ipcRenderer.invoke('library:save', ws, projectId, payload),
+  libraryAdd: (ws, projectId, kind, name) => ipcRenderer.invoke('library:add', ws, projectId, kind, name),
+  libraryRename: (ws, projectId, id, newName) => ipcRenderer.invoke('library:rename', ws, projectId, id, newName),
+  libraryUsage: (ws, projectId, id) => ipcRenderer.invoke('library:usage', ws, projectId, id),
+  librarySwap: (ws, projectId, episodeId, kind, oldName, newName, newId) =>
+    ipcRenderer.invoke('library:swap', ws, projectId, episodeId, kind, oldName, newName, newId),
 
   // 项目级提示词文件（<项目>/prompts/*.md）：四个模块的提示词，可编辑；缺失自动补内置版
   promptsList: (ws, projectId) => ipcRenderer.invoke('prompt:list', ws, projectId),
@@ -29,6 +39,8 @@ contextBridge.exposeInMainWorld('studio', {
 
   // 分辨率配置：项目级（新建剧集的初始模板）/ 剧集级（本集生效）+ 按模型过滤的档位
   resOptions: () => ipcRenderer.invoke('res:options'),
+  // 视频档位清单（[速度优先/平衡/质量优先]，只给档位名与说明，不含任何模型信息）
+  resTiers: () => ipcRenderer.invoke('res:tiers'),
   getProjectRes: (projectId) => ipcRenderer.invoke('project:res:get', projectId),
   setProjectRes: (projectId, res) => ipcRenderer.invoke('project:res:set', projectId, res),
   getEpisodeRes: (episodeId) => ipcRenderer.invoke('episode:res:get', episodeId),
@@ -100,7 +112,7 @@ contextBridge.exposeInMainWorld('studio', {
   comfyGenerate: (args) => ipcRenderer.invoke('comfy:generate', args),
   exportVideo: (args) => ipcRenderer.invoke('export:video', args),
   findFfmpeg: () => ipcRenderer.invoke('ffmpeg:find'),
-  listMedia: (dir) => ipcRenderer.invoke('media:list', dir),
+  listMedia: (dir, prefix) => ipcRenderer.invoke('media:list', dir, prefix),
   readFileBase64: (abs) => ipcRenderer.invoke('file:readBase64', abs),
   deleteFile: (abs) => ipcRenderer.invoke('file:delete', abs),
   pickFiles: (kind) => ipcRenderer.invoke('file:pick', kind),

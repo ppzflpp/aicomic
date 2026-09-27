@@ -1,7 +1,7 @@
 <template>
   <div class="tree-node">
     <div class="tree-row" :style="{paddingLeft: (10 + depth*16) + 'px'}" @click="st.toggleExpand('f'+node.id)">
-      <span class="caret">{{ st.expanded.has('f'+node.id) ? '▾' : '▸' }}</span>
+      <span class="caret">{{ st.expanded.has('f'+node.id) ? '▼' : '▶' }}</span>
       <span>📁 {{ node.name }}</span>
       <span class="ops">
         <button title="新建子文件夹" @click.stop="newFolder">＋夹</button>

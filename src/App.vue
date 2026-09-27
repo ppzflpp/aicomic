@@ -58,8 +58,8 @@
       <div class="side-h">项目</div>
       <template v-for="p in st.tree" :key="p.id">
         <div class="tree-node">
-          <div class="tree-row" @click="st.toggleExpand('p'+p.id)">
-            <span class="caret">{{ st.expanded.has('p'+p.id) ? '▾' : '▸' }}</span>
+          <div class="tree-row" @click="toggleProject(p.id)">
+            <span class="caret">{{ st.expanded.has('p'+p.id) ? '▼' : '▶' }}</span>
             <span>{{ p.name }}</span>
             <span class="ops">
               <button title="项目配置（分辨率）" @click.stop="openProjCfg(p.id)">配置</button>
@@ -78,16 +78,40 @@
               </span>
             </div>
 
+            <!-- 剧本（项目下「剧本/」平铺目录的工件：章节原文/改编稿/分镜脚本/角色·场景档案；
+                 扁平化后一个目录平铺全项目工件，靠文件名前缀=集名归集） -->
+            <div class="tree-row sub-row" @click="toggleMedia('scripts', p.id)">
+              <span class="caret">{{ st.expanded.has('r'+p.id) ? '▼' : '▶' }}</span>
+              <span>📜 剧本</span>
+              <span class="cnt" v-if="mediaCount(p.id, 'scripts')">{{ mediaCount(p.id, 'scripts') }}</span>
+            </div>
+            <template v-if="st.expanded.has('r'+p.id)">
+              <div v-for="g in mediaGroups(p.id, 'scripts')" :key="'rg'+g.episodeId">
+                <div class="tree-row sub2-row" @click="st.toggleExpand('rg' + p.id + ':' + g.episodeId)">
+                  <span class="caret">{{ st.expanded.has('rg' + p.id + ':' + g.episodeId) ? '▼' : '▶' }}</span>
+                  <span>{{ g.name }}</span>
+                  <span class="cnt">{{ g.files.length }}</span>
+                </div>
+                <template v-if="st.expanded.has('rg' + p.id + ':' + g.episodeId)">
+                  <div v-for="f in g.files" :key="f.path" class="tree-row leaf-row" :title="f.file"
+                       @click="openScript(f, g)">
+                    <span class="leaf-ico">{{ f.ico }}</span>{{ f.label }}
+                  </div>
+                </template>
+              </div>
+              <div v-if="!mediaGroups(p.id, 'scripts').length" class="tree-row leaf-row muted">（暂无剧本工件）</div>
+            </template>
+
             <!-- 项目资产：assets/characters（角色图）+ assets/scenes（场景图） -->
             <div class="tree-row sub-row" @click="toggleMedia('assets', p.id)">
-              <span class="caret">{{ st.expanded.has('a'+p.id) ? '▾' : '▸' }}</span>
+              <span class="caret">{{ st.expanded.has('a'+p.id) ? '▼' : '▶' }}</span>
               <span>🗂 assets</span>
               <span class="cnt" v-if="assetCount(p.id)">{{ assetCount(p.id) }}</span>
             </div>
             <template v-if="st.expanded.has('a'+p.id)">
               <div v-for="g in assetGroups(p.id)" :key="'ca'+g.name">
                 <div class="tree-row sub2-row" @click="st.toggleExpand('c' + p.id + ':' + g.name)">
-                  <span class="caret">{{ st.expanded.has('c' + p.id + ':' + g.name) ? '▾' : '▸' }}</span>
+                  <span class="caret">{{ st.expanded.has('c' + p.id + ':' + g.name) ? '▼' : '▶' }}</span>
                   <span>{{ g.name }}</span>
                   <span class="cnt">{{ g.files.length }}</span>
                 </div>
@@ -100,16 +124,16 @@
               <div v-if="!assetGroups(p.id).length" class="tree-row leaf-row muted">（暂无角色图/场景图）</div>
             </template>
 
-            <!-- 分镜（各集镜头视频，仍放在 <项目>/分镜/<集>/） -->
+            <!-- 分镜（<项目>/分镜 平铺目录，本集镜头视频按文件名前缀=集名归集） -->
             <div class="tree-row sub-row" @click="toggleMedia('shots', p.id)">
-              <span class="caret">{{ st.expanded.has('s'+p.id) ? '▾' : '▸' }}</span>
+              <span class="caret">{{ st.expanded.has('s'+p.id) ? '▼' : '▶' }}</span>
               <span>🎬 分镜</span>
               <span class="cnt" v-if="mediaCount(p.id, 'shots')">{{ mediaCount(p.id, 'shots') }}</span>
             </div>
             <template v-if="st.expanded.has('s'+p.id)">
               <div v-for="g in mediaGroups(p.id, 'shots')" :key="'sg'+g.episodeId">
                 <div class="tree-row sub2-row" @click="st.toggleExpand('sg' + p.id + ':' + g.episodeId)">
-                  <span class="caret">{{ st.expanded.has('sg' + p.id + ':' + g.episodeId) ? '▾' : '▸' }}</span>
+                  <span class="caret">{{ st.expanded.has('sg' + p.id + ':' + g.episodeId) ? '▼' : '▶' }}</span>
                   <span>{{ g.name }}</span>
                   <span class="cnt">{{ g.files.length }}</span>
                 </div>
@@ -122,16 +146,16 @@
               <div v-if="!mediaGroups(p.id, 'shots').length" class="tree-row leaf-row muted">（暂无镜头视频）</div>
             </template>
 
-            <!-- 成片（仍放在 <项目>/成片/<集>/） -->
+            <!-- 成片（<项目>/成片 平铺目录，本集成片按文件名前缀=集名归集） -->
             <div class="tree-row sub-row" @click="toggleMedia('films', p.id)">
-              <span class="caret">{{ st.expanded.has('f'+p.id) ? '▾' : '▸' }}</span>
+              <span class="caret">{{ st.expanded.has('f'+p.id) ? '▼' : '▶' }}</span>
               <span>🎞 成片</span>
               <span class="cnt" v-if="mediaCount(p.id, 'films')">{{ mediaCount(p.id, 'films') }}</span>
             </div>
             <template v-if="st.expanded.has('f'+p.id)">
               <div v-for="g in mediaGroups(p.id, 'films')" :key="'fg'+g.episodeId">
                 <div class="tree-row sub2-row" @click="st.toggleExpand('fg' + p.id + ':' + g.episodeId)">
-                  <span class="caret">{{ st.expanded.has('fg' + p.id + ':' + g.episodeId) ? '▾' : '▸' }}</span>
+                  <span class="caret">{{ st.expanded.has('fg' + p.id + ':' + g.episodeId) ? '▼' : '▶' }}</span>
                   <span>{{ g.name }}</span>
                   <span class="cnt">{{ g.files.length }}</span>
                 </div>
@@ -146,7 +170,7 @@
 
             <!-- 项目提示词规范：<项目>/prompts/*.md（五个模块的风格规范，可编辑；缺失/旧版自动补内置版） -->
             <div class="tree-row sub-row" @click="togglePrompts(p.id)">
-              <span class="caret">{{ st.expanded.has('q'+p.id) ? '▾' : '▸' }}</span>
+              <span class="caret">{{ st.expanded.has('q'+p.id) ? '▼' : '▶' }}</span>
               <span>📝 提示词规范</span>
             </div>
             <template v-if="st.expanded.has('q'+p.id)">
@@ -154,6 +178,33 @@
                    @click="openPromptEdit(p.id, f)">
                 <span class="leaf-ico">📄</span>{{ f.label }}
               </div>
+            </template>
+
+            <!-- 项目角色场景库：跨集共享的角色/场景条目（名字=图片目录名=分镜 chars 的键）。
+                 点条目 → 右侧库编辑区（不属于任何一集，无当前集也能打开） -->
+            <div class="tree-row sub-row" @click="toggleLibrary(p.id)">
+              <span class="caret">{{ st.expanded.has('L'+p.id) ? '▼' : '▶' }}</span>
+              <span>📚 项目角色场景库</span>
+              <span class="cnt" v-if="libEntryCount(p.id)">{{ libEntryCount(p.id) }}</span>
+            </div>
+            <template v-if="st.expanded.has('L'+p.id)">
+              <template v-for="grp in libGroups(p.id)" :key="'Lg' + grp.kind + p.id">
+                <div v-if="grp.items.length" class="tree-row sub2-row"
+                     @click="st.toggleExpand('Lg' + grp.kind + p.id)">
+                  <span class="caret">{{ st.expanded.has('Lg' + grp.kind + p.id) ? '▼' : '▶' }}</span>
+                  <span>{{ grp.label }}</span>
+                  <span class="cnt">{{ grp.items.length }}</span>
+                </div>
+                <template v-if="st.expanded.has('Lg' + grp.kind + p.id)">
+                  <div v-for="e in grp.items" :key="'Le' + e.id" class="tree-row leaf-row"
+                       :class="{ active: st.view==='lib' && st.libTarget && st.libTarget.id===e.id }"
+                       :title="(e.kind === 'scene' ? '场景' : (e.role || '角色')) + ' · ' + e.images.length + ' 张图'"
+                       @click="openLibEntry(p.id, e)">
+                    <span class="leaf-ico">{{ e.kind === 'scene' ? '🏞' : '🧑' }}</span>{{ e.name }}
+                  </div>
+                </template>
+              </template>
+              <div v-if="!libEntryCount(p.id)" class="tree-row leaf-row muted">（库为空：生成分镜后把本集角色「保存到项目」）</div>
             </template>
           </template>
         </div>
@@ -179,6 +230,10 @@
       <template v-if="st.view==='settings'">
         <span class="crumb">/ <b>设置与环境检测</b></span>
       </template>
+      <template v-if="st.view==='lib'">
+        <span class="crumb">/ <b>项目角色场景库</b></span>
+        <span class="crumb" v-if="libProject">/ <b>{{ libProject }}</b></span>
+      </template>
       <span style="flex:1"></span>
       <button class="btn ghost" style="padding:4px 12px; font-size:12px" @click="chooseWs">更改工作区</button>
     </div>
@@ -188,58 +243,63 @@
       <settings-panel />
     </div>
 
+    <!-- 项目角色场景库视图（不属于任何一集：左树点库条目进来，改的是全项目共享的库） -->
+    <div class="content" v-else-if="st.view==='lib'">
+      <stage-library />
+    </div>
+
     <!-- 仪表盘视图 -->
     <div class="content" v-else>
       <div v-if="!st.current" class="placeholder" style="margin-top:60px">
         左侧选择或新建一个集数开始
       </div>
       <div v-else class="grid">
-        <!-- 新布局：5 个展示块。管线内部仍是 0..6 七个阶段（状态/解锁/耗时全部不变），
-             只是显示上分组成：①章节输入+漫剧改编并排 ②角色&场景 ③分镜脚本(每行=分镜|H3提示词|视频) ④组装成片 -->
-        <!-- 块1：章节输入 ＋ 漫剧改编（并排各占 50%，两卡等高） -->
-        <div class="duo-row" :key="stageKey('duo')">
-          <section class="stage half" :class="blkCls(0)">
-            <div class="stage-head">
-              <span class="s-num">1</span>
-              <span class="s-title">章节输入</span>
-              <span style="flex:1"></span>
-              <!-- 字数：与耗时同款式的小胶囊，放在标题行右侧 -->
-              <span class="head-ms" title="章节原文字数">{{ chapter.trim().length }} 字</span>
-            </div>
-            <div class="stage-body">
-              <textarea v-model="chapter" rows="8" placeholder="粘贴小说章节原文…" @change="st.saveChapter(chapter)"></textarea>
-              <div class="ops-bar">
-                <span style="flex:1"></span>
-                <button class="btn" :disabled="chapter.trim().length<50" @click="startAdapt">改编</button>
+        <!-- 新布局：4 个展示块。管线内部仍是 0..6 七个阶段（状态/解锁/耗时全部不变），
+             只是显示上分组成：①剧本创作（原文输入+AI优化稿 一卡两栏）②角色&场景 ③分镜脚本(每行=分镜|H3提示词|视频) ④组装成片 -->
+        <!-- 块1：剧本创作（2026-09-27 合并：原「内容输入」+「内容AI优化」两卡并排 → 一卡两栏；
+             「改编」与「生成分镜」合并到卡片底部同一条操作条，StageAdapt 通过 Teleport 把耗时+生成分镜挂到 #adapt-ops） -->
+        <section class="stage" :class="blkCls(0, 1)" :key="stageKey('duo')">
+          <div class="stage-head">
+            <span class="s-num">1</span>
+            <span class="s-title">剧本创作</span>
+            <span class="s-sub">原文输入 → AI 优化成可分镜剧本</span>
+            <!-- 脏标签：显示在模块标题后面（上游变化提示） -->
+            <span v-if="headStale('adapt')" class="stale head-stale" title="点击消除提示"
+                  @click="ackHead('adapt')">{{ headStale('adapt') }}</span>
+            <span style="flex:1"></span>
+            <!-- 字数：原文一个胶囊（与耗时同款式）；改编稿字数由 StageAdapt 通过 Teleport 挂到 #adapt-count -->
+            <span class="head-ms" title="章节原文字数">{{ chapter.trim().length }} 字</span>
+            <span id="adapt-count" style="display:inline-flex;align-items:center"></span>
+            <!-- 2026-09-27 二改（Dragon）：「改编」「生成分镜」按钮移到模块标题栏右边（耗时挂改编左边） -->
+            <span id="adapt-ms" style="display:inline-flex;align-items:center"></span>
+            <button class="btn" :disabled="chapter.trim().length<50" @click="startAdapt">改编</button>
+            <span id="adapt-ops" style="display:inline-flex;align-items:center"></span>
+          </div>
+          <div class="stage-body">
+            <!-- 改编进度条落点：横贯整个剧本创作卡（原来只挂在右栏 AI 优化稿顶部；StageAdapt Teleport 进来） -->
+            <div id="adapt-progress"></div>
+            <div class="script-grid">
+              <div class="script-col">
+                <p class="zone-label">原文输入</p>
+                <textarea v-model="chapter" rows="10" placeholder="粘贴小说章节原文…" @change="st.saveChapter(chapter)"></textarea>
+              </div>
+              <div class="script-col">
+                <p class="zone-label">AI 优化稿</p>
+                <stage-adapt />
               </div>
             </div>
-          </section>
-          <section class="stage half" :class="blkCls(1)">
-            <div class="stage-head">
-              <span class="s-num">2</span>
-              <span class="s-title">漫剧改编</span>
-              <!-- 脏标签：显示在模块标题后面（上游变化提示） -->
-              <span v-if="headStale('adapt')" class="stale head-stale" title="点击消除提示"
-                    @click="ackHead('adapt')">{{ headStale('adapt') }}</span>
-              <span style="flex:1"></span>
-              <!-- 字数胶囊落点：StageAdapt 通过 Teleport 把「N 字」挂到这里（切集重挂载时走 tpReady 延迟） -->
-              <span id="adapt-count" style="display:inline-flex;align-items:center"></span>
-            </div>
-            <div class="stage-body">
-              <stage-adapt />
-            </div>
-          </section>
-        </div>
+          </div>
+        </section>
 
         <!-- 块2：角色 & 场景（无锁定，随时可编辑；上游变化由脏标记提示） -->
         <section class="stage" :class="blkCls(3)" :key="stageKey('chars')">
           <div class="stage-head">
-            <span class="s-num">3</span>
+            <span class="s-num">2</span>
             <span class="s-title">角色 &amp; 场景</span>
             <span v-if="headStale('chars')" class="stale head-stale" title="点击消除提示"
                   @click="ackHead('chars')">{{ headStale('chars') }}</span>
             <span style="flex:1"></span>
-            <!-- 批量按钮落点：StageChars 通过 Teleport 把「批量生成提示词 / 批量生成图片」挂到这里（状态文本左边） -->
+            <!-- 2026-09-27 三改（Dragon）：批量按钮回到模块标题栏右边（StageChars 通过 Teleport 挂进来） -->
             <span id="chars-batch" style="display:inline-flex;gap:8px;align-items:center"></span>
           </div>
           <div class="stage-body">
@@ -251,12 +311,12 @@
              无锁定；上游（改编稿/分镜/提示词/素材图）变化由 ⚠ 脏标记提示） -->
         <section class="stage" :class="blkCls(2, 4, 5)" :key="stageKey('shots')">
           <div class="stage-head">
-            <span class="s-num">4</span>
+            <span class="s-num">3</span>
             <span class="s-title">分镜脚本</span>
             <span v-if="headStale('shots')" class="stale head-stale" title="点击消除提示"
                   @click="ackHead('shots')">{{ headStale('shots') }}</span>
             <span style="flex:1"></span>
-            <!-- 批量按钮落点：StageShots 通过 Teleport 把「批量生成提示词 / 批量生成视频」挂到这里（状态文本左边） -->
+            <!-- 批量按钮落点：StageShots 通过 Teleport 把「批量生成提示词 / 批量生成视频」挂到这里（2026-09-27 三改：回到标题栏右边，按钮恢复普通 .btn 样式） -->
             <span id="shots-batch" style="display:inline-flex;gap:8px;align-items:center"></span>
           </div>
           <div class="stage-body">
@@ -267,9 +327,11 @@
         <!-- 块4：组装成片（进入即自动组装） -->
         <section class="stage" :class="blkCls(6)" :key="stageKey('export')">
           <div class="stage-head">
-            <span class="s-num">5</span>
+            <span class="s-num">4</span>
             <span class="s-title">组装成片</span>
             <span style="flex:1"></span>
+            <!-- 2026-09-27：输出分辨率 / 添加字幕 / 导出成片 移到标题栏靠右（StageExport 通过 Teleport 挂到 #export-ops） -->
+            <span id="export-ops" style="display:inline-flex;gap:10px;align-items:center"></span>
           </div>
           <div class="stage-body">
             <stage-export />
@@ -334,23 +396,31 @@
 
       <div class="proj-grid">
         <div class="proj-row">
-          <span class="proj-kind">图片生成</span>
+          <span class="proj-kind">图片分辨率</span>
           <select v-model="projModal.img"><option v-for="o in resOpts.img" :key="o.value" :value="o.value">{{ o.label }}</option></select>
         </div>
         <div class="proj-row">
-          <span class="proj-kind">视频生成</span>
+          <span class="proj-kind">视频分辨率</span>
           <select v-model="projModal.vid"><option v-for="o in resOpts.vid" :key="o.value" :value="o.value">{{ o.label }}</option></select>
         </div>
         <div class="proj-row">
-          <span class="proj-kind">视频输出</span>
+          <span class="proj-kind">成片分辨率</span>
           <select v-model="projModal.out"><option v-for="o in resOpts.out" :key="o.value" :value="o.value">{{ o.label }}</option></select>
         </div>
+        <!-- 视频生成档位：项目级。选项由主进程档位注册表给出（UI 不硬编码、不出现任何模型信息） -->
+        <div class="proj-row">
+          <span class="proj-kind">视频质量</span>
+          <select class="proj-tier" v-model="projModal.tier">
+            <option v-for="t in st.tierOptions" :key="t.key" :value="t.key">{{ t.label }}{{ t.default ? '（推荐）' : '' }}</option>
+          </select>
+        </div>
       </div>
+      <p class="proj-hint" v-if="projTierDesc()">{{ projTierDesc() }}</p>
 
       <div class="proj-note">
         {{ projModal.mode === 'create'
-          ? '以上分辨率将在本项目下新建剧集时作为初始值；每个剧集之后可单独调整。'
-          : '⚠ 修改只影响之后新建的剧集，已创建的剧集保持各自当前配置。' }}
+          ? '分辨率将在本项目下新建剧集时作为初始值；视频质量对本项目的所有剧集立即生效。'
+          : '⚠ 分辨率修改只影响之后新建的剧集；视频质量立即对全部剧集生效。' }}
       </div>
 
       <div class="row">
@@ -360,7 +430,8 @@
     </div>
   </div>
 
-  <!-- 媒体预览弹窗：左侧树里点角色图 / 镜头视频 / 成片 → 独立弹窗预览 -->
+  <!-- 媒体/工件预览弹窗：左侧树里点角色图 / 镜头视频 / 成片 → 独立弹窗预览；
+       点「剧本」节点下的工件 → 同一弹窗走文本预览（kind='text'） -->
   <div class="mask" :class="{hidden: !preview}" @click.self="preview = null">
     <div class="dialog media-dialog" v-if="preview">
       <div class="md-head">
@@ -369,13 +440,20 @@
           <span class="md-sub">{{ preview.sub }}</span>
         </div>
         <span style="flex:1"></span>
+        <button class="btn ghost sm" v-if="preview.episodeId" @click="openPreviewEpisode">打开本集</button>
         <button class="btn ghost sm" v-if="preview.path" @click="revealMedia">所在文件夹</button>
         <button class="btn ghost sm" @click="preview = null">关闭</button>
       </div>
-      <div class="md-body">
-        <div v-if="!preview.src" class="md-loading"><i class="spin"></i> 加载中…</div>
-        <img v-else-if="preview.kind === 'image'" :src="preview.src" @load="onPreviewLoad" />
-        <video v-else :src="preview.src" controls autoplay loop></video>
+      <div class="md-body" :class="{'text-body': preview.kind === 'text'}">
+        <template v-if="preview.kind === 'text'">
+          <pre v-if="preview.text" class="md-text">{{ preview.text }}</pre>
+          <div v-else class="md-loading"><i class="spin"></i> 加载中…</div>
+        </template>
+        <template v-else>
+          <div v-if="!preview.src" class="md-loading"><i class="spin"></i> 加载中…</div>
+          <img v-else-if="preview.kind === 'image'" :src="preview.src" @load="onPreviewLoad" />
+          <video v-else :src="preview.src" controls autoplay loop></video>
+        </template>
       </div>
     </div>
   </div>
@@ -419,13 +497,14 @@ import SettingsPanel from './SettingsPanel.vue'
 import StageAdapt from './StageAdapt.vue'
 import StageShots from './StageShots.vue'
 import StageChars from './StageChars.vue'
+import StageLibrary from './StageLibrary.vue'
 import StageExport from './StageExport.vue'
 import LogPanel from './LogPanel.vue'
 import { PROMPT_FILES } from './prompts.js'
 import { moduleStale, ackModule, MODULE_STALE_KINDS } from './stale.js'
 
 export default {
-  components: { FolderNode, SettingsPanel, StageAdapt, StageShots, StageChars, StageExport, LogPanel },
+  components: { FolderNode, SettingsPanel, StageAdapt, StageShots, StageChars, StageLibrary, StageExport, LogPanel },
   data() {
     return {
       chapter: '',
@@ -457,6 +536,13 @@ export default {
     },
     /** 项目提示词文件清单（固定四个：adapt/shots/chars/h3） */
     promptFiles() { return PROMPT_FILES },
+    /** 库编辑区当前所属项目名（面包屑用） */
+    libProject() {
+      const t = this.st.libTarget
+      if (!t) return ''
+      const p = this.st.tree.find(x => x.id === t.projectId)
+      return p ? p.name : ''
+    },
     gpuView() {
       const g = this.m && this.m.gpu
       if (!g || !g.ok) {
@@ -557,6 +643,20 @@ export default {
       try {
         if (await restoreSession()) this.toast('已恢复上次的页面')
       } catch (_) { /* 现场损坏不阻塞启动 */ }
+      // 启动即把「当前集所属项目」展开并拉一遍媒体：左边菜单打开就有内容，
+      // 不再出现「软件刚打开时左侧是空的、得逐个点开才看到」的情况
+      const cur = this.st.current
+      if (cur && cur.projectId) {
+        this.st.expanded.add('p' + cur.projectId)
+        try {
+          await Promise.all([
+            this.st.loadAssets(cur.projectId, true),
+            this.st.loadShots(cur.projectId, true),
+            this.st.loadFilms(cur.projectId, true),
+            this.st.loadLibrary(cur.projectId, true)
+          ])
+        } catch (_) { /* 预加载失败不影响启动 */ }
+      }
       installSessionAutoSave()
     },
     /** 阶段引擎编排：进哪个阶段就启哪个（第 1 块不需要引擎，避免闲置时误杀服务） */
@@ -609,32 +709,40 @@ export default {
       await this.st.saveChapter(this.chapter)
       this.pl.confirm(0, this.st.current.id)
       this.pl.autoAdapt = true
-      this.toast('已进入漫剧改编，正在自动改编…')
+      this.toast('已确认原文，正在自动改编…')
     },
-    /** 新建项目：弹窗里一并定三个分辨率（项目级默认值，初始化本项目下新建的剧集） */
+    /** 新建项目：弹窗里一并定三个分辨率 + 视频生成档位（项目级，档位对本项目全部剧集生效） */
     newProject() {
       const d = this.st.resOptions || { img: [], vid: [], out: [] }
       this.projModal = {
         mode: 'create', id: null, name: '',
         img: (d.img[0] || {}).value || '1216x832',
         vid: (d.vid[0] || {}).value || '864x480',
-        out: (d.out[0] || {}).value || '1920x1080'
+        out: (d.out[0] || {}).value || '1920x1080',
+        tier: this.st.defaultTier()
       }
     },
-    /** 项目配置：读项目当前三项，改了只影响之后新建的剧集 */
+    /** 项目配置：读项目当前三项 + 视频档位；分辨率改了只影响之后新建的剧集，档位立即生效 */
     openProjCfg(pid) {
       const p = this.st.tree.find(x => x.id === pid)
       if (!p) return
       const r = p.res || {}
       this.projModal = {
         mode: 'edit', id: pid, name: p.name,
-        img: r.img || '1216x832', vid: r.vid || '864x480', out: r.out || '1920x1080'
+        img: r.img || '1216x832', vid: r.vid || '864x480', out: r.out || '1920x1080',
+        tier: r.tier || this.st.defaultTier()
       }
+    },
+    /** 当前弹窗选中的档位说明（画在 select 下方的小字） */
+    projTierDesc() {
+      const m = this.projModal
+      const t = (this.st.tierOptions || []).find(x => x.key === (m && m.tier))
+      return t ? t.desc : ''
     },
     async confirmProj() {
       const m = this.projModal
       if (!m) return
-      const res = { img: m.img, vid: m.vid, out: m.out }
+      const res = { img: m.img, vid: m.vid, out: m.out, tier: m.tier }
       if (m.mode === 'create') {
         const name = (m.name || '').trim()
         if (!name) { this.toast('请填写项目名称'); return }
@@ -647,20 +755,70 @@ export default {
         this.toast('已保存（只影响之后新建的剧集）')
       }
     },
-    /* ---- 左侧树：项目媒体节点（assets / 分镜 / 成片），展开时才拉数据 ---- */
-    /** 展开/收起某个媒体节点；首次展开时拉取数据 */
-    async toggleMedia(kind, pid) {
-      const key = { assets: 'a', shots: 's', films: 'f' }[kind] + pid
+    /* ---- 左侧树：项目媒体节点（剧本 / assets / 分镜 / 成片），展开时才拉数据 ---- */
+    /**
+     * 展开/收起项目节点；展开时顺手把四类媒体都拉一遍。
+     * 目的：项目一展开就能看到「几个剧本工件 / 多少张角色图 / 多少个镜头视频 / 几个成片」，
+     * 不必逐个点开子节点（旧行为只在点子节点时才拉，所以刚打开软件时左边一片空白）。
+     */
+    async toggleProject(pid) {
+      const key = 'p' + pid
       const wasOpen = this.st.expanded.has(key)
       this.st.toggleExpand(key)
       if (wasOpen) return
-      if (kind === 'assets') await this.st.loadAssets(pid)
-      else if (kind === 'shots') await this.st.loadShots(pid)
-      else await this.st.loadFilms(pid)
+      await Promise.all([
+        this.st.loadScripts(pid, true),
+        this.st.loadAssets(pid, true),
+        this.st.loadShots(pid, true),
+        this.st.loadFilms(pid, true),
+        this.st.loadLibrary(pid, true)
+      ])
+    },
+    /** 展开/收起某个媒体节点：**每次展开都重新拉取**（功能区一生成，左边就跟上；缓存只避免收起期间的重复拉取） */
+    async toggleMedia(kind, pid) {
+      const key = { scripts: 'r', assets: 'a', shots: 's', films: 'f' }[kind] + pid
+      const wasOpen = this.st.expanded.has(key)
+      this.st.toggleExpand(key)
+      if (wasOpen) return
+      if (kind === 'scripts') await this.st.loadScripts(pid, true)
+      else if (kind === 'assets') await this.st.loadAssets(pid, true)
+      else if (kind === 'shots') await this.st.loadShots(pid, true)
+      else await this.st.loadFilms(pid, true)
+    },
+    /* ---- 左侧树：项目角色场景库节点（跨集共享的角色/场景条目） ---- */
+    /**
+     * 点「📚 项目角色场景库」：展开/收起 + **打开右侧库编辑区**。
+     * 🔴 必须能打开库编辑区：库为空时树里没有任何叶子可点，而「手动新增」按钮在库编辑区里——
+     *    只靠点叶子进库，空库就永远进不去（死锁）。所以点节点本身也要切到 lib 视图。
+     */
+    async toggleLibrary(pid) {
+      const key = 'L' + pid
+      const wasOpen = this.st.expanded.has(key)
+      this.st.toggleExpand(key)
+      if (wasOpen) return
+      await this.st.loadLibrary(pid, true)
+      const cur = this.st.libTarget
+      // 保留同项目已选中的条目；换项目/没选过则置空 id（库编辑区显示占位 + 左侧列表 + 新增按钮）
+      if (!cur || cur.projectId !== pid) this.st.libTarget = { projectId: pid, id: '' }
+      this.st.view = 'lib'
+    },
+    /** 库条目的两个分组（角色 / 场景） */
+    libGroups(pid) {
+      const es = this.st.libEntries(pid)
+      return [
+        { kind: 'character', label: '🧑 角色', items: es.filter(e => e.kind !== 'scene') },
+        { kind: 'scene', label: '🏞 场景', items: es.filter(e => e.kind === 'scene') }
+      ]
+    },
+    libEntryCount(pid) { return this.st.libEntries(pid).length },
+    /** 点库条目 → 打开右侧库编辑区（切到 lib 视图，**不依赖当前集**） */
+    async openLibEntry(pid, e) {
+      await this.st.loadLibrary(pid)
+      this.st.libTarget = { projectId: pid, id: e.id }
+      this.st.view = 'lib'
     },
     /** assets 下的分组（角色名 / 场景名） */
-    assetGroups(pid) {
-      const slot = this.st.media[pid]
+    assetGroups(pid) {      const slot = this.st.media[pid]
       if (!slot || !slot.characters) return []
       return [...(slot.characters || []), ...(slot.scenes || [])]
     },
@@ -676,21 +834,24 @@ export default {
     mediaCount(pid, kind) {
       return this.mediaGroups(pid, kind).reduce((n, g) => n + g.files.length, 0)
     },
-    /** 打开预览弹窗：图片/视频都走 base64（渲染层不能直接读本地文件） */
+    /** 打开预览弹窗：图片/视频都走 base64（渲染层不能直接读本地文件）。
+         🔴 必须全程通过 this.preview（响应式代理）改字段：曾因持有原始对象改其字段 ——
+         绕过代理的改动不触发渲染、且代理不等于原始对象导致提前 return → 弹窗永远停在「加载中」 */
     async openPreview(it, kind, label) {
-      const entry = { kind, file: it.file, path: it.path, sub: label || '', src: '' }
-      this.preview = entry
+      this.preview = { kind, file: it.file, path: it.path, sub: label || '', src: '' }
+      const p = this.preview
       if (kind === 'video') {
         const bits = [label, ratioFromW(it.width, it.height)]
         if (it.durationSec) bits.push(it.durationSec.toFixed(1) + 's')
         if (it.size) bits.push(this.fmtSize(it.size))
         if (it.elapsedMs) bits.push('导出耗时 ' + fmtMs(it.elapsedMs))
-        entry.sub = bits.filter(Boolean).join(' · ')
+        p.sub = bits.filter(Boolean).join(' · ')
       }
       try {
         const b64 = await window.studio.readFileBase64(it.path)
-        if (this.preview !== entry) return   // 期间已经关了/换了
-        entry.src = b64 ? (kind === 'image' ? 'data:image/png;base64,' + b64 : 'data:video/mp4;base64,' + b64) : ''
+        // 期间可能已关掉/点了别的文件：比对当前弹窗指向，过期结果直接丢弃
+        if (!this.preview || this.preview.file !== it.file || this.preview.path !== it.path) return
+        this.preview.src = b64 ? (kind === 'image' ? 'data:image/png;base64,' + b64 : 'data:video/mp4;base64,' + b64) : ''
       } catch (_) { /* 读取失败就停在上面的「加载中」 */ }
     },
     /** 图片加载完 → 补上真实分辨率与体积 */
@@ -702,6 +863,43 @@ export default {
     },
     revealMedia() {
       if (this.preview && this.preview.path) window.studio.revealFile(this.preview.path)
+    },
+    /** 打开「剧本」节点下的工件：复用媒体弹窗走文本预览（kind='text'）。
+     *  读文件仍走已有的 readFileBase64（不新增 IPC），本地手写 UTF-8 解码（工件里有中文，
+     *  不能让 atob 的 latin1 结果直接上屏）；.json 工件先美化再显示。 */
+    async openScript(f, g) {
+      const bits = [g && g.name, f.label]
+      if (f.size != null) bits.push(this.fmtSize(f.size))
+      if (f.mtimeMs) bits.push(new Date(f.mtimeMs).toLocaleString('zh-CN', { hour12: false }))
+      this.preview = {
+        kind: 'text', file: f.file, path: f.path, text: '',
+        sub: bits.filter(Boolean).join(' · '),
+        episodeId: (g && g.episodeId) || null
+      }
+      const p = this.preview
+      try {
+        const b64 = await window.studio.readFileBase64(f.path)
+        // 期间可能已关掉/点了别的文件：比对当前弹窗指向，过期结果直接丢弃
+        if (!this.preview || this.preview.path !== f.path) return
+        let text = ''
+        if (b64) {
+          const bin = atob(b64)
+          const bytes = new Uint8Array(bin.length)
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+          text = new TextDecoder('utf-8').decode(bytes)
+        }
+        if (/\.json$/i.test(f.file)) {
+          try { text = JSON.stringify(JSON.parse(text), null, 2) } catch (_) { /* 坏 JSON 就原样显示 */ }
+        }
+        if (!this.preview || this.preview.path !== f.path) return
+        this.preview.text = text || '（文件是空的）'
+      } catch (_) { /* 读取失败就停在上面的「加载中」 */ }
+    },
+    /** 剧本预览弹窗里的「打开本集」：关弹窗 → 切到该集（右侧进功能区） */
+    openPreviewEpisode() {
+      const id = this.preview && this.preview.episodeId
+      this.preview = null
+      if (id) this.st.openEpisode(id)
     },
     fmtSize(bytes) {
       const mb = bytes / 1024 / 1024

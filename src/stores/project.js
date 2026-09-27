@@ -14,8 +14,15 @@ export const useProject = defineStore('project', {
     askValue: '',         // 弹窗输入值
     confirmDel: null,     // 删除确认 {type:'project'|'folder'|'episode', id, name}
     resOptions: null,     // 分辨率档位 {img:[{value,label}],vid:[...],out:[...]}，按当前模型过滤
-    /** 左侧树的项目媒体（按需懒加载）：{ [projectId]: {assets,shots,films,loading...} } */
+    /** 视频生成档位清单（主进程给，UI 只认档位名，不含任何模型信息）
+     *  [{key:'fast'|'balanced'|'hq', label:'速度优先', desc:'…', default:true}] */
+    tierOptions: [],
+    /** 左侧树的项目媒体（按需懒加载）：{ [projectId]: {assets,shots,films,scripts,loading...} } */
     media: {},
+    /** 项目角色场景库（跨集共享的角色/场景条目）：{ [projectId]: {rev, entries, busy} } */
+    library: {},
+    /** 库编辑区当前打开的目标（不属于任何一集）：{projectId, id} | null */
+    libTarget: null,
     error: null           // 最近一次 IPC 错误（App 监听后 toast）
   }),
   actions: {
@@ -46,10 +53,16 @@ export const useProject = defineStore('project', {
       try {
         const ep = await window.studio.getEpisode(this.workspace, id)
         if (!ep) return
+        this.libTarget = null   // 打开某一集 → 右侧回到 5 块工作区（离开库编辑区）
         this.current = ep
         this.view = 'dash'
         usePipeline().load(ep.done, ep.activeStage, ep.stageMeta, ep.id)
       } catch (e) { this.fail(e) }
+    },
+    /** 打开库条目编辑区（第 6 块；不属于任何一集，右侧不再要求 st.current） */
+    openLibEntry(projectId, id) {
+      this.view = 'dash'
+      this.libTarget = { projectId, id }
     },
     /** 在项目树里按 id 找集数（含任意层级子文件夹）；找不到返回 null（例如已被删除） */
     findEpisode(id) {
@@ -137,6 +150,8 @@ export const useProject = defineStore('project', {
         const revs = await window.studio.saveChapter(this.workspace, this.current.id, text)
         this.current.chapter = text   // 同步到当前集对象，下游阶段（改编）才能读到
         if (revs) this.current.revs = revs
+        // 左侧树「剧本」节点跟着工件走（章节原文文件已落盘 → 计数/叶子同步）
+        this.invalidateMedia(this.current.projectId, 'scripts')
       } catch (e) { this.fail(e) }
     },
     /** 保存阶段工件（adapted/shots/chars/prompts/videoState/revs）并同步到 current */
@@ -149,6 +164,12 @@ export const useProject = defineStore('project', {
         this.current[kind === 'adapted' ? 'adapted' : kind] = plain
         // 保存改编稿时主进程会自增 revs.adapted（下游脏标记依据），同步最新计数器
         if (kind === 'adapted' && r) this.current.revs = r
+        // 左侧树「剧本」节点跟着工件走（改编稿/分镜/档案落盘后叶子与计数立即刷新）；
+        // 故意不 await：工件保存是主流程，树刷新只是附带（失败也不影响保存）。
+        // 只在**会新增/改动剧本文件**的工件上刷新，prompts/videos 等纯机器状态不触发（避免批量生成时空转）
+        if (kind === 'adapted' || kind === 'shots' || kind === 'chars' || kind === 'scenes') {
+          this.invalidateMedia(this.current.projectId, 'scripts')
+        }
       } catch (e) { this.fail(e); throw e }
     },
   toggleExpand(id) {
@@ -158,7 +179,7 @@ export const useProject = defineStore('project', {
   /** 取（或建）某项目的媒体缓存槽 */
   mediaSlot(projectId) {
     if (!this.media[projectId]) {
-      this.media[projectId] = { characters: null, scenes: null, shots: null, films: null, busy: {} }
+      this.media[projectId] = { characters: null, scenes: null, shots: null, films: null, scripts: null, busy: {} }
     }
     return this.media[projectId]
   },
@@ -194,24 +215,91 @@ export const useProject = defineStore('project', {
     catch (e) { this.fail(e) } finally { delete slot.busy.films }
     return slot
   },
-  /** 生成/导出后让左侧树对应节点失效；若该节点此刻正展开，立刻重新拉取（用户能马上看到新产物） */
+  /** 拉取剧本工件（章节原文/改编稿/分镜脚本/角色·场景档案；展开「剧本」节点时调用） */
+  async loadScripts(projectId, force) {
+    const slot = this.mediaSlot(projectId)
+    if (!force && slot.scripts) return slot
+    if (slot.busy.scripts) return slot
+    slot.busy.scripts = true
+    try { slot.scripts = (await window.studio.projectScripts(this.workspace, projectId)) || [] }
+    catch (e) { this.fail(e) } finally { delete slot.busy.scripts }
+    return slot
+  },
+  /* ---- 项目角色场景库（跨集共享；左侧「📚 角色场景库」节点 + 右侧第 6 块编辑区） ---- */
+  /**
+   * 拉取库列表（首次访问主进程会自动迁移老项目：把 assets 下已有图片目录补成库条目）。
+   * 返回 {rev, entries:[{id,kind,name,role,profile,prompt,negative,res,images,cur,libRev,from,dir}]}
+   */
+  async loadLibrary(projectId, force) {
+    if (!projectId) return null
+    const cur = this.library[projectId]
+    if (!force && cur && !cur.busy) return cur
+    if (cur && cur.busy) return cur
+    this.library[projectId] = { rev: cur ? cur.rev : 1, entries: cur ? cur.entries : [], busy: true }
+    try {
+      const r = await window.studio.libraryList(this.workspace, projectId)
+      this.library[projectId] = { rev: (r && r.rev) || 1, entries: (r && r.entries) || [], busy: false }
+    } catch (e) {
+      this.fail(e)
+      if (this.library[projectId]) this.library[projectId].busy = false
+    }
+    return this.library[projectId]
+  },
+  /** 库条目（同步读取，供左侧树与命中判定用） */
+  libEntries(projectId) {
+    const s = projectId != null ? this.library[projectId] : null
+    return (s && s.entries) || []
+  },
+  /** 入库：payload 带 updateId 则覆盖更新，不带则新建（撞名自动加「 (2)」，返回值里 renamed 标记会告诉前端） */
+  async saveLibrary(projectId, payload) {
+    const r = await window.studio.librarySave(this.workspace, projectId, payload)
+    await this.loadLibrary(projectId, true)
+    return r
+  },
+  /** 手动新增空条目（不靠 LLM 提取） */
+  async addLibrary(projectId, kind, name) {
+    const r = await window.studio.libraryAdd(this.workspace, projectId, kind, name)
+    await this.loadLibrary(projectId, true)
+    return r
+  },
+  /** 库条目改名：重命名图片目录 + 扫各集替换引用（卡片名 / 分镜 chars·scene / 对白人名） */
+  async renameLibrary(projectId, id, newName) {
+    const r = await window.studio.libraryRename(this.workspace, projectId, id, newName)
+    await this.loadLibrary(projectId, true)
+    return r
+  },
+  /** 某库条目被哪些集/哪些镜引用（现扫，不做索引） */
+  async libraryUsage(projectId, id) {
+    try { return (await window.studio.libraryUsage(this.workspace, projectId, id)) || [] }
+    catch (e) { this.fail(e); return [] }
+  },
+  /** 生成/导出后让左侧树对应节点失效，并**立即重拉**（不管节点是否展开）：
+   *  展开着的时候用户马上能看到新产物；收起时也保证「N 个」的计数是新的 */
   async invalidateMedia(projectId, kind) {
-    const key = { characters: 'a', shots: 's', films: 'f' }[kind]
+    if (!projectId || !kind) return
+    if (kind === 'library') { try { await this.loadLibrary(projectId, true) } catch (_) {} ; return }
     const slot = this.media[projectId]
     if (slot) {
       if (kind === 'characters') { slot.characters = null; slot.scenes = null }
-      else if (kind) slot[kind] = null
+      else slot[kind] = null
     }
-    if (!key || !projectId || !this.expanded.has(key + projectId)) return
     try {
       if (kind === 'characters') await this.loadAssets(projectId, true)
       else if (kind === 'shots') await this.loadShots(projectId, true)
       else if (kind === 'films') await this.loadFilms(projectId, true)
+      else if (kind === 'scripts') await this.loadScripts(projectId, true)
     } catch (_) { /* 树刷新失败不影响主流程 */ }
   },
-  /* ---- 分辨率配置 ---- */
+  /* ---- 分辨率配置 + 视频档位 ---- */
   async loadResOptions() {
     try { this.resOptions = await window.studio.resOptions() } catch (e) { this.fail(e) }
+    // 档位清单跟随主进程注册表：新增档位 / 换模型库都不需要改前端
+    try { this.tierOptions = (await window.studio.resTiers()) || [] } catch (_) { this.tierOptions = [] }
+  },
+  /** 档位默认值（新建项目时预选「平衡」） */
+  defaultTier() {
+    const d = (this.tierOptions || []).find(t => t.default);
+    return (d && d.key) || (this.tierOptions[0] || {}).key || 'balanced';
   },
   /** 改项目分辨率：只影响之后新建的剧集（主进程不回写已有剧集） */
   async setProjectRes(projectId, res) {

@@ -27,7 +27,7 @@ export const usePipeline = defineStore('pipeline', {
     genStartAt: {},
     /** 每秒自增，驱动「进行中」的实时计时刷新 */
     tick: 0,
-    /** 第 1 块点「改编」→ 置位后由漫剧改编模块消费：进入即自动开始改编（不落库） */
+    /** 第 1 块点「改编」→ 置位后由内容AI优化模块消费：进入即自动开始优化（不落库） */
     autoAdapt: false,
     /** 第 2 块点「生成分镜」→ 置位后由分镜脚本模块消费：进入即自动开始生成分镜（不落库） */
     autoShots: false
