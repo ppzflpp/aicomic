@@ -7,8 +7,14 @@
          脏标签（改编稿改过 → 建议重新出图）统一显示在本模块标题后面，见 App.vue 的 stage-head -->
     <div class="grp">
       <div class="char-grid">
+        <!-- 同一主体的一组卡（`主体名--视角` 双横杠命名）靠**同一个组色的加粗边框**认亲（2026-10-08，Dragon）：
+             第一版整组装进一个醒目大框，反馈「太丑」→ 撤掉；第二版把底色染成组色，反馈「背景还是要一样的」
+             → 只留边框上色（底色回归角色蓝 / 场景紫）。
+             色相 = hashName(主体名) 取 GROUP_HUES（8 档、每档相隔 45°）→ 同一个主体在任何会话 /
+             任何项目里都是同一个颜色，而任意两组之间色差都拉得开（用户要求「不同组区别大点」）。 -->
         <div v-for="it in ordered" :key="it.c.kind + '|' + it.c.name" class="ccard"
-             :class="[it.c.kind, { 'card-busy': it.c._gen, 'lib-ro': isLibRo(it.c) }]">
+             :class="[it.c.kind, { 'card-busy': it.c._gen, 'lib-ro': isLibRo(it.c), vgrp: grpHue(it.c) != null }]"
+             :style="grpStyle(it.c)">
           <span v-if="it.c._gen" class="busy-txt"><i class="spin"></i>正在生成…</span>
 
           <!-- 左：大预览图（按原图比例完整显示）+ 图上角标（名称 / 定位 两枚独立徽标、分辨率） -->
@@ -20,15 +26,22 @@
               <!-- 角标：名称、定位各一枚独立徽标（分开显示，不拼成一串）。
                    场景卡的定位恒为「场景」（与卡片类型、下方「场景档案」标题重复）→ 只显示名称徽标 -->
               <div class="kind-wrap">
-                <span class="kind-tag-pos" :class="it.c.kind">{{ it.c.name }}</span>
+                <span class="kind-tag-pos" :class="it.c.kind" :style="grpTagStyle(it.c)">{{ it.c.name }}</span>
                 <span v-if="it.c.kind !== 'scene' && it.c.role" class="role-tag-pos" :class="it.c.kind">{{ it.c.role }}</span>
+                <!-- 派生视角卡（2026-10-08，Dragon）：**只在主体卡上出现** —— 名字里没有双横杠的卡才算主体卡，
+                     视角子卡自己不再有入口（否则会派生出台 `V9X--正面--侧面` 这种语义不明的卡）。
+                     点它弹出「主体名固定 + 只填视角名」的弹窗，用户不必知道双横杠约定，也不会撞名。 -->
+                <button v-if="!isLibRo(it.c) && isParentCard(it.c)" class="derive-btn" :disabled="busy"
+                        title="给这张卡派生一张视角卡（正面 / 侧面 / 内饰…）：主体名固定，你只填视角名。新卡会自动与它相邻摆放、同一个颜色、共用档案。"
+                        @click.stop="openDerive(it.c)">+</button>
               </div>
               <span v-if="dimOf(it.c)" class="dim-tag" title="当前预览图片的实际分辨率">{{ dimOf(it.c) }}</span>
-              <!-- 参考图背景检查：角色图带环境 → 视频会跟着泄漏环境（实测已发生），提示但不拦 -->
-              <span v-if="bgWarn(it.c)" class="bg-warn"
-                    title="这张角色图的背景不是纯色（含场景 / 建筑 / 道具）。角色图会作为参考图喂给视频模型，背景会被一起学进视频（实测：竹林戏里角色图的庭院背景被画进了画面）。建议重出一张纯色中灰背景的单人图。">
-                ⚠ {{ bgWarn(it.c) }}
-              </span>
+              <!-- 出图耗时角标（2026-10-08，Dragon）：原在下方出图行的「耗时 xx」文字 →
+                     去掉「耗时」前缀、挪到图上右下角，显示方式参考分辨率角标（同款胶囊底 + 等宽字体）。
+                     右下角原为空位（左上=名称/定位、右上=分辨率、左下=库来源徽标），互不遮挡 -->
+              <span v-if="genText(it.c)" class="gen-tag" :class="{ live: it.c._genAt }"
+                    title="这张卡的出图耗时">{{ genText(it.c) }}</span>
+              <!-- 角色图「背景检查」角标已于 2026-10-08 按 Dragon 要求整体移除（提示太吵、误报多） -->
               <!-- 库来源徽标：从项目库加载的卡（只读）／已同步到项目库的本地卡 -->
               <span v-if="isLibRo(it.c)" class="lib-badge ro"
                     title="这张卡来自项目角色场景库：文案、提示词、分辨率与出图都不在这里改（在左侧「项目角色场景库」里统一修改）。想改成本集专属版本，先「另存为本集变体」。">
@@ -59,9 +72,19 @@
               </button>
             </div>
 
+            <!-- 主体组黄标：这一组只有视角变体卡、没有「主体卡」（名字正好等于主体名的那张）。
+                 档案与提示词只认主体卡那一份，缺了就等于这一组没有对外依据 → 给一键补建 -->
+            <div v-if="grpNoParent(it.c)" class="grp-warn">
+              <span class="gw-txt" :title="'这一组只有视角变体卡，没有名字正好是「' + vBase(it.c.name) + '」的主体卡。发给视频模型的档案只取主体卡那一份，缺了就等于这一组没有外观依据；点右边按钮可从组内现有档案补建一张。'">
+                ⚠ 本组缺主体卡「{{ vBase(it.c.name) }}」
+              </span>
+              <button class="btn ghost xs" :disabled="busy" @click="makeParent(it.c)">建主体卡</button>
+            </div>
+
             <!-- 档案（提示词的唯一依据，可手改）：与大预览同列（图下）；
-                 改动 → 脏标记「档案已改 · 提示词待更新」→ 点标题右侧的刷新图标按新档案重算 -->
-            <div class="f pf-box">
+                 改动 → 脏标记「档案已改 · 提示词待更新」→ 点标题右侧的刷新图标按新档案重算。
+                 🔴 视角变体卡（`主体名--视角`）不显示档案区：它共用主体卡的档案，填了也不下发（见 src/variant.js） -->
+            <div v-if="!isVariantCard(it.c)" class="f pf-box">
               <div class="pf-head">
                 <label>{{ it.c.kind === 'scene' ? '场景档案' : '角色档案' }}</label>
                 <span style="flex:1"></span>
@@ -72,6 +95,14 @@
                         :readonly="isLibRo(it.c)"
                         placeholder="档案：每行一个字段「字段名：值」（来自剧本提取，可手工修改）…"
                         @change="touchProfile(it.c)"></textarea>
+            </div>
+            <!-- 视角变体卡在这里看到的替代说明（档案区隐藏，从结构上杜绝「填 4 份一样的档案」） -->
+            <div v-else class="f vnote">
+              <div class="pf-head"><label>视角变体 · 共用档案</label></div>
+              <div class="vnote-body">
+                <div>本卡是主体「<b>{{ vBase(it.c.name) }}</b>」的 <b>{{ vVar(it.c.name) }}</b> 视角。</div>
+                <div>档案只维护在主体卡上，发给视频模型时也只发那一份；本卡只负责提供这一视角的参考图。</div>
+              </div>
             </div>
           </div>
 
@@ -105,38 +136,47 @@
               <textarea v-model="it.c.negative" rows="3" :readonly="isLibRo(it.c)" placeholder="负向提示词"
                         @change="saveAll()"></textarea></div>
 
-            <!-- 小预览图（抽卡记录，最多显示最新 4 张；点击选中作图生图底图，✕ 删除） -->
-            <div class="f"><label>小预览图 <span class="hint" style="font-size:10px">点击选中为图生图底图</span></label>
-              <div class="thumbs" v-if="it.c.candidates.length">
+            <!-- 小预览图（抽卡记录，最多显示最新 4 张；点击选中作图生图底图，✕ 删除）
+                 2026-10-08（Dragon）：去掉「小预览图 / 点击选中…」标题与提示语；
+                 末尾的虚线「+」= 从本地导入一张图（外观参考「新增角色」的 .add-tile：虚线框、悬停变蓝）；
+                 只读副本卡（库里导入的）不显示 ✕ 与 + -->
+            <div class="f">
+              <div class="thumbs">
                 <div v-for="t in shown(it.c)" :key="t.i" class="thumb-wrap">
                   <img :src="imgSrc(absOf(it.c, t.f))" :class="{ cur: t.i === it.c.cur }"
                        title="点击选中／再点一次取消选中" @click="pick(it.c, t.i)" />
                   <button v-if="!isLibRo(it.c)" class="img-x" title="删除这张图" @click.stop="askDel(it.c, t.i)">✕</button>
                 </div>
+                <button v-if="!isLibRo(it.c)" class="thumb-add" :disabled="busy"
+                        title="从本地选图当这张卡的参考图（可多选，一次全导进来）：会复制进本卡的素材目录并重命名为「卡名」（永不覆盖，同名自动编号）"
+                        @click="importImg(it.i)">+</button>
               </div>
-              <div v-else class="hint" style="font-size:11px">尚未出图</div>
+              <div v-if="!it.c.candidates.length" class="hint" style="font-size:11px">尚未出图</div>
             </div>
 
-            <label class="card-res">分辨率
-              <select v-model="it.c.res" :disabled="busy || isLibRo(it.c)" @change="saveAll()">
-                <option v-for="o in optsFor(it.c)" :key="o.value" :value="o.value">{{ o.label }}</option>
-              </select>
-            </label>
-
-            <!-- 库操作 + 一键填充（次级功能：绿色） -->
-            <div class="cops fill-row">
-              <button class="btn sec sm" :disabled="busy || !selFile(it.c)"
-                      :title="'把当前选中的这张图填到所有包含「' + it.c.name + '」的镜头的参考图区（只填参考图，不动首尾帧）'"
+            <!-- 库操作 + 一键填充（次级功能：绿色）。
+                 2026-10-08（Dragon）：与下方「分辨率」上下换位 —— 按钮行在上、分辨率在下并入出图行。
+                 🔴 视角变体卡上这三个按钮全部隐藏（2026-10-08，Dragon）：它共用主体卡的档案与图组，
+                    填充/入库/写镜头都只对主体卡有意义（填图走主体卡的「一键填充整组」）。
+                    视角名也永远不会写进分镜，写进 chars 反而会让 init 把卡建回来。
+                    三个都没了 → 整行收起（.row-empty），不留空档。 -->
+            <div class="cops fill-row" :class="{ 'row-empty': fillRowEmpty(it.c) }">
+              <!-- 父卡 → 整组一次填充；视角变体卡无此按钮（2026-10-08） -->
+              <button v-if="!isVariantCard(it.c)" class="btn sec sm" :disabled="busy || !selFile(it.c)"
+                      :title="grpSize(it.c) > 1
+                        ? '把「' + it.c.name + '」整组的 ' + grpSize(it.c) + ' 张图（父卡 + 全部视角变体）一次填到所有包含「' + vBase(it.c.name) + '」的镜头的参考图区（只填参考图，不动首尾帧）'
+                        : '把当前选中的这张图填到所有包含「' + vBase(it.c.name) + '」的镜头的参考图区（只填参考图，不动首尾帧）。视角变体卡按主体名匹配，所以分镜里不必写「' + it.c.name + '」'"
                       @click="fillRefs(it.i)">
-                一键填充
+                {{ grpSize(it.c) > 1 ? '一键填充整组' : '一键填充' }}
               </button>
-              <!-- 本集新增卡 → 保存到项目库；已入库的本地卡 → 更新到项目库 -->
-              <button v-if="!it.c.libId" class="btn sec sm" :disabled="busy"
+              <!-- 「从本地导入」已挪到上方小预览图区（末尾虚线「+」格子，2026-10-08） -->
+              <!-- 本集新增卡 → 保存到项目库；已入库的本地卡 → 更新到项目库（视角变体卡不参与入库） -->
+              <button v-if="!it.c.libId && !isVariantCard(it.c)" class="btn sec sm" :disabled="busy"
                       title="把这张卡（档案 + 正负提示词 + 已选中的图 + 分辨率）打包保存到项目角色场景库，供其它集复用"
                       @click="saveToLib(it.c)">
-                保存到项目
+                存到项目
               </button>
-              <button v-else-if="!isLibRo(it.c)" class="btn sec sm" :disabled="busy"
+              <button v-else-if="!isLibRo(it.c) && !isVariantCard(it.c)" class="btn sec sm" :disabled="busy"
                       title="把本集的改动推回项目库（库版本 +1；引用该条目的其它集会提示重新生成）"
                       @click="updateToLib(it.c)">
                 更新到项目库
@@ -149,17 +189,23 @@
                 </select>
               </label>
               <!-- 把这张卡写进本集镜头的 chars 字段（手动新增的卡否则不会出现在任何镜头的参考图里） -->
-              <button class="btn ghost sm" :disabled="busy || !(ep && ep.shots && ep.shots.length)"
+              <button v-if="!isVariantCard(it.c)" class="btn ghost sm" :disabled="busy || !(ep && ep.shots && ep.shots.length)"
                       title="把「本集有谁」写进选定镜头的 chars 字段：只有写进去，这张卡的图才会在一键填充 / H3 生成时被挂上"
                       @click="openWriteShots(it.c)">
-                写入镜头…
+                写入镜头
               </button>
               <!-- 「删除卡」已挪到上方「正向提示词」标题行（2026-09-27） -->
             </div>
 
-            <!-- 出图耗时挪到「生图」按钮左边 -->
+            <!-- 底部一行：分辨率（靠左）+ 生图按钮（靠右）。
+                 2026-10-08（Dragon）：原「耗时 xxx」文案去掉「耗时」前缀并挪到大预览图右下角角标（.gen-tag），
+                 这里腾出的位置让「分辨率」并进来，与「文生图 / 图生图」同一行 -->
             <div class="ops-row">
-              <span v-if="genText(it.c)" class="gen-ms" :class="{ live: it.c._genAt }">{{ genText(it.c) }}</span>
+              <label class="card-res">分辨率
+                <select v-model="it.c.res" :disabled="busy || isLibRo(it.c)" @change="saveAll()">
+                  <option v-for="o in optsFor(it.c)" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
+              </label>
               <button class="btn sm" :class="{ regen: it.c.refAsBase && it.c.cur >= 0 }" :disabled="busy || isLibRo(it.c)" @click="gen(it.i)">
                 {{ it.c.refAsBase && it.c.cur >= 0 ? '图生图' : '文生图' }}
               </button>
@@ -216,13 +262,39 @@
         <div class="modal-note">
           <div>名字是这张卡在本集与项目库里的**唯一标识**（决定图片目录与参考图归属），请与分镜里写的名字逐字一致。</div>
           <div style="margin-top:6px">同一人物的不同年龄 / 形态请写成「基础名-限定词」（如 李白-少年、李白-老年），不要用同一个名字。</div>
+          <div style="margin-top:6px">同一件产品 / 道具 / 角色的**不同视角**（正面、侧面、内饰…）**不要在这里新建**：请回到那张主体卡，点它名字旁边的「+」派生 —— 主体名会自动带上，你只填视角名即可，不会撞名。</div>
         </div>
         <input type="text" v-model="askAdd.name" placeholder="例如：张伯 / 李白-少年"
                @keyup.enter="doAdd" style="margin:8px 0" />
+        <div v-if="addErrMsg" class="modal-err">{{ addErrMsg }}</div>
         <div class="modal-ops">
           <span style="flex:1"></span>
           <button class="btn ghost" @click="askAdd = null">取消</button>
-          <button class="btn" :disabled="!String(askAdd.name || '').trim()" @click="doAdd">新增</button>
+          <button class="btn" :disabled="!String(askAdd.name || '').trim() || !!addErrMsg" @click="doAdd">新增</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 派生视角卡（2026-10-08，Dragon）：主体名前缀固定成灰色胶囊，用户只填视角名。
+         这样「V9X--正面」这种名字只能由系统拼出来 —— 用户既不用知道双横杠约定，也不会写出撞名 / 写错的卡名。 -->
+    <div v-if="askDerive" class="modal-mask" @click.self="askDerive = null">
+      <div class="modal">
+        <div class="modal-title">给「{{ askDerive.base }}」派生一张视角卡</div>
+        <div class="modal-note">
+          <div>主体名固定为「<b>{{ askDerive.base }}</b>」，你只需要填**视角名**（如 正面 / 侧面 / 内饰 / 顶部）。</div>
+          <div style="margin-top:6px">新卡会自动与主体卡相邻摆放、**共用同一个背景框与档案**（发给视频模型时只发主体卡那一份），分镜里也只需写主体名。</div>
+        </div>
+        <div class="dname">
+          <span class="dname-fix">{{ askDerive.base }}--</span>
+          <input type="text" v-model="askDerive.suffix" placeholder="视角名，如：正面"
+                 @keyup.enter="doDerive" />
+        </div>
+        <div v-if="deriveName" class="dname-prev">将创建：<b>{{ deriveName }}</b></div>
+        <div v-if="deriveErr" class="modal-err">{{ deriveErr }}</div>
+        <div class="modal-ops">
+          <span style="flex:1"></span>
+          <button class="btn ghost" @click="askDerive = null">取消</button>
+          <button class="btn" :disabled="!deriveName || !!deriveErr" @click="doDerive">派生</button>
         </div>
       </div>
     </div>
@@ -322,14 +394,20 @@
         <div class="modal-body mono">{{ askCard.c.name }}</div>
         <div class="modal-note">
           <div>· 卡上的<b>档案与提示词会一起删掉</b>，不可恢复。</div>
-          <div style="margin-top:6px">· 已生成的<b>图片文件仍保留</b>在 项目/assets/ 下（要清磁盘请在缩略图上点 ✕）。</div>
+          <div style="margin-top:6px">· 已生成的<b>图片文件仍保留</b>在项目的 assets 素材目录下（要清磁盘请在缩略图上点 ✕）。</div>
           <div style="margin-top:6px">· 项目角色场景库里的<b>同名条目不受影响</b>（要删库条目请在左侧库里操作）。</div>
           <div v-if="askCard.used" style="margin-top:6px;color:#fcd34d">
-            ⚠ 分镜里还有 <b>{{ askCard.used }}</b> 个镜头在用这个名字，删掉后这些镜头在此处就没有对应卡了。
+            ⚠ 分镜里还有 <b>{{ askCard.used }}</b> 个镜头在用这个名字，删除时会<b>一并从这些镜头里移除</b>
+            （不摘掉的话，下一轮重建会照分镜里的名字把这张卡又建回来）。
+          </div>
+          <!-- 删主体卡 = 连子卡一起删（2026-10-08，Dragon）：视角卡离开主体就没有任何意义 -->
+          <div v-if="askCard.kids && askCard.kids.length" style="margin-top:6px;color:#fcd34d">
+            ⚠ 这是主体卡，它的 <b>{{ askCard.kids.length }}</b> 张视角卡会<b>一并删除</b>：
+            {{ askCard.kids.map(k => k.name).join('、') }}（图片文件同样保留在磁盘）。
           </div>
         </div>
         <div class="modal-ops">
-          <button class="btn danger" @click="doDelCard()">删除卡片</button>
+          <button class="btn danger" @click="doDelCard()">删除{{ askCard.kids && askCard.kids.length ? '（含 ' + askCard.kids.length + ' 张视角卡）' : '卡片' }}</button>
           <span style="flex:1"></span>
           <button class="btn ghost" @click="askCard = null">取消</button>
         </div>
@@ -378,9 +456,10 @@ import { useProject as useProjectStore } from './stores/project.js'
 import { usePipeline, fmtMs } from './stores/pipeline.js'
 import { stepLog, secs, dbgPrompt } from './ulog.js'
 import { parseRes, ratioLabel, resLabel, optsWith, seg, joinPath } from './resutil.js'
+import { baseOf, variantOf, isVariant, hasSep, groupCards, hashName, GROUP_HUES } from './variant.js'
 import {
   readPrompt, parseFallbacks, pickFallback, section, ensureSceneKeeper, composeSystem, composeUser,
-  normalizeProfile, profileDirty, profileBrief, equipmentWords, stripEquipmentWords
+  normalizeProfile, profileDirty, profileBrief, readEquipmentWords, stripEquipmentWords
 } from './prompts.js'
 import { sceneCardIssues } from './promptlib.js'
 
@@ -391,7 +470,7 @@ import { sceneCardIssues } from './promptlib.js'
 let DEFAULT_NEG = ''
 let SCENE_KEEPER_DEFAULT = ''
 let FALLBACK_TPL = { hero: '', npc: '', scene: '' }
-let EQ_WORDS = []   // 器材词表（scenes.md「器材词:」行）：生图发送前剥掉命中短语，防器材被画进画面
+let EQ_WORDS = []   // 器材词表（风格包的 equipStrip 优先，scenes.md「器材词:」行兜底）：生图发送前剥掉命中短语，防器材被画进画面
 const SHOW_MAX = 4   // 抽卡区最多渲染最新几张（磁盘与 candidates 记录不受影响）
 // 分镜行参考图上限（与 StageShots 的 MAX_REF_IMG 保持一致）：一键填充不允许把镜头填爆
 const MAX_REF_IMG = 9
@@ -462,7 +541,8 @@ async function fallbackTemplates() {
     const smd = await readPrompt('scenes.md')
     out.scene = pickFallback(parseFallbacks(smd), ['场景', 'scene'])
     out.keeper = pickKeeper(smd)
-    out.words = equipmentWords(smd)
+    // 🔴 器材词表优先取**风格包**的 equipStrip（画风族声明该剥哪些词），scenes.md 那一行只作兜底
+    out.words = await readEquipmentWords()
     if (!out.negative) out.negative = pickFallback(parseFallbacks(smd), ['负向', 'negative'])
   } catch (_) { /* 读不到就留空 */ }
   // 回写给模块级变量，让上面那些同步引用复用（新建卡片时的默认提示词 / 负向、生图时的空镜句）
@@ -478,8 +558,6 @@ export default {
   data() {
     return {
       cards: [], busy: false, _b64: {}, _dims: {}, ask: null, _keeper: SCENE_KEEPER_DEFAULT,
-      // 参考图背景检查结果缓存（绝对路径 → 四角最大通道差；0 未算出 / -1 读失败 / >阈值 = 背景非纯色）
-      _bg: {},
       // 批量任务（块 2 标题行的两个按钮）：
       //   batch*=队列在跑；*Stop=已点停止等当前条目收尾；askBatch=范围选择弹窗
       //   batch*N/Total=按钮上的进度（正在处理第 N 个 / 共 Total 个），跑完/停止归零
@@ -487,7 +565,7 @@ export default {
       batchI: false, batchIStop: false, batchIN: 0, batchITotal: 0,
       askBatch: null,
       // 项目角色场景库相关的四个弹窗：手动新增 / 从库导入 / 写入镜头 / 批量入库
-      askAdd: null, askImport: null, askWrite: null, askLibSave: null,
+      askAdd: null, askImport: null, askWrite: null, askLibSave: null, askDerive: null,
       // 删除整张卡片的确认弹窗（与「删图」区分：删卡删档案与提示词，图片文件留在磁盘）
       askCard: null,
       // 「本集新增卡片是否入库」的询问去重键（同一个集的同一批卡片只问一次，避免每次重建都弹）
@@ -502,11 +580,70 @@ export default {
     st() { return useProjectStore() },
     pl() { return usePipeline() },
     ep() { return this.st.current },
-    /** 单一网格的摆放顺序：先角色、后场景（同类内部保持原顺序），每项带上在 cards 里的真实下标 */
+    /** 当前生图方案是否支持图生图（不支持时点缩略图只预览、不当底图） */
+    capsI2i() { const c = this.st.caps && this.st.caps.image; return !c || c.i2i !== false },
+    /**
+     * 单一网格的摆放顺序（2026-10-08 改）：先角色、后场景；**同一主体（`主体名--视角`）的卡强制相邻**，
+     * 父卡（名字正好等于主体名的那张）排在组内第一。每项带上在 cards 里的真实下标。
+     * 没有双横杠命名时行为与改造前完全一致（每张卡各自成组，组序 = 原下标序）。
+     */
     ordered() {
       const rank = { character: 0, scene: 1 }
-      return this.cards.map((c, i) => ({ c, i }))
-        .sort((a, b) => ((rank[a.c.kind] || 0) - (rank[b.c.kind] || 0)) || (a.i - b.i))
+      const groups = groupCards(this.cards)
+      groups.sort((a, b) => {
+        const ra = rank[(this.cards[a.first] || {}).kind] || 0
+        const rb = rank[(this.cards[b.first] || {}).kind] || 0
+        return (ra - rb) || (a.first - b.first)
+      })
+      const out = []
+      for (const g of groups) {
+        const items = g.items.slice()
+        if (g.parent) {
+          const at = items.findIndex(o => o.i === g.parent.i)
+          if (at > 0) { const p = items.splice(at, 1)[0]; items.unshift(p) }
+        }
+        for (const o of items) out.push(o)
+      }
+      return out
+    },
+    /** 渲染用：主体名 → 组（含 parent / variantCount），组色与「缺父卡」黄标都从这里取数 */
+    grpMap() {
+      const m = {}
+      for (const g of groupCards(this.cards)) m[g.base] = g
+      return m
+    },
+    /** 「新增角色 / 场景」弹窗的内联校验（2026-10-08）：撞名、或写了视角卡名 → 就地报错 + 禁用「新增」，
+     *  不关弹窗。视角卡只允许从主体卡的「+」派生，所以这里把 `主体名--视角` 一律挡掉。 */
+    addErrMsg() {
+      const a = this.askAdd
+      if (!a) return ''
+      const n = String(a.name || '').trim()
+      if (!n) return ''
+      const kind = a.kind === 'scene' ? 'scene' : 'character'
+      if (hasSep(n)) {
+        return '「' + n + '」是视角卡写法（双横杠），不能手工创建。请回到主体卡「' + baseOf(n) +
+          '」，点它名字旁边的「+」派生 —— 主体名会自动带上，你只填视角名（正面 / 侧面 / 内饰…）。'
+      }
+      if (this.cards.some(c => c.kind === kind && c.name === n)) return '本集已有同名' + (kind === 'scene' ? '场景' : '角色') + '卡'
+      return ''
+    },
+    /** 「派生视角卡」弹窗将要创建的完整卡名（主体名 + 双横杠 + 视角名）；视角名为空时返回空串 */
+    deriveName() {
+      const a = this.askDerive
+      if (!a) return ''
+      const s = String(a.suffix || '').trim()
+      return s ? (a.base + '--' + s) : ''
+    },
+    /** 「派生视角卡」弹窗的内联校验 */
+    deriveErr() {
+      const a = this.askDerive
+      if (!a) return ''
+      const s = String(a.suffix || '').trim()
+      if (!s) return ''
+      if (hasSep(s)) return '视角名里不能再出现双横杠（那是主体与视角之间的分隔符）—— 只填「正面 / 侧面 / 内饰」这样的词即可。'
+      if (s.length > 16) return '视角名太长了（不超过 16 个字）。写成「正面 / 左前 / 内饰」这样的短词更好认。'
+      if (this.cards.some(c => c.kind === a.kind && c.name === this.deriveName)) return '本集已有「' + this.deriveName + '」这张卡了'
+      return ''
     },
     /** 依赖每秒自增的 tick，让「生成中 已用 X」实时刷新 */
     live() { return this.pl.tick },
@@ -621,11 +758,14 @@ export default {
         card.libRevAt = r.entry.libRev || 1
         card.libReadonly = false
         card._libRevNow = card.libRevAt
+        // 🔴 把本集的图推一份到库条目目录：库条目扫的是 assets/<类型>/<条目id>/，而本集卡的图在集私有
+        //    目录里（见 rootOf），不推过去库里的这张卡就是没图的。图片从此是两份独立副本，各自重生成互不影响。
+        const pic = await this.pushImagesToLib(card, r.entry)
         if (r.renamed) {
           card.name = r.entry.name
           this.$root.toast('库里已有同名条目，已存为「' + r.entry.name + '」；请核对分镜里的写法')
         } else {
-          this.$root.toast('已保存到项目角色场景库：「' + card.name + '」')
+          this.$root.toast('已保存到项目角色场景库：「' + card.name + '」' + (pic ? '（图片 ' + pic + ' 张）' : ''))
         }
         await this.saveAll()
         this.st.invalidateMedia(ep.projectId, 'library')
@@ -646,6 +786,8 @@ export default {
         card.libRevAt = (r && r.entry && r.entry.libRev) || (card.libRevAt + 1)
         card._libRevNow = card.libRevAt
         card._libAck = card.libRevAt
+        // 本集新出的图也一起推给库（只增不删）
+        if (r && r.entry) await this.pushImagesToLib(card, r.entry)
         await this.saveAll()
         this.st.invalidateMedia(ep.projectId, 'library')
         this.$root.toast('已更新到项目库：「' + card.name + '」')
@@ -661,7 +803,12 @@ export default {
       if (e.prompt) card.prompt = e.prompt
       card.negative = e.negative || card.negative || DEFAULT_NEG
       if (e.res) card.res = e.res
-      if (Array.isArray(e.images) && e.images.length) card.candidates = e.images.slice()
+      if (Array.isArray(e.images) && e.images.length) {
+        card.candidates = e.images.slice()
+        // candidates 已换成库那边的图名 → 文件得跟着进本集目录，否则本集的图框会是空的
+        // （本集卡看的是集私有目录，库的图在共享目录，两处已分开）
+        await this.pullImagesFromLib(card)
+      }
       if (typeof e.cur === 'number' && e.cur >= 0) card.cur = e.cur
       card.libRevAt = e.libRev || card._libRevNow
       card._libAck = card.libRevAt
@@ -675,6 +822,29 @@ export default {
       card._libAck = card._libRevNow
       await this.saveAll()
     },
+
+    /* ---- 集私有素材 ↔ 库素材：两处目录分开后，跨目录的动作要显式搬图（都只增不删，源图保留） ---- */
+    /** 本集私有图目录（rootOf 里 libReadonly=false 那一侧） */
+    privateDirOf(kind, name) { return this.dirOf({ kind, name, libReadonly: false }) },
+    /** 库条目图目录（rootOf 里 libReadonly=true 那一侧，目录名就是条目 id） */
+    libDirOf(kind, id) { return this.dirOf({ kind, name: id, libReadonly: true }) },
+    /** 本集私有的图 → 库条目目录（入库 / 更新到库时调用，让库里的这张卡有图） */
+    async pushImagesToLib(card, entry) {
+      if (!entry || !entry.id) return 0
+      const from = this.privateDirOf(card.kind, card.name)
+      const to = this.libDirOf(card.kind, entry.id)
+      if (!from || !to || from === to) return 0
+      try { return await window.studio.copyDir(from, to) } catch (_) { return 0 }
+    },
+    /** 库条目的图 → 本集目录（「按库更新本卡」时调用，candidates 已换成库那边的图名） */
+    async pullImagesFromLib(card) {
+      if (!card.libId) return 0
+      const from = this.libDirOf(card.kind, card.libId)
+      const to = this.privateDirOf(card.kind, card.name)
+      if (!from || !to || from === to) return 0
+      try { return await window.studio.copyDir(from, to) } catch (_) { return 0 }
+    },
+
     /** 切换变体：把本集这张只读卡换成库里另一个条目（连带把分镜/对白里的旧名换掉、参考图路径改到新目录） */
     async switchVariant(c, id) {
       const ep = this.ep
@@ -682,8 +852,9 @@ export default {
       const e = this.libEntry(id)
       if (!ep || !card || !e || e.id === card.libId) return
       const oldName = card.name, newName = e.name
-      const oldDir = this.dirOf({ kind: card.kind, name: oldName })
-      const newDir = this.dirOf({ kind: card.kind, name: newName })
+      // 参考图路径重写要知道两张卡各自的图根：旧卡按它当前归属、新卡一定是库条目（只读视图）
+      const oldDir = this.dirOf({ kind: card.kind, name: oldName, libReadonly: card.libReadonly === true })
+      const newDir = this.dirOf({ kind: card.kind, name: newName, libReadonly: true })
       const L = stepLog(TAG)
       try {
         const touched = await window.studio.librarySwap(this.st.workspace, ep.projectId, ep.id, card.kind, oldName, newName, e.id)
@@ -732,6 +903,15 @@ export default {
 
     /* ================= 手动新增 / 从库导入 / 写入镜头 / 批量入库 ================= */
     openAdd(kind) { this.askAdd = { kind, name: '' } },
+    /** 打开「派生视角卡」弹窗（2026-10-08，Dragon）：入口只在主体卡的名字角标旁。
+     *  主体名取 baseOf(卡名) 而不是卡名本身 —— 万一这组的父卡刚被删、只剩下一张
+     *  `V9X--正面`，从它派生出来的也应该是 `V9X--侧面`，而不是 `V9X--正面--侧面`。 */
+    openDerive(c) {
+      const card = this.liveCard(c)
+      if (!card) return
+      if (!this.isParentCard(card)) { this.$root.toast('只有主体卡能派生视角卡'); return }
+      this.askDerive = { kind: card.kind, base: baseOf(card.name), suffix: '' }
+    },
     /** 新增一张空白本集卡（名字手填，档案与提示词留空，之后照常补） */
     async doAdd() {
       const a = this.askAdd
@@ -739,20 +919,62 @@ export default {
       const name = String(a.name || '').trim()
       if (!name) return
       const kind = a.kind === 'scene' ? 'scene' : 'character'
+      // 🔴 视角卡名不允许手工创建（2026-10-08，Dragon）：只允许从主体卡的「+」派生 ——
+      //    主体名由系统拼、用户只填视角名，既不会与已有子卡撞名，也不会有「全角/半角横杠、
+      //    1 个还是 2 个」这类写错（parseName 认 8 种横杠类字符，只查 ASCII `--` 等于拦了个假的）。
+      if (hasSep(name)) {
+        this.$root.toast('「' + name + '」是视角卡写法：请回到主体卡「' + baseOf(name) + '」点「+」派生'); return
+      }
       if (this.cards.some(c => c.kind === kind && c.name === name)) {
         this.$root.toast('本集已有同名' + (kind === 'scene' ? '场景' : '角色') + '卡'); return
       }
       this.askAdd = null
-      const defRes = (this.ep && this.ep.res && this.ep.res.img) || '1216x832'
+      const defRes = (this.ep && this.ep.res && this.ep.res.img) || '1920x1080'
       this.cards.push({
         kind, name, role: kind === 'scene' ? '场景' : '配角',
         profile: '', _profRevAt: 0, _profRev: 0, _profAck: 0,
         prompt: '', negative: DEFAULT_NEG,
         promptMs: 0, promptAt: 0, candidates: [], cur: -1, res: defRes, genMs: 0,
-        _imgRev: 1, libId: '', libRevAt: 0, libReadonly: false, _libAck: 0, _libRevNow: 0
+        _imgRev: 1, libId: '', libRevAt: 0, libReadonly: false, _libAck: 0, _libRevNow: 0,
+        // 🔴 手动新增标记（2026-10-07）：重新生成分镜时，mergeArchive 会丢弃「新分镜里没提到」的
+        //    历史角色 —— 但手工加的卡本来就不在分镜里（用户加完要自己「写入镜头」），
+        //    不豁免的话等于把用户的手工活一起清了。
+        _manual: true
       })
       await this.saveAll()
-      this.$root.toast('已新增' + (kind === 'scene' ? '场景' : '角色') + '卡：「' + name + '」；记得用「写入镜头…」把它写进相关镜头')
+      this.$root.toast('已新增' + (kind === 'scene' ? '场景' : '角色') + '卡：「' + name + '」；记得用「写入镜头」把它写进相关镜头')
+    },
+    /**
+     * 派生一张视角变体卡（2026-10-08，Dragon）：名字**固定**为「主体名--视角名」，由系统拼，用户只填视角名。
+     * - 档案留空：视角卡共用主体卡的档案，填了也不下发（见 src/variant.js 的 groupProfiles）。
+     * - 正负提示词从主体卡复制一份当起点：这样「文生图」按钮立即可用，用户按视角微调即可。
+     * - 🔴 图片**绝不复制**主体卡的图：复制出来的就是同一张图重复占位（白占 MAX_REF_IMG=9 的一格，
+     *   V9X-2 里 `V9X.jpg` 与 `V9X--正面.jpg` md5 完全相同就是这么来的）。要用户自己导这一视角的图。
+     * - 🔴 `_manual: true` 不是可选项：视角卡的名字**永远不会出现在分镜里**（分镜只写主体名），
+     *   重新生成分镜时 `mergeArchive(..., {dropOrphans:true})` 会把它当孤儿卡静默清掉。
+     */
+    async doDerive() {
+      const a = this.askDerive
+      if (!a) return
+      const name = this.deriveName
+      if (!name) { this.$root.toast('请先填视角名（如 正面 / 侧面 / 内饰）'); return }
+      if (this.deriveErr) { this.$root.toast(this.deriveErr); return }
+      const suffix = String(a.suffix || '').trim()
+      const parent = this.cards.find(c => c.kind === a.kind && c.name === a.base) || null
+      this.askDerive = null
+      const defRes = (this.ep && this.ep.res && this.ep.res.img) || '1920x1080'
+      this.cards.push({
+        kind: a.kind, name, role: (parent && parent.role) || (a.kind === 'scene' ? '场景' : '配角'),
+        profile: '', _profRevAt: 0, _profRev: 0, _profAck: 0,
+        prompt: (parent && parent.prompt) || '', negative: (parent && parent.negative) || DEFAULT_NEG,
+        promptMs: 0, promptAt: 0, candidates: [], cur: -1,
+        res: (parent && parent.res) || defRes, genMs: 0,
+        _imgRev: 1, libId: '', libRevAt: 0, libReadonly: false, _libAck: 0, _libRevNow: 0,
+        _manual: true
+      })
+      await this.saveAll()
+      this.$root.toast('已派生「' + name + '」（' + suffix + ' 视角）：点小预览图区的「+」导入这一视角的图，' +
+        '再点主体卡的「一键填充整组」把它写进镜头')
     },
     openImportLib() {
       if (!this.libAll.length) { this.$root.toast('项目角色场景库还是空的'); return }
@@ -772,7 +994,7 @@ export default {
         promptMs: e.promptMs || 0, promptAt: e.promptAt || 0,
         candidates: Array.isArray(e.images) ? e.images.slice() : [],
         cur: (typeof e.cur === 'number' && e.cur >= 0) ? e.cur : -1,
-        res: e.res || (this.ep && this.ep.res && this.ep.res.img) || '1216x832', genMs: e.genMs || 0,
+        res: e.res || (this.ep && this.ep.res && this.ep.res.img) || '1920x1080', genMs: e.genMs || 0,
         _imgRev: 1, libId: e.id, libRevAt: e.libRev || 1, libReadonly: true,
         _libAck: e.libRev || 1, _libRevNow: e.libRev || 1
       })
@@ -958,7 +1180,7 @@ export default {
         })
       }
       // 逐张卡分辨率默认值（未单独设置过 → 取剧集配置）；清掉上次会话的运行态字段
-      const defRes = (ep.res && ep.res.img) || '1216x832'
+      const defRes = (ep.res && ep.res.img) || '1920x1080'
       this.cards = out
       this.cards.forEach(c => {
         delete c._gen; delete c._genAt; delete c._pgGen; delete c._pgAt
@@ -986,12 +1208,21 @@ export default {
         this.$root.toast('已从项目角色场景库加载：' + aligned.join('、'))
       }
     },
-    /** 该类型的图根目录：<项目>/assets/characters 或 <项目>/assets/scenes */
+    /**
+     * 该类型的图根目录。按卡片的归属分两处：
+     *   - 库条目的只读视图（libReadonly === true）→ 项目共享素材 <项目>/assets/{characters,scenes}
+     *   - 本集自己的卡（手动新增的、入库后本集仍可编辑的）→ 集私有素材 <项目>/assets/episodes/<集>/{characters,scenes}
+     * 🔴 分开的理由：这两者以前是**同一个目录**，于是 A 集给某角色出图会连带改掉库与其它集同名角色的图，
+     *    永久删图也是连坐，删集留下的图更是没人清。分开后各集互不污染。
+     */
     rootOf(c) {
-      const a = this.ep && this.ep.assetsDir
-      return a ? joinPath(a, c.kind === 'scene' ? 'scenes' : 'characters') : ''
+      const ep = this.ep
+      if (!ep) return ''
+      const base = (c.libReadonly === true) ? ep.assetsDir : (ep.epAssetsDir || ep.assetsDir)
+      if (!base) return ''
+      return joinPath(base, c.kind === 'scene' ? 'scenes' : 'characters')
     },
-    /** 某张卡的图目录：<项目>/assets/<类型>/<名称> */
+    /** 某张卡的图目录：<图根>/<名称>（图根见 rootOf：库只读卡用共享目录，本集卡用集私有目录） */
     dirOf(c) { return joinPath(this.rootOf(c), seg(c.name)) },
     /** 某张图的绝对路径 */
     absOf(c, f) { return joinPath(this.dirOf(c), f) },
@@ -1005,7 +1236,7 @@ export default {
     genText(c) {
       void this.live
       if (c._genAt) return '生成中 已用 ' + fmtMs(Date.now() - c._genAt)
-      return c.genMs ? '耗时 ' + fmtMs(c.genMs) : ''
+      return c.genMs ? fmtMs(c.genMs) : ''
     },
     /** 档案区的时间文案：正在生成提示词 / 上次生成提示词的时间 */
     pgText(c) {
@@ -1014,10 +1245,10 @@ export default {
       return c.promptAt ? '提示词 ' + agoText(c.promptAt) : ''
     },
     /** 该卡当前生效的分辨率（未单独设置过 → 剧集配置） */
-    resOf(c) { return c.res || (this.ep && this.ep.res && this.ep.res.img) || '1216x832' },
+    resOf(c) { return c.res || (this.ep && this.ep.res && this.ep.res.img) || '1920x1080' },
     /** 档位按当前底模过滤；该卡已保存的值不在档位里时补进去（保证显示正确） */
     optsFor(c) { return optsWith((this.st.resOptions || {}).img, this.resOf(c)) },
-    /** 大预览当前图片的实际分辨率（'1216×832'，读到为止显示空） */
+    /** 大预览当前图片的实际分辨率（读到为止显示空） */
     dimOf(c) {
       const f = this.selFile(c)
       if (!f) return ''
@@ -1031,52 +1262,12 @@ export default {
       im.src = src
     },
     selFile(c) { return c.cur >= 0 ? (c.candidates[c.cur] || null) : null },
-    /** 参考图背景检查（零新依赖）：缩小到 56×56 采样四角 5×5 邻域，取四角之间的最大通道差。
-     *  纯色背景（含细微噪点/渐变）差值很小；带场景、建筑、天空、道具时四角必然差异大。
-     *  只对角色图判——场景图本来就该有环境。 */
-    bgFlat(src) {
-      return new Promise(res => {
-        const im = new Image()
-        im.onload = () => {
-          try {
-            const W = 56, H = 56
-            const cv = document.createElement('canvas'); cv.width = W; cv.height = H
-            const g = cv.getContext('2d'); g.drawImage(im, 0, 0, W, H)
-            const d = g.getImageData(0, 0, W, H).data
-            const patch = (x0, y0) => {
-              let r = 0, gg = 0, b = 0, n = 0
-              for (let y = y0; y < y0 + 5; y++) for (let x = x0; x < x0 + 5; x++) {
-                const p = (y * W + x) * 4; r += d[p]; gg += d[p + 1]; b += d[p + 2]; n++
-              }
-              return [r / n, gg / n, b / n]
-            }
-            const ms = [[0, 0], [W - 5, 0], [0, H - 5], [W - 5, H - 5]].map(([x, y]) => patch(x, y))
-            let max = 0
-            for (let i = 0; i < ms.length; i++) for (let j = i + 1; j < ms.length; j++)
-              for (let k = 0; k < 3; k++) max = Math.max(max, Math.abs(ms[i][k] - ms[j][k]))
-            res(Math.round(max))
-          } catch (e) { res(-1) }
-        }
-        im.onerror = () => res(-1)
-        im.src = src
-      })
-    },
-    /** 角色卡的参考图是否带环境（背景非纯色）→ 卡片角标文案；返回空串 = 不提示 */
-    bgWarn(c) {
-      if (!c || c.kind !== 'character') return ''
-      const f = this.selFile(c) || c.candidates[c.candidates.length - 1]
-      if (!f) return ''
-      const abs = this.absOf(c, f)
-      const k = 'bg:' + abs
-      if (this._bg[k] === undefined) {
-        const src = this.imgSrc(abs)
-        if (!src) return ''          // base64 还没就绪：不缓存，下次渲染再试
-        this._bg[k] = 0
-        this.bgFlat(src).then(v => { this._bg[k] = v })
-        return ''
-      }
-      const v = this._bg[k]
-      return (typeof v === 'number' && v > 36) ? '背景非纯色' : ''
+    /** 视角变体卡的按钮行是否该整行收起（2026-10-08，Dragon）：
+     *  一键填充 / 存到项目 / 写入镜头 都只对主体卡有意义，视角子卡上一个都不给；
+     *  唯一的例外是只读库卡的「同名多张」切换下拉（那是系统判错时的纠正出口），它还在就留着这一行。 */
+    fillRowEmpty(c) {
+      if (!this.isVariantCard(c)) return false
+      return !(this.isLibRo(c) && this.libVariantsOf(c).length > 1)
     },
     /** 抽卡区只渲染最新 SHOW_MAX 张，返回时带上真实下标 */
     shown(c) { return c.candidates.map((f, i) => ({ f, i })).slice(-SHOW_MAX) },
@@ -1097,7 +1288,12 @@ export default {
     /** 点缩略图：选中并放大到主预览，同时把它指定为「图生图」底图；再点同一张 → 取消选中（回到文生图） */
     pick(c, i) {
   c = this.liveCard(c)   // 缩略图点击可能来自重建前的旧卡对象
-  if (c.cur === i) { c.cur = -1; c.refAsBase = false } else { c.cur = i; c.refAsBase = true }
+  if (c.cur === i) { c.cur = -1; c.refAsBase = false }
+  else {
+    c.cur = i
+    // 当前生图方案声明了「不支持图生图」时，点缩略图只当预览，不当底图
+    c.refAsBase = this.capsI2i
+  }
   this.saveAll()
 },
     askDel(c, i) { this.ask = { c, i, f: c.candidates[i] } },
@@ -1129,7 +1325,14 @@ export default {
       L.done('场景档案「' + card.name + '」→「' + to + '」（' + (moved.length ? '搬入 ' + moved.join(' / ') : '目标卡已有内容，只删空卡') + '）')
       this.$root.toast('已把档案搬到「' + to + '」，请点该卡的「刷新提示词」重算')
     },
-    /** 打开删卡确认（统计有多少镜头在用它，提示里说清后果） */
+    /** 该主体卡名下的**全部视角变体卡**（按卡片显示顺序）。独立主体 / 没有子卡时返回 [] */
+    groupChildren(c) {
+      if (!c) return []
+      const g = this.grpMap[baseOf(c.name)]
+      if (!g || g.items.length < 2) return []
+      return g.items.filter(o => isVariant(o.c && o.c.name)).map(o => o.c)
+    },
+    /** 打开删卡确认（统计有多少镜头在用它，提示里说清后果；主体卡还要把子卡名单摆出来） */
     askDelCard(c) {
       const card = this.liveCard(c)
       if (!card) return
@@ -1140,27 +1343,75 @@ export default {
           : String(s.chars || '').split(/[、,，/]/).map(x => x.trim()).indexOf(card.name) >= 0
         if (hit) used++
       }
-      this.askCard = { c: card, used }
+      // 🔴 删主体卡 = 连子卡一起删（2026-10-08，Dragon）：视角卡离开主体就没有任何意义
+      //    （档案取主体那份、分镜只写主体名、组色也按主体算），留着只会变成一组没有依据的孤儿。
+      const kids = this.isParentCard(card) ? this.groupChildren(card) : []
+      this.askCard = { c: card, used, kids }
     },
-    /** 删除整张卡：卡片数组移除 → 落库（chars.json / scenes.json 由 saveAll 从 cards 重写） */
+    /** 删除整张卡（主体卡则连子卡一起删）：卡片数组移除 → 落库 → **同时摘掉分镜里的引用**
+     *  （否则 init 重建会把它复活） */
     async doDelCard() {
       const a = this.askCard
       if (!a) return
       const card = this.liveCard(a.c)
       this.askCard = null
+      if (!card) return
       const i = this.cards.indexOf(card)
       if (i < 0) return
+      // 同一主体组的全部视角变体卡：一并删除（2026-10-08，Dragon）
+      const kids = (a.kids || []).map(k => this.liveCard(k)).filter(k => k && k !== card)
+      // saveAll 之后 cards 可能被 rebuildSoon 整体替换，后面只用快照里的「类型 + 名字」办事
+      const snap = { kind: card.kind, name: card.name }
+      const kidSnaps = kids.map(k => ({ kind: k.kind, name: k.name }))
       const L = stepLog(TAG)
       try {
-        this.cards.splice(i, 1)
+        // 先删子卡再删主体卡（索引从大到小倒着删，避免前面的 splice 让后面的下标漂移）
+        for (const k of kids) { const j = this.cards.indexOf(k); if (j >= 0) this.cards.splice(j, 1) }
+        { const j = this.cards.indexOf(card); if (j >= 0) this.cards.splice(j, 1) }
         await this.saveAll()
+        // 🔴 必须把名字从分镜里一起摘掉：init(ep) 是按「分镜里出现过的名字」建卡的（本意是重生成分镜后
+        //    新角色自动冒卡），只删 chars.json 的话 150ms 后 rebuildSoon→init 又照着分镜名字把它建回来
+        //    （连图一起）→ 表现就是「删了立刻又出现」。
+        const n = await this.purgeFromShots(snap)
+        // 子卡名正常不在分镜里（分镜只写主体名），但用户可能手写过 → 一并摘掉，避免 init 复活
+        let kn = 0
+        for (const ks of kidSnaps) kn += await this.purgeFromShots(ks)
         this.st.invalidateMedia(this.ep.projectId, 'characters')
-        L.done('已删除' + (card.kind === 'scene' ? '场景' : '角色') + '卡：「' + card.name + '」（图片文件保留在磁盘）')
-        this.$root.toast('已删除「' + card.name + '」这张卡（图片文件仍在 assets 下）')
+        const kidTxt = kidSnaps.length
+          ? '，并连带删除 ' + kidSnaps.length + ' 张视角卡（' + kidSnaps.map(k => k.name).join('、') + '）'
+          : ''
+        L.done('已删除' + (snap.kind === 'scene' ? '场景' : '角色') + '卡：「' + snap.name + '」' +
+          (n ? '（同时从 ' + n + ' 个镜头里摘掉了这个名字）' : '') + kidTxt + '（图片文件保留在磁盘）')
+        this.$root.toast('已删除「' + snap.name + '」' +
+          (n ? '，并从 ' + n + ' 个镜头里摘掉' : '') + kidTxt + '（图片文件仍在磁盘）')
       } catch (e) {
         L.fail('删除卡片失败', null, e)
         this.st.fail(e)
       }
+    },
+    /**
+     * 摘掉分镜里对某个名字的引用：角色从 chars 字段里去掉这一项、场景清空 scene 字段。
+     * 不做这件事的话 `init()` 会照分镜里的名字把卡重建回来 —— 卡片删了立刻复活。
+     * @returns 被改动的镜头数（0 = 分镜里本来就没这个名字，不用写盘）
+     */
+    async purgeFromShots(snap) {
+      const ep = this.ep
+      if (!ep) return 0
+      const shots = JSON.parse(JSON.stringify(ep.shots || []))
+      let n = 0
+      for (const s of shots) {
+        if (snap.kind === 'scene') {
+          if (String(s.scene || '').trim() === snap.name) { s.scene = ''; n++ }
+        } else {
+          const parts = String(s.chars || '').split(/[、,，/]/).map(x => x.trim()).filter(Boolean)
+          const j = parts.indexOf(snap.name)
+          if (j >= 0) { parts.splice(j, 1); s.chars = parts.join('、'); n++ }
+        }
+      }
+      if (!n) return 0
+      await this.st.saveArtifact('shots', shots)
+      ep.shotsSyncAt = Date.now()   // 常驻的分镜块按最新工件重建（与 doWriteShots 同款）
+      return n
     },
     /** 🔴 卡片可能因 rebuildSoon 被整体替换（保存→watch→150ms 后 init 重建），
      *  弹窗/异步回调里持有的旧对象已脱离 this.cards —— 任何写操作前先按
@@ -1256,7 +1507,8 @@ export default {
       try {
         const system = await composeSystem({
           specs: ['promptgen.md', 'profile.md', isScene ? 'scenes.md' : 'chars.md'],
-          mustHave: ['"prompt"', '"negative"']
+          mustHave: ['"prompt"', '"negative"'],
+          task: isScene ? 'scene' : 'char'
         })
         const others = profileBrief(this.othersOf(c), c.name)
         // user 消息的文案同样来自规范 md（promptgen.md 的「## 素材格式」），这里只提供素材本身
@@ -1461,32 +1713,183 @@ export default {
       this.pl.confirm(3, this.ep.id)
       this.$root.toast('角色 & 场景已确认')
     },
+    /* ---- 主体组（`主体名--视角` 双横杠命名，2026-10-08）----
+       同一主体的视角变体卡：相邻摆放 + 同一个颜色 + 共用主体卡的档案。
+       解析与归组的纯函数在 src/variant.js（两级命名说明也在那里）。 */
+    /** 卡名 → 主体名（「魏牌 V9X--正面」→「魏牌 V9X」；不是变体时原样返回） */
+    vBase(name) { return baseOf(name) },
+    /** 卡名 → 视角名（不是视角变体时空串） */
+    vVar(name) { return variantOf(name) },
+    /** 是否视角变体卡（视角变体不显示档案区、不单独下发档案） */
+    isVariantCard(c) { return !!c && isVariant(c.name) },
+    /** 该卡所在主体组的色相；只有「组内 2 张以上」的主体才上色（单张卡保持原配色，避免满屏花） */
+    grpHue(c) {
+      if (!c) return null
+      const g = this.grpMap[baseOf(c.name)]
+      return (g && g.items.length > 1) ? GROUP_HUES[hashName(g.base) % GROUP_HUES.length] : null
+    },
+    /** 组色 → CSS 变量（落到卡片**边框**；同一个主体的所有卡共用同一个色相，不同组色差拉满） */
+    grpStyle(c) {
+      const h = this.grpHue(c)
+      return h == null ? {} : { '--grp-h': String(h) }
+    },
+    /** 组色 → 名称徽标（同一个主体的卡一眼可辨） */
+    grpTagStyle(c) {
+      const h = this.grpHue(c)
+      return h == null ? {} : { color: 'hsl(' + h + ' 90% 86%)', borderColor: 'hsl(' + h + ' 65% 55%)' }
+    },
+    /** 这一组有视角变体卡、却没有名字正好等于主体名的「主体卡」→ 黄标（档案没有对外依据） */
+    grpNoParent(c) {
+      if (!c || !isVariant(c.name)) return false
+      const g = this.grpMap[baseOf(c.name)]
+      return !!(g && !g.parent)
+    },
+    /** 一键补建主体卡：名字取主体名，档案/提示词从组内现有内容复制（非破坏性，原变体卡不动） */
+    async makeParent(c0) {
+      const base = baseOf(c0.name)
+      const kind = c0.kind
+      if (this.cards.some(x => x.kind === kind && x.name === base)) {
+        this.$root.toast('已经有一张叫「' + base + '」的卡了'); return
+      }
+      const g = this.grpMap[base]
+      const cards = g ? g.items.map(o => o.c) : [c0]
+      const nonEmpty = (x) => !!(String(x.profile || '').trim() || String(x.prompt || '').trim())
+      const src = cards.find(nonEmpty) || c0
+      const defRes = (this.ep && this.ep.res && this.ep.res.img) || '1920x1080'
+      this.cards.push({
+        kind, name: base, role: src.role || (kind === 'scene' ? '场景' : '配角'),
+        profile: src.profile || '', _profRevAt: 0, _profRev: 0, _profAck: 0,
+        prompt: src.prompt || '', negative: src.negative || DEFAULT_NEG,
+        promptMs: 0, promptAt: 0, candidates: [], cur: -1, res: src.res || defRes, genMs: 0,
+        _imgRev: 1, libId: '', libRevAt: 0, libReadonly: false, _libAck: 0, _libRevNow: 0,
+        _manual: true
+      })
+      await this.saveAll()
+      this.$root.toast('已补建主体卡「' + base + '」（档案从本组复制，可直接改）；发给视频模型的档案只取它这一份')
+    },
     /* ---- 一键填充：把当前选中的这张图批量填进「包含该角色/该场景」的镜头的参考图区 ---- */
-    /** 该镜头是否包含这张卡（角色比对 shots[].chars，场景比对 shots[].scene） */
+    /**
+     * 该镜头是否包含这张卡（角色比对 shots[].chars，场景比对 shots[].scene）。
+     * 🔴 2026-10-08：视角变体卡（`主体名--视角`）按**主体名**匹配 —— 分镜里只会写主体名。
+     *    这样「魏牌 V9X--正面」的一键填充能命中所有含「魏牌 V9X」的镜头，而且**不必**用「写入镜头」
+     *    把 5 个视角名塞进 chars（塞进去会让模型以为片子里有 5 个产品）。
+     */
     shotHas(c, s) {
+      const key = baseOf(c.name)
       const raw = String((c.kind === 'scene' ? s.scene : s.chars) || '')
       if (!raw) return false
-      if (c.kind === 'scene') return raw.trim() === c.name || raw.includes(c.name)
-      return raw.split(/[、,，/]/).map(x => x.trim()).includes(c.name) || raw.includes(c.name)
+      if (c.kind === 'scene') return raw.trim() === key || raw.includes(key)
+      return raw.split(/[、,，/]/).map(x => x.trim()).includes(key) || raw.includes(key)
     },
     /**
-     * 一键填充：把该卡**当前选中**的那张图追加到所有命中镜头的 refs.images。
-     * - 只填参考图（不动首帧/尾帧）；镜头已有这张图 → 跳过；参考图已满 9 张 → 跳过
-     * - 结束后用 toast 汇总（填了几个、跳过几个及原因）
+     * 从本地导入图片当本卡的参考图（2026-10-08）：
+     * - **支持多选**（2026-10-08 二次改）：原来只取 files[0]，导 4 张视角图要点 4 次「+」
+     * - 每张都由主进程把它**复制**进本卡素材目录，并按卡名唯一命名（卡名.png / 卡名_02.png…）
+     * - 全部并入 candidates 并自动选中最后一张（只为预览）；_imgRev +1 → 引用本资产的镜头提示词标 ⚠
+     * - 只读的库副本卡不允许（与「生图」「删除卡」一致：改要去库编辑区）
+     */
+    async importImg(i) {
+      const c0 = this.cards[i]
+      if (!c0 || this.isLibRo(c0)) return
+      const files = await window.studio.pickFiles('image')
+      if (!files || !files.length) return
+      this.busy = true
+      const L = stepLog(TAG)
+      const t0 = Date.now()
+      try {
+        const dir = this.dirOf(c0)
+        const added = []
+        for (let k = 0; k < files.length; k++) {
+          added.push(await window.studio.importImage(dir, c0.name, files[k]))
+        }
+        // await 期间本地 cards 可能被 saveAll 触发的重建整体换掉 → 按 kind+name 重新解析活对象再改
+        const c = this.liveCard(c0)
+        c.candidates = [...c.candidates, ...added]
+        c.cur = c.candidates.length - 1   // 自动选中刚导入的最后一张（只为预览）
+        c.refAsBase = false               // 不当作下次图生图的底图；要图生图请显式点选缩略图
+        c._imgRev = (c._imgRev || 1) + 1
+        await this.saveAll()
+        L.done('「' + c.name + '」已导入 ' + added.length + ' 张图片：' + added.join('、'), Date.now() - t0)
+        this.$root.toast('已导入到「' + c.name + '」' + added.length + ' 张：' + added.join('、') + '（引用这些图的镜头提示词已标 ⚠，记得重新生成）')
+      } catch (e) {
+        L.fail('「' + c0.name + '」导入图片失败', Date.now() - t0, e)
+        this.st.fail(e)
+      } finally { this.busy = false }
+    },
+    /**
+     * 一键填充：把图写入所有命中镜头的 refs.images。
+     * - **父卡**按钮：整组（父卡自己那张 + 全部视角变体，父卡排第一）一次写入；
+     *   **视角变体卡**按钮：只写自己那一张（用于单独替换某个视角）。独立主体组内只有自己，等价于旧行为。
+     * - 判重按**同名文件 / 同卡名**（2026-10-08 起；原来按完整路径比，同名不同路径就会越填越多）：
+     *   镜头里已有同名图 → 新图**替换第一条**（位置不变），其余同名条删除（「覆盖」不「追加」）
+     * - 没有同名图 → 追加到末尾；参考图已满 9 张 → 跳过
+     * - 只填参考图（不动首帧/尾帧/参考视频）
+     * - 结束后 toast 分开报「覆盖 / 新增 / 清理重复 / 跳过」及原因
      * - 命中的镜头会因此亮 ⚠（素材签名变了 → 提示词应重新生成），这是预期行为
      */
+    /** 参考图路径 → 「基础名」：去目录、去扩展名，再去掉结尾的 _02 这类重生成编号后缀。
+     *  一键填充按它判「同名」（2026-10-08）：同名 = 同一张卡，与扩展名 / 重生成编号无关。 */
+    refBaseOf(p) {
+      const base = String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
+      return base.replace(/\.[^.]+$/, '').replace(/_\d+$/, '')
+    },
+    /** 父卡 = 名字**正好等于**主体名的那张（视角变体卡的 baseOf(name) 是别人）。独立主体也算父卡。 */
+    isParentCard(c) { return !!c && baseOf(c.name) === String(c.name || '').trim() },
+    /** 该卡所属主体组的张数：只有**父卡**且组内 >1 才返回真实张数（→ 按钮显示「一键填充整组」），否则 1 */
+    grpSize(c) {
+      const g = this.grpMap[baseOf(c.name)]
+      return (this.isParentCard(c) && g) ? g.items.length : 1
+    },
+    /**
+     * 该卡所属**主体组**的成员，按卡片显示顺序排列（父卡排组内第一，与 ordered() 一致）。
+     * 顺序有意义：它决定「一键填充整组」写进参考图区的先后 →
+     * 即 H3 提示词里 `<Picture N>` 的编号顺序（先父卡标准照，再各视角）。
+     * 组内只有自己时返回 `[c]`，所以独立主体（「驾驶者」）走这里行为不变。
+     */
+    groupMembers(c) {
+      const base = baseOf(c.name)
+      const g = groupCards(this.cards).find(x => x.base === base)
+      if (!g || g.items.length < 2) return [c]
+      const items = g.items.slice()
+      if (g.parent) {
+        const at = items.findIndex(o => o.i === g.parent.i)
+        if (at > 0) items.unshift(items.splice(at, 1)[0])
+      }
+      return items.map(o => o.c).filter(Boolean)
+    },
     async fillRefs(i) {
       const c = this.liveCard(this.cards[i])
-      const f = c ? this.selFile(c) : null
-      if (!c || !f) { this.$root.toast('请先在小预览图里选中一张，再点「一键填充」'); return }
+      if (!c) return
+      // 🔴 整组填充只挂在**父卡**按钮上（2026-10-08 Dragon 拍板）：
+      //    父卡（名字正好等于主体名，如「魏牌 V9X」）的「一键填充整组」把**整组**的图一次写入
+      //    —— 父卡自己那张 + 全部视角变体，父卡排第一（与 ordered() 显示顺序、<Picture N> 编号一致）；
+      //    视角变体卡（「魏牌 V9X--正面」）的按钮仍是单卡单图，用于单独替换某一个视角。
+      //    独立主体（名字里没有 `--`，如「驾驶者」）组内只有自己 → 行为与改造前**逐字一致**。
+      const isParent = this.isParentCard(c)
+      const picks = []
+      const seen = []
+      let noImg = 0, sameName = 0
+      for (const m of (isParent ? this.groupMembers(c) : [c])) {
+        const f = this.selFile(m)
+        if (!f) { noImg++; continue }              // 纯档案卡（比如父卡还没出图）→ 跳过，不报错
+        const abs = this.absOf(m, f)
+        // 判同名的两个键：①这张图的文件名（去扩展名与 _02 编号后缀）②卡名本身。
+        // 正常情况二者相同（图按卡名命名）；但卡图也可能叫别的名字（历史数据/测试工作区），
+        // 所以两个都认 —— 只要镜头里的图命中任一键，就视为「同一张卡」。
+        const keys = [this.refBaseOf(abs), m.name]
+        // 组内先按文件名键去重：两张卡放了同名图时，后者会**覆盖**前者 → 静默少一张。
+        if (seen.indexOf(keys[0]) >= 0) { sameName++; continue }
+        seen.push(keys[0])
+        picks.push({ keys: keys, abs: abs })
+      }
+      if (!picks.length) { this.$root.toast('请先在小预览图里选中一张，再点「一键填充」'); return }
       const ep = this.ep
       const shots = (ep && ep.shots) || []
       if (!shots.length) { this.$root.toast('还没有镜头；先在第 4 块生成分镜再填充'); return }
-      const abs = this.absOf(c, f)
       // 🔴 工件在 store 里，必须整份复制出来改完再落库（改同引用会漏存）
       const prompts = JSON.parse(JSON.stringify(ep.prompts || []))
       while (prompts.length < shots.length) prompts.push({ text: '', refs: EMPTY_REFS() })
-      let hit = 0, dup = 0, full = 0
+      let covered = 0, added = 0, cleaned = 0, dup = 0, full = 0
       shots.forEach((s, k) => {
         if (!this.shotHas(c, s)) return
         if (!prompts[k]) prompts[k] = { text: '', refs: EMPTY_REFS() }
@@ -1494,17 +1897,35 @@ export default {
         if (!p.refs) p.refs = EMPTY_REFS()
         if (!Array.isArray(p.refs.images)) p.refs.images = []
         const imgs = p.refs.images
-        if (imgs.indexOf(abs) >= 0) { dup++; return }
-        if (imgs.length >= MAX_REF_IMG) { full++; return }
-        imgs.push(abs)
-        hit++
+        // 整组按顺序逐张处理：同一镜头里 <Picture N> 的次序就是 picks 的次序
+        for (const pk of picks) {
+          // 找出所有同名项（命中任一键 = 同一张卡）
+          const hits = []
+          imgs.forEach((im, idx) => { if (pk.keys.indexOf(this.refBaseOf(im)) >= 0) hits.push(idx) })
+          if (hits.length) {
+            let changed = false
+            // 覆盖第一条（原位替换，不打乱 <Picture N> 的编号顺序）
+            if (imgs[hits[0]] !== pk.abs) { imgs[hits[0]] = pk.abs; covered++; changed = true }
+            // 其余同名条就地删除（从后往前删，索引不漂移）
+            for (let j = hits.length - 1; j >= 1; j--) { imgs.splice(hits[j], 1); cleaned++; changed = true }
+            if (!changed) dup++
+            continue
+          }
+          if (imgs.length >= MAX_REF_IMG) { full++; continue }
+          imgs.push(pk.abs)
+          added++
+        }
       })
-      if (!hit) {
+      const changed = covered + added + cleaned
+      const who = picks.length > 1
+        ? '「' + baseOf(c.name) + '」整组 ' + picks.length + ' 张'
+        : '「' + c.name + '」的这张图'
+      if (!changed) {
         const why = []
-        if (dup) why.push(dup + ' 个镜头已有这张图')
-        if (full) why.push(full + ' 个镜头参考图已满 ' + MAX_REF_IMG + ' 张')
-        this.$root.toast(why.length ? '没有可填充的镜头（' + why.join('、') + '）'
-          : '没有镜头包含「' + c.name + '」，未填充')
+        if (dup) why.push(dup + ' 处已有这些图')
+        if (full) why.push(full + ' 处参考图已满 ' + MAX_REF_IMG + ' 张')
+        this.$root.toast(why.length ? '没有可填充的位置（' + why.join('、') + '）'
+          : '没有镜头包含「' + baseOf(c.name) + '」，未填充')
         return
       }
       try {
@@ -1512,11 +1933,17 @@ export default {
         // 通知常驻挂载的「分镜脚本」块按最新工件重建表单（否则它的本地副本会把这次填充覆盖回去）
         ep.promptsSyncAt = Date.now()
       } catch (e) { this.st.fail(e); return }
+      const what = []
+      if (covered) what.push('覆盖同名 ' + covered + ' 处')
+      if (added) what.push('新增 ' + added + ' 处')
+      if (cleaned) what.push('清理多余同名 ' + cleaned + ' 处')
       const skip = []
-      if (dup) skip.push(dup + ' 个已有该图')
-      if (full) skip.push(full + ' 个已满 ' + MAX_REF_IMG + ' 张')
-      this.$root.toast('已把「' + c.name + '」的这张图填入 ' + hit + ' 个镜头的参考图区' +
-        (skip.length ? '（跳过 ' + skip.join('、') + '）' : '') + '；这些镜头的提示词已标 ⚠，记得重新生成')
+      if (dup) skip.push(dup + ' 处已是这些图')
+      if (full) skip.push(full + ' 处已满 ' + MAX_REF_IMG + ' 张')
+      if (noImg) skip.push(noImg + ' 张卡没选图')
+      if (sameName) skip.push(sameName + ' 张卡图名重复')
+      this.$root.toast('已把' + who + '写入参考图区（' + what.join('、') + '）' +
+        (skip.length ? '，跳过 ' + skip.join('、') : '') + '；相关镜头提示词已标 ⚠，记得重新生成')
     }
   }
 }

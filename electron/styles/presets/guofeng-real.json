@@ -1,0 +1,13 @@
+{
+  "_note": "预置组合（preset）= 给一个四轴组合起个名字，方便直接选。它自己不带任何变量 —— 全部由四轴提供，所以「预置」与「手选四个轴」得到的产物必然一致。",
+  "id": "guofeng-real",
+  "name": "古风真人实拍",
+  "desc": "真人实拍 · 古装 · 剧集 · 电影感（改造前的唯一风格，逐字保留原规范文案）",
+  "rev": 2,
+  "tags": { "render": "live-action", "world": "guofeng", "genre": "story", "tone": "cinematic" },
+  "render": "live-action",
+  "world": "guofeng",
+  "genre": "story",
+  "tone": "cinematic",
+  "vars": {}
+}

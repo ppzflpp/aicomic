@@ -221,22 +221,26 @@ export function joinSystem({ specs = [], mustHave = [] } = {}) {
   const missing = (mustHave || []).filter(k => k && text.indexOf(k) < 0)
   if (missing.length) {
     throw new Error('提示词规范缺少关键内容（' + missing.join(' / ') +
-      '）：请在「提示词规范」里恢复对应小节，或删掉该文件让它重播内置版')
+      '）：请在「🎛 提示词配置中心」的「通用规范」里恢复对应小节，或删掉该文件让它重播内置版')
   }
   return text
 }
 
 /**
- * 去掉「程序用途小节」（`## 兜底默认` 与 `## 素材格式`）：
- * 这两节是给程序读的（生图兜底模板 / user 消息的编排模板），不该随 system 发给大模型。
+ * 去掉「不下发小节」（`## 兜底默认` / `## 素材格式` / `## 维护说明`）：
+ *  - 兜底默认 / 素材格式：给程序读的（生图兜底模板 / user 消息的编排模板）。
+ *  - 维护说明（🆕 2026-10-07）：写给规范维护者自己看的备注（为什么这么改、本项目的特殊约定）。
+ *    用户微调规范时把话写在这里，既不污染 system 提示词，也不会被模型当成规则执行。
  * 其余小节照原样保留并保持顺序。
  */
+const NON_SEND_SECTIONS = /^(兜底默认|素材格式|维护说明)$/
+
 export function stripProgramSections(md) {
   const out = []
   let skip = false
   for (const ln of String(md || '').split(/\r?\n/)) {
     const h = ln.match(/^##\s*(.+?)\s*$/)
-    if (h) skip = /^(兜底默认|素材格式)$/.test(h[1])
+    if (h) skip = NON_SEND_SECTIONS.test(h[1])
     if (!skip) out.push(ln)
   }
   return out.join('\n')
@@ -262,12 +266,193 @@ export function fillTemplate(tpl, vars) {
   return out.join('\n\n').trim()
 }
 
+// ---------------------------------------------------------------
+// 风格占位符（2026-10-07）
+//   规范 md 正文里凡是**题材相关**的短语（定调词 / 收尾词 / 空镜句 / 反风格词表 /
+//   世界约束 / 世界观举例…）一律写成 `{{S.变量名}}`，由当前项目的「风格包」
+//   （electron/styles/<id>/style.json 的 vars）在**渲染层的内存里**替换。
+//   - 用 `S.` 前缀是为了与「## 素材格式」的模板占位符彻底分开：fillTemplate 的键名正则
+//     只认 [A-Za-z0-9_]+，匹配不到带点的键 → 两边永远不会互相误伤。
+//   - 取不到的键**原样保留**（不换成空串）：让裸占位符显式暴露，composeSystem 会当场报错，
+//     而不是静默把某处规范变成空白（静默失败比报错危险得多）。
+// ---------------------------------------------------------------
+const STYLE_VAR_RE = /\{\{\s*S\.([A-Za-z0-9_]+)\s*\}\}/g
+
+/** 规范正文里用到的风格变量键（去重，按出现顺序）—— style-check 用它验「风格包变量是否齐全」 */
+export function styleKeys(md) {
+  const out = []
+  for (const m of String(md || '').matchAll(STYLE_VAR_RE)) if (!out.includes(m[1])) out.push(m[1])
+  return out
+}
+
+/** 用风格包的变量表替换 `{{S.x}}`；取不到的键原样保留 */
+export function applyStyle(md, vars) {
+  const v = vars || {}
+  return String(md || '').replace(STYLE_VAR_RE, (whole, k) =>
+    (v[k] == null || String(v[k]) === '') ? whole : String(v[k]))
+}
+
+/* ------------------------------------------------------------------ *
+ * 素材字符规范化（2026-10-08）
+ *
+ * 事故：V9X-2 的改编稿里写「车尾右侧有“V9X"镀铬字样」—— **全角开引号 + 半角闭引号**（改编
+ * 环节自己打错的）。模型把这段逐字抄进角色档案的 profile，而那份输出最终以 JSON 承载
+ * （llama.cpp 在 json_object 模式下用 JSON 语法强约束解码）—— **半角双引号就是 JSON 的
+ * 字符串结束符**，值在引号处提前闭合、档案齐根断掉，剩下的行被当成数组里的裸字符串吐完。
+ * 输出**仍然是合法 JSON**，解析不报错 → 4 条碎片被当成角色名收下，一路绿灯进档案。
+ *
+ * ⇒ 与其在解析端猜哪条是垃圾，不如在**发送端**断掉污染源：素材里的半角引号统一换成中文
+ *   全角引号，模型就没有半角引号可抄。同源项目 V9X 恰好没坏（那轮模型自己改写成了「」），
+ *   说明坏不坏原本取决于模型当轮是否逐字照抄 —— 这正是最该被消掉的不确定性。
+ *
+ * 🔴 只作用于**素材变量**（composeUser 的 vars），绝不碰规范正文：
+ *    规范 md 里满是 JSON 输出契约示例（`"shots"`、`"name"`… 全是半角引号），
+ *    统一替换会把契约本身改坏，模型反而不知道要输出 JSON。
+ * ------------------------------------------------------------------ */
+
+/** 半角引号 → 中文全角引号（双引号按开/闭配对，单引号统一右弯） */
+export function normalizeQuotes(s) {
+  const t = String(s == null ? '' : s)
+  let out = ''
+  let open = true
+  // 已出现但还没闭合的全角引号（`“` `「` `『`）→ 它们各自该配的闭引号
+  const stack = []
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i]
+    if (ch === '"') {
+      // 前面还留着一个没闭合的全角开引号 → 这个半角引号就是它的闭引号（“V9X" → “V9X”）
+      if (stack.length) { out += stack.pop(); continue }
+      out += open ? '“' : '”'
+      open = !open
+      continue
+    }
+    if (ch === '“' || ch === '「' || ch === '『') stack.push(ch === '“' ? '”' : (ch === '「' ? '」' : '』'))
+    else if (ch === '”' || ch === '」' || ch === '』') stack.pop()
+    out += ch === "'" ? '’' : ch
+  }
+  return out
+}
+
+/**
+ * 素材字符规范化的**收口版本**（2026-10-08）——带 JSON 感知。
+ *
+ * 为什么要分两路：有 3 个调用点把**镜头 JSON** 当素材传下去
+ * （split.md 的 `shot` / `parts`、视频提示词的 `shot`，都是 `JSON.stringify(s, null, 2)`）。
+ * 那种文本里的每个 `"` 都是**结构引号** —— 整篇 normalizeQuotes 会把一份 JSON 变成
+ * `“scene”: “花海公路·外”`，模型拿到的素材直接变形。所以：
+ *  - JSON 文本 → 解析出来，**只规范字符串值内部**，再序列化回去（结构引号一律不动）
+ *  - 其它文本 → 整篇规范
+ *  - 本来就不含半角引号的（绝大多数素材）→ 直接原样返回，不解析、不重排
+ *
+ * 🔴 注意 JSON 这一路并不是「多余」：`JSON.stringify` 虽已把值内引号转义成 `\"`，
+ *    但模型看到引号仍可能照抄成裸引号，而裸引号在 json_object 强约束下只能靠「提前闭合字符串」
+ *    消化 —— 那正是本事故的形态。规范成全角引号才算真的没有引号可抄。
+ */
+export function normalizeQuotesDeep(s) {
+  const t = String(s == null ? '' : s)
+  if (!/["']/.test(t)) return t                       // 没有半角引号 → 原样返回（零开销、零重排）
+  const head = t.trim().charAt(0)
+  if (head === '{' || head === '[') {
+    try { return JSON.stringify(walkQuotes(JSON.parse(t)), null, 2) } catch (_) { /* 不是合法 JSON → 走整篇 */ }
+  }
+  return normalizeQuotes(t)
+}
+/** 深度遍历：只规范化字符串**值**，数组 / 对象的结构与顺序一律保持 */
+function walkQuotes(x) {
+  if (Array.isArray(x)) return x.map(walkQuotes)
+  if (x && typeof x === 'object') {
+    const o = {}
+    for (const k of Object.keys(x)) o[k] = walkQuotes(x[k])
+    return o
+  }
+  return typeof x === 'string' ? normalizeQuotes(x) : x
+}
+
+/**
+ * 模型返回的档案数组**形状校验**（2026-10-08，与上面的 normalizeQuotes 同一事故的两端）。
+ *
+ * JSON 语法合法 ≠ 结构没坏：素材里的半角引号会让值提前闭合，后半段变成数组里的**裸字符串碎片**
+ * （V9X-2 的 characters 里混着 4 条 —— 被截断那段的残骸 + 整段生图提示词），而输出仍是合法 JSON。
+ * 旧代码的 normArchive 有一句宽容分支 `typeof raw === 'string' → { name: raw }`，于是每条碎片都被
+ * 当成一个角色名收下，垃圾一路绿灯进档案。
+ *
+ * 这不是「模型只给了名字」的合法简写 —— chars.md / scenes.md 的输出契约是**对象数组**，名字还
+ * 必须「用中文、不含空格与标点」。所以按契约判形状，不通过就抛错（调用点应在落盘**之前**调用，
+ * 这样旧数据一点不受影响）：
+ *  - 条目必须是对象（裸字符串 = 契约已被击穿）
+ *  - 名字不得超长、不得含换行 / 全角冒号 / 半角引号（合法名字里绝不会有这些）
+ *
+ * 🔴 名字里**允许**空格、字母数字、`-`、`·`、`（）`：产品名「魏牌 V9X」、形态名「李白-少年」、
+ *    场景名「花海公路·外」都合法；而「李白（主角）」这种带定位标签的名字是 charAlign 的
+ *    既有降级路径（剥标签后向卡名对齐），不能在这里把它判死。
+ *
+ * @param {Array} raw 模型原始返回（**归一化之前**的数组）
+ * @param {string} label 报错里的人类可读名（如「角色档案」）
+ */
+const AUDIT_NAME_MAX = 20
+const AUDIT_NAME_BAD_RE = /[\r\n："]/
+export function auditModelArchive(raw, label) {
+  const list = Array.isArray(raw) ? raw : []
+  if (!list.length) return
+  const frag = []
+  const bad = []
+  for (const it of list) {
+    if (typeof it === 'string') { const s = it.trim(); if (s) frag.push(s); continue }
+    if (!it || typeof it !== 'object' || Array.isArray(it)) { bad.push('(不是对象)'); continue }
+    const nm = String(it.name || it.title || '').trim()
+    if (!nm) { bad.push('(名字为空)'); continue }
+    if (nm.length > AUDIT_NAME_MAX || AUDIT_NAME_BAD_RE.test(nm)) bad.push(nm)
+  }
+  if (!frag.length && !bad.length) return
+  const show = s => (s.length > 36 ? s.slice(0, 36) + '…' : s)
+  throw new Error('模型返回的' + (label || '档案') + '结构损坏，本次结果已放弃（还没写入档案，旧数据不受影响）：' +
+    (bad.length ? bad.length + ' 条名字不合法（' + bad.slice(0, 3).map(show).join(' / ') + '）；' : '') +
+    (frag.length ? frag.length + ' 条不是档案对象而是裸字符串碎片（' + frag.slice(0, 2).map(show).join(' / ') + '…）' : '') +
+    '。最常见的原因是改编稿里混进了**半角引号**（"）—— 它会让你返回的 JSON 提前闭合；' +
+    '请检查改编稿里的引号是不是都写成了全角「」/“”，改完重新生成即可。')
+}
+
 /** 剥掉句尾的英文括注（存量改编稿曾把画外音英文说明带进台词行，2026-09-27）：
  *  只剥括号内含英文字母的**句尾**括注——中文标注（独白）不受影响。durNeed 同源使用 */
 export function stripTailEnNote(text) {
   return String(text || '')
     .replace(/\s*[（(][^（）()]*[A-Za-z][^（）()]*[)）]\s*$/, '')
     .trim()
+}
+
+// ---------------------------------------------------------------
+// 时长模型（台词 ÷ 语速 + 停顿）——全项目单一事实源
+//   🔴 durNeed / durFit / durWarnings / durTag / splitShot 全部由下面四个常量派生：
+//      改语速、改单镜上限，只改这里；任何地方再写一遍 4.5 或 15 都是 bug 源。
+// ---------------------------------------------------------------
+/** H3 单镜生成上限（秒），与 resutil.clampDur 的上限一致 */
+const DUR_MAX = 15
+/** 台词语速（字/秒） */
+const CPS = 4.5
+/** 每镜起止停顿（秒） */
+const PAUSE = 1
+/** 复合运镜的时长下限（秒）：两段运镜挤进 1 秒是废镜 */
+const COMPOUND_MIN = 6
+/** 单行台词的字数硬上限：超过它一行就占满整镜，必须切开（由 DUR_MAX 与 CPS 派生 = 63 字） */
+const LINE_CHAR_MAX = Math.floor((DUR_MAX - PAUSE) * CPS)
+
+/**
+ * 单行台词的正文字数：跳过「说话人名：」前缀、剥句尾英文括注，汉字每字记 1、连续英数串记 1。
+ * 🔴 必须与 durNeed 同口径 —— 拆镜的台词分组和时长计算共用这一把尺子，
+ *    否则「按字数分好组」之后每一段还会超限（尺子不同 = 白分）。
+ */
+function lineWeight(line) {
+  const t = String(line || '').trim()
+  if (!t) return 0
+  const body = stripTailEnNote(t.indexOf('：') >= 0 ? t.slice(t.indexOf('：') + 1) : t)
+  return (body.match(/[\u4e00-\u9fa5]/g) || []).length + (body.match(/[A-Za-z0-9]+/g) || []).length
+}
+
+/** 整段台词的正文总字数（逐行累加 lineWeight） */
+function dialogueWeight(text) {
+  let chars = 0
+  for (const ln of String(text || '').split(/\r?\n/)) chars += lineWeight(ln)
+  return chars
 }
 
 /**
@@ -278,21 +463,12 @@ export function stripTailEnNote(text) {
  */
 function durNeed(o) {
   const dur = Math.round(Number(o.dur) || 0)
-  // 台词正文字数：跳过「说话人名：」前缀，汉字每字记 1，连续英数串记 1；先剥句尾英文括注
-  let chars = 0
-  for (const ln of String(o.dialogue || '').split(/\r?\n/)) {
-    const line = ln.trim()
-    if (!line) continue
-    const body = stripTailEnNote(line.indexOf('：') >= 0 ? line.slice(line.indexOf('：') + 1) : line)
-    const cjk = (body.match(/[\u4e00-\u9fa5]/g) || []).length
-    const lat = (body.match(/[A-Za-z0-9]+/g) || []).length
-    chars += cjk + lat
-  }
+  const chars = dialogueWeight(o.dialogue)
   // 发声表演段数（大笑、痛哭这类有明确声源的发声，只写画面动词=无声）
   const act = String(o.action || '')
   const sounds = (act.match(/大笑|狂笑|痛哭|哭喊|嚎啕|惊呼|尖叫|喘息|抽泣|呜咽|长叹/g) || []).length
   let need = 0
-  if (chars > 0) need += Math.ceil(chars / 4.5) + 1
+  if (chars > 0) need += Math.ceil(chars / CPS) + PAUSE
   if (sounds > 0) need += sounds * 2
   const cam = String(o.camera || '')
   const verbs = new Set((cam.match(/推|拉|摇|移|跟|环绕|甩|升降/g) || []))
@@ -318,30 +494,272 @@ export function durWarnings(s) {
   const out = []
   if (!n.dur) return out
 
-  if (n.need > 0 && n.dur < n.need) {
-    const why = []
-    if (n.chars > 0) why.push('台词约 ' + n.chars + ' 字')
-    if (n.sounds > 0) why.push(n.sounds + ' 段发声表演')
+  const why = []
+  if (n.chars > 0) why.push('台词约 ' + n.chars + ' 字')
+  if (n.sounds > 0) why.push(n.sounds + ' 段发声表演')
+  if (n.need > DUR_MAX) {
+    // 内容本身超过单镜生成上限：把 dur 拉满也念不完（上限是硬顶），只能拆镜头
+    out.push(why.join(' + ') + ' ≈ 需 ' + n.need + 's，超过单镜 ' + DUR_MAX + 's 上限，建议拆成两个镜头')
+  } else if (n.need > 0 && n.dur < n.need) {
     out.push(why.join(' + ') + ' ≈ 至少需 ' + n.need + 's（当前 ' + n.dur + 's），声音会被截')
   }
 
   // 复合运镜：≥2 个不同运镜动词，或用「随后/然后/再」衔接两段运镜
-  if (n.compound && n.dur < 6) {
+  if (n.compound && n.dur < COMPOUND_MIN) {
     const cam = String(s.camera || '')
-    out.push('复合运镜（' + cam.slice(0, 20) + (cam.length > 20 ? '…' : '') + '）建议 ≥6s（当前 ' + n.dur + 's）')
+    out.push('复合运镜（' + cam.slice(0, 20) + (cam.length > 20 ? '…' : '') + '）建议 ≥' + COMPOUND_MIN + 's（当前 ' + n.dur + 's）')
   }
   return out
 }
 
 /**
- * 建议时长（整数秒）：内容所需秒数（台词/发声）与复合运镜下限 6s 取大者；
- * 上限封到 15s（H3 生成上限，需要更多就该拆镜头）；通过 = 0。
- * 供分镜行「⚠ 时长紧·建议 Ns」直读，与 durWarnings 共用同一套计算。
+ * 内容所需的镜头时长（整数秒，**不看 dur 字段本身**）：台词/发声所需秒数与复合运镜下限 6s 取大者，
+ * 上限封到 15s（H3 单镜生成上限；真超了就该拆镜头，不是把 dur 拉长——本来也拉不动）。
+ * 返回 0 = 内容对时长无约束（无台词、无发声、非复合运镜），调用方应保留原值。
+ *
+ * 生成分镜时程序直接用它写 dur：让模型逐字数数做除法已被实测否定——
+ * shots.md 里写着与程序完全相同的自检公式、还带「18 ÷ 4.5 + 1 = 5 秒」的算例，
+ * 10 个样本里模型一次都没执行过（它只按「一个镜头 5~8 秒好看」的节奏瞎填）。
+ * 算术交给程序，模型只负责内容。
+ */
+export function durFit(s) {
+  const n = durNeed(s || {})
+  if (!n.need && !n.compound) return 0
+  return Math.min(DUR_MAX, Math.max(n.need, n.compound ? COMPOUND_MIN : 0))
+}
+
+/**
+ * 建议时长（整数秒）：同 durFit；dur 未填（0）时返回 0（没有可比的基准，不提示）。
+ * 供分镜行黄标直读，与 durWarnings 共用同一套计算。
  */
 export function durSuggest(s) {
   const n = durNeed(s || {})
   if (!n.dur) return 0
-  return Math.min(15, Math.max(n.need, n.compound ? 6 : 0))
+  return durFit(s)
+}
+
+/**
+ * 分镜行时长黄标的显示文案（'' = 通过，不挂黄标）：
+ *   超单镜上限 → 「⚠ 超单镜上限·建议拆分」（dur 已是 15 硬顶，提示「建议 15s」毫无意义）
+ *   时长不足   → 「⚠ 时长紧·建议 Ns」
+ * 与 durWarnings 同源，保证 hover 明细与正文案永不打架。
+ */
+export function durTag(s) {
+  if (!durWarnings(s || {}).length) return ''
+  const n = durNeed(s || {})
+  return n.need > DUR_MAX ? '⚠ 超单镜上限·建议拆分' : '⚠ 时长紧·建议 ' + durFit(s) + 's'
+}
+
+// ---------------------------------------------------------------
+// 镜头拆分（2026-09-28，第 2 批）
+//   背景：H3 单镜生成上限 15s（clampDur 锁死 4~15），而改编稿升级为剧本体后台词
+//   密度上升 —— 模型常把 3~4 个对话回合塞进一镜（实测测试项目2 第1集：8 镜里 2 镜
+//   真实需要 19~20s）。这不是「时长填小了」，是内容真的装不进一个镜头：dur 拉到
+//   15 也念不完。唯一解法是拆开。
+//   分工（用户拍板）：程序全权执行拆分、立即出结果，不依赖 LLM；
+//   模型只在用户点「AI 重写」时补写被切开那两段的画面（StageShots.rewriteSplit）。
+//   程序侧的确定性处理：
+//     台词     —— 按行边界分组（行是最小语义单位，绝不切半行）；行数不够段数时按标点
+//                  硬切最长的行，并补回「人名：」前缀（说话人绝不能丢）。
+//     动作     —— 按标点句边界切（切在标点之后，原文一字不丢），再按各段台词量分配。
+//     镜头语言 —— 沿用原值（两段构图雷同 → 黄标提示用户改或让 AI 重写）。
+//     连续性   —— 每段都写完整快照（同一镜内状态不变），change 只挂最后一段。
+//   拆出来的每段自带 _split 标记（gid / 序号 / 段数 / 原始镜头快照）→
+//   「撤回拆分」与「AI 重写」都只凭段自身即可完成，不需要外部状态表。
+// ---------------------------------------------------------------
+
+/** 找接近文本中点的切点，优先切在标点之后；返回 0 = 太短不宜切 */
+function bestCut(text) {
+  const t = String(text || '')
+  if (t.length < 6) return 0
+  const mid = Math.floor(t.length / 2)
+  for (let d = 0; d < t.length; d++) {
+    for (const i of [mid - d, mid + d]) {
+      if (i > 0 && i < t.length && /[。！？；，、,.!?;]/.test(t[i - 1])) return i
+    }
+  }
+  return mid
+}
+
+/**
+ * 台词行预处理：把超过单行字数上限（LINE_CHAR_MAX = 63 字）的行切开。
+ * 行是最小语义单位，只在「一行就已经占满整镜」时才切；切完必须补回「人名：」前缀
+ * —— 说话人一丢，下游 H3 提示词的「对白锁人」随即失效（说话人会漂移）。
+ */
+function splitLongLines(lines) {
+  const out = []
+  for (const line of (lines || [])) {
+    const queue = [line]
+    let guard = 0
+    while (guard++ < 20) {
+      let bi = -1, bl = 0
+      queue.forEach((l, k) => { const w = lineWeight(l); if (w > bl) { bl = w; bi = k } })
+      if (bi < 0 || bl <= LINE_CHAR_MAX) break
+      const cut = bestCut(queue[bi])
+      if (!cut) break
+      const m = queue[bi].match(/^([^：:]{1,24}[：:])\s*[\s\S]+$/)
+      queue.splice(bi, 1, queue[bi].slice(0, cut).trim(), (m ? m[1] : '') + queue[bi].slice(cut).trim())
+    }
+    out.push(...queue)
+  }
+  return out
+}
+
+/** 动作描述切成句子（保留标点）；不足 want 句时继续对最长句硬切，保证每段都有画面可写 */
+function splitSentences(text, want) {
+  const t = String(text || '').trim()
+  if (!t) return []
+  const arr = t.split(/(?<=[。！？；，,.!?;])/).map(x => x.trim()).filter(Boolean)
+  let guard = 0
+  while (arr.length < want && guard++ < 20) {
+    let bi = -1, bl = 0
+    arr.forEach((l, k) => { if (l.length > bl) { bl = l.length; bi = k } })
+    if (bi < 0 || bl < 8) break
+    const cut = bestCut(arr[bi])
+    if (!cut) break
+    arr.splice(bi, 1, arr[bi].slice(0, cut).trim(), arr[bi].slice(cut).trim())
+  }
+  return arr
+}
+
+/**
+ * 把台词行分成若干组，每组都是「一镜之内念得完」的量（保序、行不切半）。
+ * 组容量 cap = min(单行上限, 总字数 / 目标段数 × 1.35)：
+ *   前者是硬约束（加进来就念不完 → 必须开新组），后者让分配尽量均匀
+ *   （避免「前 5 行挤一组、剩下 1 行一组」）。组数由内容决定，可以多于目标段数。
+ */
+function groupByLines(lines, n) {
+  if (!lines.length) return []
+  const ws = lines.map(lineWeight)
+  const total = ws.reduce((a, b) => a + b, 0)
+  const cap = Math.max(1, Math.min(LINE_CHAR_MAX, (total / Math.max(1, n)) * 1.35))
+  const groups = []
+  let cur = [], acc = 0
+  for (let k = 0; k < lines.length; k++) {
+    const w = ws[k] || 1
+    const remainItems = lines.length - k
+    const remainGroups = Math.max(1, n - groups.length)
+    if (cur.length && (acc + w > cap || remainItems < remainGroups)) {
+      groups.push(cur); cur = []; acc = 0
+    }
+    cur.push(lines[k]); acc += w
+  }
+  if (cur.length) groups.push(cur)
+  return groups
+}
+
+/** 按权重把条目按比例分到 n 组（总数守恒；前面为空的组向后借一条，保证每组有内容） */
+function allocate(items, weights, n) {
+  const groups = Array.from({ length: n }, () => [])
+  if (!items.length) return groups
+  const total = weights.reduce((a, b) => a + (b || 0), 0) || n
+  let ptr = 0
+  for (let k = 0; k < n; k++) {
+    const want = k === n - 1 ? (items.length - ptr) : Math.round(items.length * weights[k] / total)
+    const take = Math.max(0, Math.min(want, items.length - ptr))
+    groups[k] = items.slice(ptr, ptr + take)
+    ptr += take
+  }
+  if (ptr < items.length) groups[n - 1] = groups[n - 1].concat(items.slice(ptr))
+  for (let k = 0; k < n - 1; k++) {
+    if (!groups[k].length) {
+      for (let j = k + 1; j < n; j++) {
+        if (groups[j].length > 1) { groups[k].push(groups[j].shift()); break }
+      }
+    }
+  }
+  return groups
+}
+
+/**
+ * 拆镜（纯函数）：内容超过单镜 15s 上限时，把它拆成 N 个 ≤15s 的镜头（顺序不变、内容不丢字）。
+ * @param {object} s   待拆镜头（dur 不采信，只按 dialogue/action/camera 算内容所需）
+ * @param {string} gid 组标识（不传则自生成）
+ * @returns {Array|null} null = 无需拆分（内容所需 ≤15s）；否则返回长度 ≥2 的镜头序列，每段带 _split
+ */
+export function splitShot(s, gid) {
+  const src = s || {}
+  const n = durNeed(src)
+  if (!(n.need > DUR_MAX)) return null
+
+  const want = Math.max(2, Math.ceil(n.need / DUR_MAX))
+  const id = gid || ('sp' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6))
+
+  // 台词：取行 → 超长行按单行字数上限切开 → 按「每段念得完」分组；段数由内容定（可能多于 want）
+  const raw = String(src.dialogue || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean)
+  const dlgGroups = groupByLines(splitLongLines(raw), want)
+  const parts = Math.max(want, dlgGroups.length, 2)
+
+  // 动作：切句 → 按各段台词量分配（台词为空 = 纯发声镜头时按句数均分）
+  const sents = splitSentences(src.action, parts)
+  const wts = Array.from({ length: parts }, (_, k) => (dlgGroups[k] || []).reduce((a, l) => a + lineWeight(l), 0))
+  const actGroups = allocate(sents, wts.map(w => w || 1), parts)
+
+  const snap = {
+    scene: String(src.scene || ''), chars: String(src.chars || ''),
+    action: String(src.action || ''), dialogue: String(src.dialogue || ''),
+    camera: String(src.camera || ''), dur: Number(src.dur) || 0,
+    continuity: String(src.continuity || ''), change: String(src.change || '')
+  }
+  if (src._rev) snap._rev = src._rev
+
+  const out = []
+  for (let k = 0; k < parts; k++) {
+    const seg = {
+      scene: snap.scene,
+      chars: snap.chars,
+      action: (actGroups[k] || []).join(''),
+      dialogue: (dlgGroups[k] || []).join('\n'),
+      camera: snap.camera,
+      dur: 0
+    }
+    if (snap.continuity) seg.continuity = snap.continuity
+    if (k === parts - 1 && snap.change) seg.change = snap.change
+    const fit = durFit(seg)
+    seg.dur = Math.min(DUR_MAX, Math.max(4, fit > 0 ? fit : Math.round((snap.dur || 8) / parts)))
+    seg._split = { gid: id, k, n: parts, ai: false, src: snap }
+    out.push(seg)
+  }
+  return out
+}
+
+/**
+ * 批量拆镜（纯函数）：把所有内容超单镜上限的镜头就地替换成拆分段。
+ * @returns {{shots: Array, groups: Array<{gid, at, n}>, map: number[][]}}
+ *   groups —— 报告「拆了几组、落在哪」；map —— map[旧下标] = 新下标数组（长度 1 = 未拆），
+ *   调用方据此按下标重建提示词 / 视频槽位（镜头数变了，后面所有镜头的位置都会前移）。
+ */
+export function splitAll(shots) {
+  const arr = Array.isArray(shots) ? shots : []
+  const out = []
+  const groups = []
+  const map = []
+  for (const s of arr) {
+    const parts = splitShot(s)
+    if (parts) {
+      const at = out.length
+      groups.push({ gid: parts[0]._split.gid, at, n: parts.length })
+      map.push(parts.map((_, k) => at + k))
+      for (const p of parts) out.push(p)
+    } else {
+      map.push([out.length])
+      out.push(s)
+    }
+  }
+  return { shots: out, groups, map }
+}
+
+/**
+ * 拆分段的行内黄标文案（'' = 不是拆分段）：
+ *   组头 → 「✂ 程序拆分 1/2 · 画面待重写」；其余段 → 「✂ 程序拆分 2/2」
+ * AI 重写成功后同一组统一变「✂ AI 重写 k/n」。
+ */
+export function splitTag(s) {
+  const sp = (s || {})._split
+  if (!sp) return ''
+  const pos = (sp.k + 1) + '/' + sp.n
+  if (sp.ai) return '✂ AI 重写 ' + pos
+  return sp.k === 0 ? '✂ 程序拆分 ' + pos + ' · 画面待重写' : '✂ 程序拆分 ' + pos
 }
 
 // ---------------------------------------------------------------
@@ -655,7 +1073,7 @@ export function sceneCardIssues(shots, scenes) {
       out[n] = '档案可能挂错了名字：镜头里用的是「' + uniq[0] + '」'
       advice[n] = uniq[0]
     } else {
-      out[n] = '没有任何镜头在用这个场景名（用「写入镜头…」写进镜头，或删掉这张卡）'
+      out[n] = '没有任何镜头在用这个场景名（用「写入镜头」写进镜头，或删掉这张卡）'
     }
   }
   return { used, byName: out, advice, ok: Object.keys(out).length === 0 }
@@ -685,6 +1103,15 @@ export function charKey(name) {
 /** dialogue 说话人括号里**允许保留**的画外音标注词（与 h3.md 的画外音判定口径一致）；
  *  除此之外的括号内容（主角 / 同伴 A 这类定位标签）在对齐时剥掉——它们不是台词标注 */
 const VO_TAG_RE = /^(独白|心声|内心|心里|旁白|画外音|画外|回忆|闪回|混响)$/
+
+/**
+ * 不是角色的「发声者」（2026-10-08）。
+ * 广告 / 解说类片子的台词行里有整类**本来就不该有角色卡**的发声者：旁白、字卡、字幕、解说。
+ * 镜头名对齐时跳过它们 —— 否则广告片每一条带旁白的镜头都会黄标「旁白 没有同名角色卡，
+ * 参考图会挂不上」，用户会去建一张「旁白」的角色卡（然后生成一张毫无意义的人物参考图）。
+ * 剧集侧不受影响：那边「旁白」本来就写成 `听到的人名（独白）`，说话人是人名不是「旁白」。
+ */
+const NON_CHAR_SPEAKERS = new Set(['旁白', '字卡', '字幕', '解说', '配音'])
 
 /**
  * 镜头人物名对齐（纯函数，返回新数组，不改入参）：
@@ -740,7 +1167,8 @@ export function charAlign(shots, cards) {
       }
       return n
     }
-    missing.add(n)
+    // 旁白 / 字卡这类「不是角色的发声者」不进 missing —— 它们本来就不该有角色卡
+    if (!NON_CHAR_SPEAKERS.has(n)) missing.add(n)
     return n
   }
   const out = arr.map(s => {

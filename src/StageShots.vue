@@ -31,10 +31,21 @@
           </div>
           <!-- 第二行提示区（2026-09-27，Dragon：时长建议 + 可合并提示不挤行头；都无时整行不渲染不占位）。
                可合并提示可点击 → 打开合并确认弹窗 -->
-          <div v-if="durWarn(i).length || mergeWarn(i)" class="shot-sub">
-            <span v-if="durWarn(i).length" class="dur-warn" :title="durWarn(i).join('\n')">⚠ 时长紧·建议 {{ durSuggest(i) }}s</span>
+          <div v-if="durWarn(i).length || mergeWarn(i) || splitTag(i)" class="shot-sub">
+            <span v-if="durWarn(i).length" class="dur-warn" :title="durWarn(i).join('\n')">{{ durTag(i) }}</span>
             <span v-if="mergeWarn(i)" class="dur-warn mrg" :title="mergeWarn(i) + '：点击查看并确认合并'"
               @click.stop="openMerge(i)">⚠ {{ mergeWarn(i) }}</span>
+            <!-- 拆镜黄标（第 2 批）：本镜由程序按台词边界拆开而来。台词/场景/角色/时长已算定；
+                 画面是程序按标点粗切的（各段镜头语言相同）→ 组头挂「AI 重写 / 撤回」两个动作 -->
+            <span v-if="splitTag(i)" class="dur-warn spl" :title="splitTip(i)">
+              {{ splitBusy(i) ? '✂ 正在重写画面…' : splitTag(i) }}
+            </span>
+            <button v-if="splitHead(i) && !splitBusy(i)" class="btn sm tiny" :disabled="!!rewriting"
+              title="让 AI 为拆出来的每一段重写「画面动作 / 镜头语言」（只改这两个字段，台词与时长一律以程序值为准）"
+              @click.stop="rewriteSplit(i)">AI 重写</button>
+            <button v-if="splitHead(i) && !splitBusy(i)" class="btn sm tiny ghost" :disabled="!!rewriting"
+              title="撤回拆分，恢复成拆之前的那个镜头（该镜头的视频记录会清空，文件仍在磁盘）"
+              @click.stop="undoSplit(i)">撤回</button>
           </div>
           <div class="f"><label>场景</label><input v-model="s.scene" @change="touchShot(s)" /></div>
           <div class="f"><label>角色</label><input v-model="s.chars" @change="touchShot(s)" /></div>
@@ -53,7 +64,7 @@
              ⑥ 视频分辨率 ⑦ 路线提示靠左 + 「生成视频」靠右 -->
         <div class="zone-2">
           <div class="row-head">
-            <span class="zone-tag">H3 提示词</span>
+            <span class="zone-tag">{{ promptZoneName() }}</span>
             <span v-if="genTextP(i)" class="gen-ms" :class="{ live: prompts[i] && prompts[i]._genAt }">{{ genTextP(i) }}</span>
             <span style="flex:1"></span>
             <span v-if="promptStale(i)" class="stale" @click="ackPrompt(i)" title="点击消除提示">
@@ -71,12 +82,19 @@
                左侧文字标签已去掉 —— 改到每张图左上角显示角标（参考图 / 视频 / 首帧 / 尾帧） -->
           <div class="refs" v-if="prompts[i]">
             <div class="ref-row">
-              <div v-for="(f, k) in prompts[i].refs.images" :key="'ri' + k" class="ref-thumb">
+              <!-- 参考图可拖动改顺序（2026-10-08）：顺序决定提示词里 <Picture N> 的编号，
+                   松手才重排（拖动中只高亮目标位，避免 key 抖动导致图片闪一下） -->
+              <div v-for="(f, k) in prompts[i].refs.images" :key="'ri' + k" class="ref-thumb"
+                   draggable="true"
+                   :class="{ 'drag-src': dragFrom && dragFrom.i === i && dragFrom.k === k,
+                             'drag-to': dragTo && dragTo.i === i && dragTo.k === k }"
+                   @dragstart="refDragStart(i, k)" @dragover.prevent="refDragOver(i, k)"
+                   @drop.prevent="refDragDrop(i, k)" @dragend="refDragEnd()">
                 <img :src="refSrc(f)" :title="f" />
                 <span class="rtag">参考图</span>
                 <button class="img-x" title="移除" @click.stop="delRef(i, 'images', k)">✕</button>
               </div>
-              <button v-if="prompts[i].refs.images.length < maxRefImg" class="ref-add" :title="'从本地选参考图（最多 ' + maxRefImg + ' 张）'" @click="addRef(i, 'images')">参考图</button>
+              <button v-if="caps.refImage !== false && prompts[i].refs.images.length < maxRefImg" class="ref-add" :title="'从本地选参考图（最多 ' + maxRefImg + ' 张）'" @click="addRef(i, 'images')">参考图</button>
 
               <div v-for="(f, k) in prompts[i].refs.videos" :key="'rv' + k" class="ref-thumb vid" :title="f">
                 <video v-if="refVidSrc(f)" :src="refVidSrc(f)" controls preload="metadata"></video>
@@ -84,32 +102,32 @@
                 <span class="rtag vid">视频</span>
                 <button class="img-x" title="移除" @click.stop="delRef(i, 'videos', k)">✕</button>
               </div>
-              <button v-if="prompts[i].refs.videos.length < maxRefVid" class="ref-add wide" :title="'从本地选参考视频（最多 ' + maxRefVid + ' 个）'" @click="addRef(i, 'videos')">参考视频</button>
+              <button v-if="caps.refVideo !== false && prompts[i].refs.videos.length < maxRefVid" class="ref-add wide" :title="'从本地选参考视频（最多 ' + maxRefVid + ' 个）'" @click="addRef(i, 'videos')">参考视频</button>
 
               <div v-if="prompts[i].refs.first" class="ref-thumb">
                 <img :src="refSrc(prompts[i].refs.first)" title="首帧" />
                 <span class="rtag">首帧</span>
                 <button class="img-x" title="移除首帧" @click.stop="clearFrame(i, 'first')">✕</button>
               </div>
-              <button v-else class="ref-add" title="选一张图作为首帧" @click="pickFrame(i, 'first')">首帧</button>
+              <button v-else-if="caps.firstFrame !== false" class="ref-add" title="选一张图作为首帧" @click="pickFrame(i, 'first')">首帧</button>
 
               <div v-if="prompts[i].refs.last" class="ref-thumb">
                 <img :src="refSrc(prompts[i].refs.last)" title="尾帧" />
                 <span class="rtag">尾帧</span>
                 <button class="img-x" title="移除尾帧" @click.stop="clearFrame(i, 'last')">✕</button>
               </div>
-              <button v-else class="ref-add" title="选一张图作为尾帧（与首帧配合可做首尾帧过渡）" @click="pickFrame(i, 'last')">尾帧</button>
+              <button v-else-if="caps.lastFrame !== false" class="ref-add" title="选一张图作为尾帧（与首帧配合可做首尾帧过渡）" @click="pickFrame(i, 'last')">尾帧</button>
             </div>
           </div>
 
           <!-- 提示词文本：高度自适应，占满本区剩余空间（内容超出在框内滚动） -->
-          <div class="f ta-main"><textarea v-model="prompts[i].text" rows="6" placeholder="H3 提示词（英文结构化）…"
+          <div class="f ta-main"><textarea v-model="prompts[i].text" rows="6" :placeholder="promptPlaceholder()"
                                            @change="touchPrompt(i)"></textarea></div>
 
           <!-- 「生成提示词」（次级功能：绿色）：在提示词框下方，靠左单独一行 -->
           <div class="cops gen-p-row">
             <button class="btn sec sm"
-                    :disabled="pBusy || !prompts[i]" title="按本行分镜与参考素材重新生成本镜头的 H3 提示词"
+                    :disabled="pBusy || !prompts[i]" :title="'按本行分镜与参考素材重新生成本镜头的 ' + promptZoneName()"
                     @click="genP(i)">
               <span v-if="prompts[i] && prompts[i]._gen" class="busy-txt"><i class="spin"></i>生成中…</span>
               <span v-else>生成提示词</span>
@@ -123,9 +141,11 @@
               <span v-if="prompts[i]" class="hint">{{ modeOf(prompts[i]).text }}</span>
             </span>
             <span style="flex:1"></span>
-            <!-- 视频分辨率（从提示词上方移入；宽度按内容自适应，不撑满父布局） -->
+            <!-- 视频分辨率（从提示词上方移入；宽度按内容自适应，不撑满父布局）。
+                 🔴 只在批量跑动中禁用——「已采用」不算锁定（2026-09-23 起采用按钮已移除、点选即选中），
+                 生成过视频后仍要能换分辨率重新生成（旧版挂在 confirmed 上是锁定工作流残留） -->
             <label class="card-res res-fit" v-if="vstate[i]">视频分辨率
-              <select v-model="vstate[i].res" :disabled="vBusy || (vstate[i] && vstate[i].confirmed)" @change="saveVideos()">
+              <select v-model="vstate[i].res" :disabled="vBusy" @change="saveVideos()">
                 <option v-for="o in optsFor(i)" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
             </label>
@@ -197,13 +217,19 @@
         <span v-else>批量生成提示词</span>
       </button>
       <button class="btn sm" :class="{ regen: !batchV && !batchVStop && shots.some((_, i) => vstate[i] && vstate[i].files.length), danger: batchV || batchVStop }"
-              :disabled="batchVStop || batchP"
-              :title="batchV ? '点击停止：当前镜头跑完后，剩余镜头不再执行' : '重新生成所有镜头的视频，或只补没有视频的镜头'"
+              :disabled="batchVStop || batchP || (!batchV && !prompts.some(p => p && p.text.trim()))"
+              :title="batchV ? '点击停止：当前镜头跑完后，剩余镜头不再执行' : (prompts.some(p => p && p.text.trim()) ? '重新生成所有镜头的视频，或只补没有视频的镜头' : '当前没有任何 H3 提示词：请先逐镜头生成提示词，或用左边的「批量生成提示词」')"
               @click="batchVideos">
         <span v-if="batchVStop" class="busy-txt"><i class="spin"></i>停止中…</span>
         <span v-else-if="batchV">停止批量({{ batchVN }}/{{ batchVTotal }})</span>
         <span v-else>批量生成视频</span>
       </button>
+      <!-- 整理镜头（第 2 批）：存量分镜一次性按内容重算时长 + 拆分超单镜上限的镜头。
+           放在批量按钮之后，避免与「生成」类操作混在一起误触。
+           2026-09-29（Dragon）：入口隐藏（v-if="false"），功能与弹窗代码原样保留 —— 改回 v-if 即可恢复 -->
+      <button v-if="false" class="btn sm" :disabled="!shots.length || batchP || batchV"
+              title="按内容重算所有镜头的时长，并把超过单镜 15s 上限的镜头按台词边界拆开（手改过的镜头不动）"
+              @click="askTidy = true">整理镜头</button>
     </Teleport>
 
     <!-- 批量范围选择弹窗（全部重新生成 / 只生成缺失的） -->
@@ -289,6 +315,29 @@
         </div>
       </div>
     </div>
+
+    <!-- 整理镜头确认（存量分镜：按内容重算时长 + 拆分超单镜上限的镜头） -->
+    <div v-if="askTidy" class="modal-mask" @click.self="askTidy = false">
+      <div class="modal">
+        <div class="modal-title">整理镜头</div>
+        <div class="modal-body">
+          <div class="hint" style="margin-bottom:7px">
+            按内容重算每个镜头的时长（模型填的秒数不作数），再把超过单镜 15s 上限的镜头按台词边界拆开。<br>
+            本次将处理：时长重算 <b>{{ tidyPreview.durFixed }}</b> 个镜头 · 拆分 <b>{{ tidyPreview.groups.length }}</b> 组
+            · 镜头数 {{ tidyPreview.from }} → <b>{{ tidyPreview.to }}</b>
+          </div>
+          <div class="hint" style="color:#f0b46a">
+            被拆开的镜头：提示词作废、视频记录清空（已生成的视频文件仍在磁盘），素材选择沿用；
+            拆出的每一段带「✂ 程序拆分」黄标，画面是程序按标点粗切的，可再点「AI 重写」让模型补写。<br>
+            手改过的镜头（时长/画面动过）本次不做任何改动。
+          </div>
+        </div>
+        <div class="modal-ops">
+          <button class="btn" @click="tidyShots">开始整理</button>
+          <button class="btn ghost" @click="askTidy = false">取消</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -297,8 +346,9 @@ import { useProject as useProjectStore } from './stores/project.js'
 import { usePipeline, fmtMs } from './stores/pipeline.js'
 import { stepLog, secs, dbgPrompt } from './ulog.js'
 import { composeSystem, composeUser, normalizeProfile } from './prompts.js'
-import { durWarnings, durSuggest, contWarnings, mergeWarnings, mergeShotPair, sceneAlign, sceneCardIssues, charAlign, stripTailEnNote, profileBrief } from './promptlib.js'
+import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, mergeShotPair, sceneAlign, sceneCardIssues, charAlign, stripTailEnNote, profileBrief, splitShot, splitAll, splitTag, auditModelArchive } from './promptlib.js'
 import { parseRes, resLabel, optsWith, clampDur, seg, joinPath } from './resutil.js'
+import { baseOf, variantOf, groupProfiles } from './variant.js'
 import { touchRevs, sigEq } from './stale.js'
 
 // 🔴 提示词全部来自项目 prompts/ 下的规范 md：shots.md 承载任务身份与 JSON 输出契约，
@@ -322,6 +372,8 @@ export default {
   data() {
     return {
       shots: [], busy: false,
+      // 参考图拖动排序（运行态，不落库）：dragFrom = 拖起的起点 {i,k}；dragTo = 当前悬停的目标位
+      dragFrom: null, dragTo: null,
       // H3 提示词（原 StagePrompts）
       prompts: [], pBusy: false, _autoEp: null, _ref64: {}, _refv: {},
       // 视频生成（原 StageVideos）
@@ -335,6 +387,10 @@ export default {
       contEdit: null, contForm: { continuity: '', change: '' },
       // 镜头合并确认弹窗（askMerge = 后镜下标 i，合并 i-1 与 i；null = 关闭）
       askMerge: null,
+      // 「整理镜头」确认弹窗（存量分镜按内容重算时长 + 拆分超限镜头）
+      askTidy: false,
+      // 正在 AI 重写的拆分组的 gid（'' = 空闲）——同一组的每一段都能据此显示「正在重写画面…」
+      rewriting: '',
       // 🔴 Teleport 延迟挂载开关：块 3 的 <section :key> 切集时整棵重建，Vue 在脱离文档的子树里
       // 挂载本组件时 document.querySelector('#shots-batch') 拿不到目标 → 内容被静默丢弃。
       // 必须 mounted + nextTick（DOM 已插入文档）后再渲染 Teleport
@@ -358,6 +414,8 @@ export default {
     /** 参考素材上限（模板里显示「最多 N 张/个」用；method 里放常量不会挂到实例上，必须走 computed） */
     maxRefImg() { return MAX_REF_IMG },
     maxRefVid() { return MAX_REF_VID },
+    /** 当前视频方案的能力声明：不支持的素材入口直接不出现在界面上（换模型时 UI 自动降级） */
+    caps() { return (this.st.caps && this.st.caps.video) || {} },
     /** 文件名前缀（= 集名）：2026-09-24 扁平化后一个项目共用「分镜/」「成片/」目录，
      *  视频文件必须带集名前缀才不会被别的集覆盖（主进程也按此前缀归集） */
     epPrefix() {
@@ -496,7 +554,8 @@ export default {
       try {
         const system = await composeSystem({
           specs: ['shots.md', 'profile.md', 'chars.md', 'scenes.md'],
-          mustHave: ['"shots"', '"characters"', '"scenes"']
+          mustHave: ['"shots"', '"characters"', '"scenes"'],
+          task: 'shots'
         })
         // 「整个漫剧的综合信息」：除本集剧本稿外，带上项目里已存在的角色/场景名（跨集共享，要求沿用）。
         // user 消息的文案同样来自规范 md（shots.md 的「## 素材格式」），这里只提供素材本身
@@ -518,21 +577,57 @@ export default {
         if (!shots || !shots.length) throw new Error('LLM 未返回镜头数组')
         const chars = pickArr(parsed, ['characters', 'chars', '角色档案', '角色'], used) || []
         const scenes = pickArr(parsed, ['scenes', '场景档案', '场景'], used) || []
+        // 🔴 解析后形状校验（2026-10-08）：JSON 语法合法 ≠ 结构没坏。素材里的半角引号会让值提前
+        //    闭合、后半段变成数组里的裸字符串碎片 —— 那种「合法但残废」的输出在旧代码里会被
+        //    normArchive 的宽容分支照单全收。这里按命名契约拦一次，宁可不落盘。
+        auditModelArchive(chars, '角色档案')
+        auditModelArchive(scenes, '场景档案')
 
-        // 镜头：场景名兜底（模型仍写"同上"就替换为上一镜头的场景名），时长夹取
+        // 镜头：场景名兜底（模型仍写"同上"就替换为上一镜头的场景名）+ 时长按内容重算 + 超限镜头拆分
+        // 🔴 时长不采信模型填的数：它不做算术（shots.md 里给了同款公式和算例，实测 10 样本一次没执行过），
+        //    只会按「一个镜头 5~8 秒好看」的节奏瞎填 → 台词念不完、界面满屏时长警告。
+        //    这里直接写成程序算出的内容所需秒数（durFit，封顶 15s）；durFit=0（无台词/无发声/非复合运镜）
+        //    表示内容对时长无约束，保留模型给的节奏值。
+        //    内容真超过单镜上限的镜头紧接着由 splitAll 拆开（dur 拉满也念不完，只能拆，见 promptlib.splitShot）。
+        //    生成之后的编辑仍按原设计：手改优先，程序只提示不覆盖。
         let prev = ''
+        let durFixed = 0
         this.shots = shots.map(s => {
           const scene = fixSceneName(s.scene, prev)
           prev = scene
+          const fit = durFit(s)
+          const modeled = clampDur(s.dur)
+          const dur = fit > 0 ? clampDur(fit) : modeled
+          if (dur !== modeled) durFixed++
           return {
             scene, chars: s.chars || '', action: s.action || '',
-            dialogue: s.dialogue || '', camera: s.camera || '', dur: clampDur(s.dur),
+            dialogue: s.dialogue || '', camera: s.camera || '', dur,
             continuity: String(s.continuity || '').trim(), change: String(s.change || '').trim()
           }
         })
+        // 第 2 批：内容超过单镜生成上限的镜头按台词边界拆开。程序全权执行、立即出结果，不依赖 LLM；
+        // 拆出来的段带「✂ 程序拆分」黄标（画面是程序按标点粗切的），用户可再点「AI 重写」让模型补写画面。
+        const sp = splitAll(this.shots)
+        this.shots = sp.shots
 
-        // 角色 / 场景档案：与已有档案合并（出过图、锁定过的绝不丢）
-        const chars2 = mergeArchive(normArchive(chars, 'character'), this.st.current.chars)
+        // 🔴 场景档案整体缺失 = 本次结果作废（2026-10-08）：shots.md 的契约要求 `scenes[]` 与
+        //    `shots[].scene` 一一对应。**空数组**不像拼写差异那样能被 sceneAlign 回填 ——
+        //    后果是本集每张场景卡都没有档案，生图直接退化成通用空镜（V9X-2 就是 6 张空档案卡）。
+        //    旧代码 `pickArr(...) || []` 静默接受空数组，于是「模型没干活」被当成正常结果落了盘。
+        //    这里当场报错（还没落盘），让用户立刻重生成，而不是事后才发现整集画面全是空镜。
+        const usedScenes = [...new Set(this.shots.map(s => s.scene).filter(n => n && n !== '未命名场景'))]
+        if (!scenes.length && usedScenes.length) {
+          throw new Error('模型没有返回任何场景档案（scenes 为空），但分镜用到了 ' + usedScenes.length +
+            ' 个场景（' + usedScenes.slice(0, 3).join('、') + (usedScenes.length > 3 ? '…' : '') +
+            '）—— 本次结果已放弃，请重新生成。若反复出现，先检查改编稿里是否混进了半角引号（"）或 JSON 示例文本。')
+        }
+
+        // 🔴 重新生成分镜 = 从零开始（2026-10-07）：新分镜里没提到的角色/场景，档案与卡片都不留。
+        //    同名字条仍保留它的图（candidates / cur）—— 分镜重生后还是那几个人时，图不该白丢。
+        //    旧档案先做快照：下面的 saveArtifact 会把 st.current 换成新的，不能再拿它当「旧值」。
+        const prevChars = JSON.parse(JSON.stringify(this.st.current.chars || []))
+        const prevScenes = JSON.parse(JSON.stringify(this.st.current.scenes || []))
+        const chars2 = mergeArchive(normArchive(chars, 'character'), prevChars, { dropOrphans: true })
         // 人物名对齐（2026-09-27）：改编稿给同一人写两种名字（「人名（主角）」/「人名」）时，
         // 镜头侧剥掉定位标签、向角色卡名对齐（卡名是图片目录的 key，绝不能动卡名）；
         // 卡侧撞键（剥标签后同键的多张卡，可能是两个不同的人）绝不自动归并，只黄标。
@@ -541,17 +636,44 @@ export default {
         // 场景档案名先对齐镜头里的拼法（模型偶把同一场景写成两种拼法 → 档案挂在没人用的名字上，
         // 镜头真正在用的那张卡档案为空 → 生图退化成通用空镜。见 promptlib.sceneAlign）
         const aligned = sceneAlign(this.shots, normArchive(scenes, 'scene'))
-        const scenes2 = mergeArchive(aligned.scenes, this.st.current.scenes)
+        const scenes2 = mergeArchive(aligned.scenes, prevScenes, { dropOrphans: true })
         const audit = sceneCardIssues(this.shots, scenes2)
 
         await this.st.saveArtifact('shots', this.shots)
         await this.st.saveArtifact('chars', chars2)
         await this.st.saveArtifact('scenes', scenes2)
+        // 🔴 提示词与视频槽位跟着一起重建（2026-10-07）：老逻辑只按**数量**补齐/裁掉，
+        //    重新生成后镜头数恰好相同（很常见）时，旧提示词/旧视频会原样挂在**内容完全不同**的
+        //    新镜头上 —— 那不是「残留」，是错配。分镜既然是从零来的，槽位也归零。
+        this.prompts = this.shots.map(() => ({ text: '', refs: emptyRefs() }))
+        this.vstate = {}
+        // 不再出现的角色/场景：**盘上有图**的归档到 _trash/<时间戳>/（移动不是删除，随时能翻回来）。
+        // 有没有图由后端按「目录是否存在」判断 —— 别用 candidates 猜，历史数据里它可能是空的面盘上还有图。
+        const orphan = orphanAssets({ chars: prevChars, scenes: prevScenes }, chars2, scenes2)
+        if (orphan.length) {
+          L.info('新分镜里不再出现的角色/场景 ' + orphan.length + ' 个，已从档案与卡片中移除：' +
+            orphan.map(o => o.name).join('、'))
+          try {
+            const r = await window.studio.archiveOrphans(this.st.workspace, this.st.current.id, orphan)
+            const mv = (r && r.moved) || []
+            if (mv.length) L.info('其中 ' + mv.length + ' 个的图片已归档到 _trash/（未删除，可找回）：' + mv.join('、'))
+            for (const f of ((r && r.failed) || [])) L.warn('素材归档失败：' + f)
+          } catch (e) { L.warn('素材归档失败：' + ((e && e.message) || e)) }
+        }
         // 记录「本次分镜/档案基于哪个改编稿版本」→ 改编稿再改就触发模块级脏标记
         await touchRevs(this.st, r => { r.shotsAdapted = r.adapted || 0 })
         this.syncSlots()
+        await this.savePrompts()
+        await this.saveVideos()
         this.pl.markGen(2, Date.now() - t0)
         const warnN = Object.keys(audit.byName).length
+        if (durFixed) L.info('镜头时长已按内容重算：' + durFixed + ' 个镜头（取程序算出的内容所需秒数，模型填的秒数不作数）')
+        if (sp.groups.length) {
+          L.info('内容超单镜上限的镜头已按台词边界拆分：' + sp.groups.length + ' 个镜头 → ' +
+            sp.groups.reduce((a, g) => a + g.n, 0) + ' 段（' +
+            sp.groups.map(g => '第 ' + (g.at + 1) + ' 镜拆成 ' + g.n + ' 段').join('；') +
+            '）。拆出的画面是程序按标点粗切的，可在行内点「AI 重写」让模型补写')
+        }
         if (charAligned.fixes.length) {
           L.info('镜头人物名已向角色卡对齐（剥掉定位标签）：' + charAligned.fixes.map(f => f.from + ' → ' + f.to).join('；'))
         }
@@ -565,6 +687,7 @@ export default {
         L.done('分镜生成完成：' + this.shots.length + ' 个镜头 · 角色档案 ' + chars2.length +
           ' 个 · 场景档案 ' + scenes2.length + ' 个', Date.now() - t0)
         this.$root.toast('已生成 ' + this.shots.length + ' 个镜头、' + chars2.length + ' 个角色、' + scenes2.length + ' 个场景' +
+          (sp.groups.length ? '；' + sp.groups.length + ' 个超长镜头已自动拆分（画面可在行内点「AI 重写」补写）' : '') +
           (warnN ? '；有 ' + warnN + ' 个场景档案缺失，已打黄标' : '') + '，请检查编辑后确认')
       } catch (e) {
         L.fail('分镜生成失败', Date.now() - t0, e)
@@ -640,12 +763,18 @@ export default {
       if (p._genAt) return '生成中 已用 ' + fmtMs(Date.now() - p._genAt)
       return p.genMs ? '耗时 ' + fmtMs(p.genMs) : ''
     },
-    /** 角色 + 场景档案（阶段3 产出的设定，作为提示词的固定外观依据） */
+    /**
+     * 角色 + 场景档案（阶段3 产出的设定，作为提示词的固定外观依据）。
+     * 🔴 2026-10-08：改为**按主体归组**下发（groupProfiles，见 src/variant.js）——
+     *    `主体名--视角` 这类视角变体卡共用主体卡那一份档案，只发一行；键用**主体名**（不是卡名），
+     *    因为分镜的 chars / continuity 里写的就是主体名，两边对不上模型会当成两个主体。
+     *    没有双横杠命名时，输出与改造前逐字一致（每张卡各一行）。
+     */
     charProfiles() {
-      return this.chars.map(c => c.name + ': ' + c.prompt).join('\n')
+      return groupProfiles(this.chars)
     },
     sceneProfiles() {
-      return this.scenes.map(s => s.name + ': ' + s.prompt).join('\n')
+      return groupProfiles(this.scenes)
     },
     async savePrompts() {
       if (!this.canSave()) return
@@ -747,18 +876,61 @@ export default {
       if (refs.last) return 'L2VA'
       return 'T2VA'
     },
-    /** 参考素材绝对路径 → 所属档案名（提示词里标注 <Picture N> 的来源，帮助模型定义 Subject） */
-    refOwner(abs) {
+    /**
+     * 当前视频方案用的提示词规范文件名 —— 由方案自己声明（electron/profiles/*.json 的 prompt.files 段，
+     * 经 st.promptFiles 透传）：H3 = { base:'h3.md', ref:'h3ref.md' }，LTX-2.5 = { base:'ltx.md' }。
+     * 拿不到声明时回落 H3 老约定（保证旧库 / 老方案照常工作）。
+     * @param {boolean} isRef 是否参考支路（只有声明了 ref 的方案才有第二份规范）
+     */
+    videoSpecFile(isRef) {
+      const vf = (this.st.promptFiles && this.st.promptFiles.video) || {}
+      return (isRef && vf.ref) ? vf.ref : (vf.base || (isRef ? 'h3ref.md' : 'h3.md'))
+    },
+    /** 当前视频方案是否走 H3 系规范（决定路线标签用「三段/六段」还是「整段散文」措辞） */
+    isH3Spec() { return /^h3/i.test(this.videoSpecFile(false)) },
+    /** 提示词分区的标题（跟着当前视频模型走；H3 方案下仍是「H3 提示词」，老用户与自测无感） */
+    promptZoneName() {
+      const f = this.videoSpecFile(false)
+      if (/^h3/i.test(f)) return 'H3 提示词'
+      if (/^ltx/i.test(f)) return 'LTX 提示词'
+      return String(f).replace(/\.md$/i, '').toUpperCase() + ' 提示词'
+    },
+    /** 提示词输入框的占位文案（H3 是字段化三段/六段，LTX-2.5 是整段散文） */
+    promptPlaceholder() {
+      return this.promptZoneName() + (this.isH3Spec() ? '（英文结构化）…' : '（英文整段散文）…')
+    },
+    /**
+     * 参考素材绝对路径 → 所属档案（{ label, name, base, variant }）；不属于任何卡则 null。
+     * 认领判据是**路径前缀**（以该卡的素材目录开头），所以卡目录里的任意文件都能认回来。
+     */
+    refOwnerInfo(abs) {
       const ep = this.st.current
-      if (!ep || !ep.assetsDir || !abs) return ''
+      if (!ep || !ep.assetsDir || !abs) return null
       const box = [[this.chars, 'characters', 'character sheet'], [this.scenes, 'scenes', 'scene sheet']]
       for (const [list, kind, label] of box) {
         for (const c of list || []) {
           const dir = joinPath(joinPath(ep.assetsDir, kind), seg(c.name))
-          if (abs.indexOf(dir) === 0) return ' (' + label + ': ' + c.name + ')'
+          if (abs.indexOf(dir) === 0) {
+            return { label: label, name: c.name, base: baseOf(c.name), variant: variantOf(c.name) }
+          }
         }
       }
-      return ''
+      return null
+    },
+    /**
+     * 参考素材绝对路径 → 提示词里标注 <Picture N> 的来源（帮模型定义 Subject）。
+     * 视角变体（`主体名--视角`）写成「主体名 / 视角」：既点明属于哪个主体，又保留这一张的视角信息，
+     * 模型据此把同一主体的多张图归成一个 <Subject N>（规则见 skills/prompts/h3ref.md 的「参考标签」）。
+     */
+    refOwner(abs) {
+      const o = this.refOwnerInfo(abs)
+      if (!o) return ''
+      return ' (' + o.label + ': ' + (o.variant ? (o.base + ' / ' + o.variant) : o.name) + ')'
+    },
+    /** 参考素材绝对路径 → 所属**主体基名**（说话人锁图用精确基名比较，不用子串包含） */
+    refOwnerBase(abs) {
+      const o = this.refOwnerInfo(abs)
+      return o ? o.base : ''
     },
     /** 分镜 dialogue → 逐条「说话人 + 台词」，随任务一起发给模型钉死说话人（换行分隔，兼容全角冒号与「名（备注）」） */
     dialogueLines(s) {
@@ -782,24 +954,34 @@ export default {
       const nImg = (r.images || []).length
       const nVid = (r.videos || []).length
       const mode = this.h3ModeOf(r)
+      // 措辞跟着「当前方案声明的规范文件」走：H3 是字段化的三段/六段，LTX-2.5 是整段散文
+      const spec = this.videoSpecFile(mode === 'Ref2VA')
+      const h3 = this.isH3Spec()
       if (mode === 'Ref2VA') {
         const parts = []
         if (nImg) parts.push('参考图×' + nImg)
         if (nVid) parts.push('参考视频×' + nVid)
         return { cls: 'ref', tag: 'Ref2VA',
-          text: '已选 ' + parts.join(' + ') + ' → 参考模式 ref2va（官方六段提示词，规范文件 h3ref.md）' }
+          text: '已选 ' + parts.join(' + ') + ' → 参考模式 ref2va（官方六段提示词，规范文件 ' + spec + '）' }
       }
       if (mode === 'FL2VA') {
-        return { cls: 'flf', tag: 'FL2VA', text: '首帧 + 尾帧 → 官方首尾帧模式（三段提示词 · fl2va）' }
+        return { cls: 'flf', tag: 'FL2VA', text: h3
+          ? '首帧 + 尾帧 → 官方首尾帧模式（三段提示词 · fl2va）'
+          : '首帧 + 尾帧 → 首尾帧过渡（整段散文提示词 · ' + spec + '）' }
       }
       if (mode === 'I2VA') {
-        return { cls: 'flf', tag: 'I2VA', text: '仅首帧 → 官方首帧模式（三段提示词 · fl2va）' }
+        return { cls: 'flf', tag: 'I2VA', text: h3
+          ? '仅首帧 → 官方首帧模式（三段提示词 · fl2va）'
+          : '仅首帧 → 图生视频（整段散文提示词 · ' + spec + '）' }
       }
       if (mode === 'L2VA') {
-        return { cls: 'flf', tag: 'L2VA', text: '仅尾帧 → 官方尾帧模式（三段提示词 · fl2va）' }
+        return { cls: 'flf', tag: 'L2VA', text: h3
+          ? '仅尾帧 → 官方尾帧模式（三段提示词 · fl2va）'
+          : '仅尾帧 → 尾帧引导（整段散文提示词 · ' + spec + '）' }
       }
-      return { cls: 't2v', tag: 'T2VA',
-        text: '未选素材 → 纯文字生成（官方三段提示词 · fl2va）' }
+      return { cls: 't2v', tag: 'T2VA', text: h3
+        ? '未选素材 → 纯文字生成（官方三段提示词 · fl2va）'
+        : '未选素材 → 纯文字生成（整段散文提示词 · ' + spec + '）' }
     },
     refSrc(abs) {
       if (!abs) return ''
@@ -839,6 +1021,27 @@ export default {
       this.prompts[i].refs[kind].splice(k, 1)
       await this.savePrompts()
     },
+    /* ---- 参考图拖动排序（2026-10-08）----
+       只在同一镜头的参考图之间排序（素材属于本镜头，不跨行搬运）。
+       顺序会改变提示词里 <Picture N> 的编号（genP 按 refs.images 顺序标注来源），
+       所以重排后该镜头的提示词会自然标 ⚠ 提醒重新生成——由素材签名比对得出，无需额外代码。 */
+    refDragStart(i, k) { this.dragFrom = { i, k } },
+    refDragOver(i, k) {
+      if (!this.dragFrom || this.dragFrom.i !== i) return
+      this.dragTo = { i, k }   // 只记目标位；松手才真正重排（避免拖动中 key 抖动让图片闪）
+    },
+    async refDragDrop(i, k) {
+      const d = this.dragFrom
+      this.dragFrom = null; this.dragTo = null
+      if (!d || d.i !== i || d.k === k) return
+      const p = this.prompts[i]
+      const arr = p && p.refs && p.refs.images
+      if (!arr || d.k >= arr.length || k >= arr.length) return
+      const [m] = arr.splice(d.k, 1)
+      arr.splice(k, 0, m)
+      await this.savePrompts()
+    },
+    refDragEnd() { this.dragFrom = null; this.dragTo = null },
     async pickFrame(i, which) {
       const files = await window.studio.pickFiles('image')
       if (!files || !files.length) return
@@ -866,12 +1069,18 @@ export default {
       L.start('正在生成第' + (i + 1) + '个镜头的提示词' + prog)
       try {
         const refs = p.refs || {}
-        // 官方任务类型由素材构成决定（与引擎路由一致：参考图/视频→ref2va，其余→fl2va）
         const mode = this.h3ModeOf(refs)
-        // 规范文件按模式分流：基础模式 h3.md（三段式）/ 参考模式 h3ref.md（六段式）——格式细节全在 md 里
+        // 规范文件由「当前视频方案」声明（st.promptFiles.video，来自 electron/profiles/*.json 的
+        // prompt.files 段）：H3 声明 { base:'h3.md', ref:'h3ref.md' }（基础三段式 / 参考六段式），
+        // LTX-2.5 声明 { base:'ltx.md' }（无参考支路，整段散文）。拿不到声明时回落 H3 老约定。
+        const vf = (this.st.promptFiles && this.st.promptFiles.video) || {}
+        const specFile = (mode === 'Ref2VA' && vf.ref) ? vf.ref : (vf.base || (mode === 'Ref2VA' ? 'h3ref.md' : 'h3.md'))
+        // 格式细节全部在该 md 里：system（角色与任务 + 规则 + 输出契约）与 user（素材格式）同源
         const system = await composeSystem({
-          specs: mode === 'Ref2VA' ? ['h3ref.md'] : ['h3.md'],
-          mustHave: ['## 输出格式']
+          specs: [specFile],
+          mustHave: ['## 输出格式'],
+          // 用途：成品覆写按它生效（提示词页里「视频提示词 · 基础 / 参考」各一篇）
+          task: mode === 'Ref2VA' ? 'video-ref' : 'video-base'
         })
         // ---- user 消息：结构、标签与所有指令文字都来自规范 md（h3.md / h3ref.md 的「## 素材格式」），
         //      这里只负责准备素材本身（档案文本、镜头 JSON、对白行、连续性状态、资产清单）----
@@ -882,7 +1091,10 @@ export default {
           const hit = (this.chars || []).find(c => c.name === n) || (this.scenes || []).find(c => c.name === n)
           let pic = ''
           if (hit && mode === 'Ref2VA') {
-            const k = (refs.images || []).findIndex(f => this.refOwner(f).indexOf(n) >= 0)
+            // 🔴 2026-10-08：改**精确主体基名比较**。原来是拿 refOwner 的返回串做子串包含判断，
+            //    有了 `主体名--视角` 这种带后缀的卡名后会误命中（而且短名会命中长名），
+            //    可能把台词挂到错的 <Picture N> 上。
+            const k = (refs.images || []).findIndex(f => this.refOwnerBase(f) === n)
             if (k >= 0) pic = ' → <Picture ' + (k + 1) + '>'
           }
           return n + pic
@@ -908,7 +1120,7 @@ export default {
           if (refs.last) att.push('<Picture 2> = the last frame image attached to the model')
           frames = att.join('\n')
         }
-        const user = await composeUser(mode === 'Ref2VA' ? 'h3ref.md' : 'h3.md', {
+        const user = await composeUser(specFile, {
           characters: this.charProfiles() || '(none)',
           scenes: this.sceneProfiles() || '(none)',
           n: i + 1,
@@ -1041,8 +1253,179 @@ export default {
     /** 时长软校验（只提示不拦截）：台词/发声表演/复合运镜与 dur 不匹配时返回违规说明 */
     durWarn(i) { return durWarnings(this.shots[i] || {}) },
     durSuggest(i) { return durSuggest(this.shots[i] || {}) },
+    /** 黄标正文（超单镜上限 → 建议拆分；时长不足 → 建议 Ns） */
+    durTag(i) { return durTag(this.shots[i] || {}) },
     contWarn(i) { return (this.contAll && this.contAll[i]) || [] },
     mergeWarn(i) { return (this.mergeAll && this.mergeAll[i]) || '' },
+    /* ---- 拆镜（第 2 批）：内容超单镜 15s 上限的镜头由程序按台词边界拆开 ---- */
+    /** 该镜头的拆分标记（null = 不是拆分段） */
+    splitInfo(i) { return (this.shots[i] && this.shots[i]._split) || null },
+    /** 拆分段的行内黄标文案（'' = 不是拆分段） */
+    splitTag(i) { return splitTag(this.shots[i] || {}) },
+    /** 是否该拆分组的组头（只有组头挂「AI 重写 / 撤回」按钮） */
+    splitHead(i) { const s = this.splitInfo(i); return !!s && s.k === 0 },
+    /** 该拆分组的全部镜头下标（升序） */
+    splitGroup(i) {
+      const s = this.splitInfo(i)
+      if (!s) return []
+      const out = []
+      this.shots.forEach((x, k) => { if (x && x._split && x._split.gid === s.gid) out.push(k) })
+      return out
+    },
+    /** 该段是否正被 AI 重写（同组每一段都显示忙碌，避免用户以为点了没反应） */
+    splitBusy(i) { const s = this.splitInfo(i); return !!s && !!this.rewriting && s.gid === this.rewriting },
+    /** 拆镜黄标的 hover 说明 */
+    splitTip(i) {
+      const s = this.splitInfo(i)
+      if (!s) return ''
+      const g = this.splitGroup(i)
+      return '本镜由「镜头 ' + ((g[0] || 0) + 1) + '」按台词边界拆分而来（第 ' + (s.k + 1) + '/' + s.n + ' 段）：\n'
+        + '台词、场景、角色、时长由程序算定（台词一行不切）；画面动作与镜头语言是程序按标点粗切的，各段镜头语言相同。'
+        + (s.ai ? '\n画面已由 AI 重写。' : '\n点右侧「AI 重写」让模型为每一段补写画面。')
+    },
+    /** 该镜头是否被手改过（_rev 由 touchShot 递增，新生成的镜头为 1）——「整理镜头」不碰用户的手改 */
+    touched(s) { return ((s && s._rev) || 1) > 1 },
+    /** 「整理镜头」预览：会重算时长的镜头数 + 会拆分的组（只统计没被手改过的镜头） */
+    tidyPreview() {
+      let durFixed = 0
+      const arr = this.shots.map(s => {
+        if (this.touched(s)) return s
+        const f = durFit(s)
+        if (f > 0 && f !== clampDur(s.dur)) { durFixed++; return { ...s, dur: clampDur(f) } }
+        return s
+      })
+      const sp = splitAll(arr)
+      return { durFixed, groups: sp.groups, map: sp.map, from: this.shots.length, to: sp.shots.length }
+    },
+    /**
+     * 整理镜头（存量数据）：按内容重算时长（跳过手改过的镜头）+ 把超单镜上限的镜头拆开。
+     * 需要按下标重建提示词/视频槽位 —— 镜头数会变、后面所有镜头的位置都会前移。
+     */
+    async tidyShots() {
+      this.askTidy = false
+      const pv = this.tidyPreview
+      if (!pv.durFixed && !pv.groups.length) {
+        this.$root.toast('无需整理：时长已与内容一致，也没有超过单镜上限的镜头')
+        return
+      }
+      const before = this.shots.length
+      const fixed = this.shots.map(s => {
+        if (this.touched(s)) return s
+        const f = durFit(s)
+        return f > 0 ? { ...s, dur: clampDur(f) } : s
+      })
+      const sp = splitAll(fixed)
+      const oldP = this.prompts, oldV = this.vstate
+      const np = [], nv = {}
+      sp.map.forEach((dsts, oi) => {
+        const op = oldP[oi], ov = oldV[oi] || {}
+        const res = ov.res || (this.st.current && this.st.current.res && this.st.current.res.vid) || '864x480'
+        if (dsts.length === 1) {
+          // 没被拆的镜头：提示词与视频记录原样搬运（只是位置可能后移）
+          np[dsts[0]] = op || { text: '', refs: emptyRefs() }
+          nv[dsts[0]] = ov
+          return
+        }
+        // 被拆开的镜头：原提示词对应的是"整段镜头"，拆开后作废；素材选择沿用（同场景同角色，省得重挑）；
+        // 原视频对应整段镜头，记录一并清空（文件仍在磁盘），只保留分辨率选择
+        const refs = op && op.refs ? JSON.parse(JSON.stringify(op.refs)) : emptyRefs()
+        dsts.forEach(di => {
+          np[di] = { text: '', refs: JSON.parse(JSON.stringify(refs)) }
+          nv[di] = { files: [], cur: -1, confirmed: false, res }
+        })
+      })
+      this.shots = sp.shots
+      this.prompts = np
+      this.vstate = nv
+      this.syncSlots()
+      await this.saveShots()
+      await this.savePrompts()
+      await this.saveVideos()
+      this.$root.toast('整理完成：时长重算 ' + pv.durFixed + ' 个镜头 · 拆分 ' + sp.groups.length +
+        ' 组（镜头 ' + before + ' → ' + sp.shots.length + '）；拆出的画面可点「AI 重写」补写')
+    },
+    /**
+     * 让 AI 为拆出来的每一段重写「画面动作 / 镜头语言」。
+     * 🔴 程序只采信 action 与 camera 两个字段：台词、场景、角色、时长一律以程序值为准，
+     *    模型改了什么都不作数（幻觉风险从根上封死）。段数不符则整批放弃，不做部分采纳。
+     */
+    async rewriteSplit(i) {
+      const idx = this.splitGroup(i)
+      if (idx.length < 2 || this.rewriting) return
+      const head = idx[0]
+      const s0 = this.shots[head]
+      const src = (s0._split || {}).src || s0
+      this.rewriting = s0._split.gid
+      const L = stepLog('拆分镜头重写')
+      const t0 = Date.now()
+      L.start('正在为拆分出的 ' + idx.length + ' 段重写画面（镜头 ' + (head + 1) + '~' + (idx[idx.length - 1] + 1) + '）')
+      try {
+        const system = await composeSystem({ specs: ['split.md'], mustHave: ['"shots"'], task: 'split' })
+        // 只下发段位、台词、时长与待重写的画面；原始镜头供模型理解这段戏在讲什么
+        const parts = idx.map((k, n) => ({
+          n: n + 1,
+          dialogue: String(this.shots[k].dialogue || ''),
+          dur: this.shots[k].dur,
+          action: String(this.shots[k].action || ''),
+          camera: String(this.shots[k].camera || '')
+        }))
+        const user = await composeUser('split.md', {
+          shot: JSON.stringify(src, null, 2),
+          parts: JSON.stringify(parts, null, 2),
+          n: idx.length
+        })
+        dbgPrompt('拆分镜头重写', '文字模型 · 镜头 ' + (head + 1) + ' 拆 ' + idx.length + ' 段', [['system', system], ['user', user]])
+        const text = await window.studio.llmChat([
+          { role: 'system', content: system },
+          { role: 'user', content: user }
+        ], { temperature: 0.7, maxTokens: 3072, json: true, label: '拆分镜头重写' })
+        const parsed = JSON.parse(require_json(text))
+        const list = Array.isArray(parsed) ? parsed : pickArr(parsed, ['shots', '镜头', '镜头列表'], new Set())
+        if (!Array.isArray(list) || list.length !== idx.length) {
+          throw new Error('模型返回 ' + (Array.isArray(list) ? list.length : 0) + ' 段，与拆分段数 ' + idx.length + ' 不符，本次结果已放弃')
+        }
+        idx.forEach((k, n) => {
+          const s = this.shots[k]
+          const r = list[n] || {}
+          const act = String(r.action || '').trim()
+          const cam = String(r.camera || '').trim()
+          if (act) s.action = act
+          if (cam) s.camera = cam
+          s._rev = (s._rev || 1) + 1     // 分镜变了 → 本行提示词/视频的脏标记自动生效
+          s._split.ai = true
+        })
+        await this.saveShots()
+        L.done('拆分镜头的画面已重写：' + idx.length + ' 段（台词/时长未改动）', Date.now() - t0)
+        this.$root.toast('已重写镜头 ' + (head + 1) + '~' + (idx[idx.length - 1] + 1) + ' 的画面；重新生成提示词后生效')
+      } catch (e) {
+        L.fail('拆分镜头的画面重写失败', Date.now() - t0, e)
+        this.st.fail(e)
+      } finally { this.rewriting = '' }
+    },
+    /** 撤回拆分：把这一组恢复成拆之前的那个镜头（原始内容快照存在每段自带的 _split.src 里） */
+    async undoSplit(i) {
+      const idx = this.splitGroup(i)
+      if (idx.length < 2) return
+      const head = idx[0], n = idx.length
+      const snap = (this.shots[head]._split || {}).src
+      if (!snap) return
+      const back = JSON.parse(JSON.stringify(snap))
+      back.dur = clampDur(back.dur)
+      this.shots.splice(head, n, back)
+      // 视频槽位：拆出来的段位（head+1 … head+n-1）丢弃，更靠后的整体前移 n-1
+      const vs = {}
+      Object.keys(this.vstate).map(Number).sort((a, b) => a - b).forEach(k => {
+        if (k > head && k < head + n) return
+        vs[k >= head + n ? k - (n - 1) : k] = this.vstate[k]
+      })
+      this.vstate = vs
+      this.prompts.splice(head + 1, n - 1)
+      this.syncSlots()
+      await this.saveShots()
+      await this.saveVideos()
+      await this.savePrompts()
+      this.$root.toast('已撤回拆分，恢复为镜头 ' + (head + 1) + '（该镜头的视频记录已清空，文件仍在磁盘）')
+    },
     /** 该镜头场景名的档案体检文案（空串 = 没问题）；见 promptlib.sceneCardIssues */
     scWarnOf(name) { return (this.scIssues.byName || {})[String(name || '').trim()] || '' },
     /** 打开合并确认弹窗（i = 后镜下标；合并 i-1 与 i） */
@@ -1190,7 +1573,7 @@ export default {
       const s = this.shots[i]
       const pr = ((this.st.current.prompts || [])[i] || {})
       const prompt = pr.text
-      if (!prompt) { this.st.fail(new Error('镜头 ' + (i + 1) + ' 缺少 H3 提示词，请先生成本镜头的提示词')); return false }
+      if (!prompt) { this.st.fail(new Error('镜头 ' + (i + 1) + ' 缺少 ' + this.promptZoneName() + '，请先生成本镜头的提示词')); return false }
       // 参考素材全部来自本行该镜头的设置（可不选）
       const refs = pr.refs || {}
       const refImages = refs.images || []
@@ -1198,6 +1581,19 @@ export default {
       const firstFrame = refs.first || null
       const lastFrame = refs.last || null
       const hasRef = refImages.length > 0 || refVideos.length > 0
+      // 能力降级兜底：当前视频方案明确不支持某种素材时，在这里拦住并说清出路，
+      // 而不是把它塞进工作流让 ComfyUI 报一堆看不懂的节点错误（入口本身也会被隐藏）。
+      const caps = this.caps || {}
+      const bad = []
+      if (refImages.length && caps.refImage === false) bad.push('参考图')
+      if (refVideos.length && caps.refVideo === false) bad.push('参考视频')
+      if (firstFrame && caps.firstFrame === false) bad.push('首帧')
+      if (lastFrame && caps.lastFrame === false) bad.push('尾帧')
+      if (bad.length) {
+        this.st.fail(new Error('当前视频模型不支持：' + bad.join('、') +
+          '。请到「设置 → 生成模型方案」换一个支持它们的模型，或去掉本镜头的这些素材后再生成。'))
+        return false
+      }
       // 记录本次生成所属的集（收尾写库守卫的比对基准；切集哨兵 'SWITCHED' 不覆盖）
       if (this._busyEpId !== 'SWITCHED') this._busyEpId = this.st.current && this.st.current.id
       this.vBusy = true
@@ -1220,7 +1616,7 @@ export default {
       L.start('正在生成视频：镜头 ' + (i + 1) + prog + '（' + dur + 's · ' + rw + 'x' + rh +
         ' · ' + resLabel(this.optsFor(i), resStr) +
         ' · ' + mode +
-        (inputs.length ? ' · ' + inputs.join('+') : '') + ' · H3 推理，每镜头数分钟）')
+        (inputs.length ? ' · ' + inputs.join('+') : '') + ' · 本地推理，每镜头数分钟）')
       try {
         const dir = this.st.current.shotDir   // <项目>/分镜/<集>/
         // ⚠️ 必须转纯对象再送 IPC：refs 里的数组来自响应式 store（Vue Proxy），
@@ -1380,9 +1776,18 @@ function normArchive(list, kind) {
  *  - 档案 / 正向 / 负向：本次模型有输出 → 无条件覆盖旧值（含手改过的）；模型漏输出 → 保留旧值
  *  - 已生成的图（candidates / cur / res / genMs / _imgRev）一律保留，不随档案变化
  *  - 档案被覆盖（内容变了）→ 档案版本 +1，卡片上会出现「档案已改 · 提示词待更新」提示
- *  - 模型这次没提到、但旧档案里有的名字保留（避免丢已生成的图）
+ *  - 🔴 2026-10-07：**重新生成分镜**（opts.dropOrphans）时，模型这次没提到的名字不再保留 ——
+ *    那正是「历史角色一直挂在卡片上」的根源：分镜已经换了一批人，旧卡却还在。
+ *    但**手动新增的卡**（`_manual`）必须豁免：它本来就不在分镜里（用户加完还要自己「写入镜头」），
+ *    一律丢掉等于把用户的手工活清了。
+ *    - 首次生成（没传 opts）保持原语义：旧名字照留（那时 olds 本来就是空的）
+ *
+ * @param {Array} list 本次生成出来的档案
+ * @param {Array} olds 已有档案
+ * @param {{dropOrphans?: boolean}} [opts]
  */
-function mergeArchive(list, olds) {
+function mergeArchive(list, olds, opts) {
+  const drop = !!(opts && opts.dropOrphans)
   const pool = new Map((olds || []).filter(o => o && o.name).map(o => [o.name, o]))
   const out = []
   for (const it of list) {
@@ -1405,11 +1810,47 @@ function mergeArchive(list, olds) {
       cur: typeof old.cur === 'number' ? old.cur : -1,
       res: old.res || it.res,
       genMs: old.genMs || it.genMs,
-      _imgRev: old._imgRev || it._imgRev || 1
+      _imgRev: old._imgRev || it._imgRev || 1,
+      // 手动新增标记必须跟着走，否则这次被豁免、下次就被清了
+      ...(old._manual ? { _manual: true } : {})
     })
   }
   const fallbackKind = (list[0] && list[0].kind) || 'character'
-  for (const left of pool.values()) out.push({ kind: fallbackKind, ...left })
+  for (const left of pool.values()) {
+    // 重新生成：模型没提到的历史角色不再保留。
+    // 🔴 两类豁免必须与 orphanAssets 口径一致（2026-10-08）：手动新增的卡（_manual —— 它本来就不在
+    //    分镜里，用户加完还要自己「写入镜头」）与**从项目库导入的只读副本卡**（libReadonly / libId）
+    //    都不能丢。库卡的图在**跨集共享**目录里，orphanAssets 一直保护它不被归档 —— 但 dropOrphans
+    //    以前只认 _manual，结果是「图保住了、卡却从本集消失」，用户得回库里重新导入一次。
+    if (drop && !left._manual && left.libReadonly !== true && !left.libId) continue
+    out.push({ kind: fallbackKind, ...left })
+  }
+  return out
+}
+
+/**
+ * 「被丢弃的孤儿素材」清单：旧档案里有、本次生成结果里没有、**且是集私有的**。
+ *
+ * 为什么要单独筛：归档是物理移动图片目录，误伤不可逆 ——
+ *  - 库条目（libReadonly / libId）的图在**跨集共享**目录里，挪走会连累别的集 → 一律排除
+ *  - 手动新增的卡（_manual）本就被 mergeArchive 豁免，不会出现在这里，这里再兜一层
+ *
+ * @returns {Array<{kind:string, name:string, hasImg:boolean}>} hasImg= 盘上真有图（没出过图的不用报）
+ */
+function orphanAssets(oldEp, newChars, newScenes) {
+  if (!oldEp) return []
+  const out = []
+  const keep = new Set()
+  for (const a of (newChars || [])) if (a && a.name) keep.add('character|' + a.name)
+  for (const a of (newScenes || [])) if (a && a.name) keep.add('scene|' + a.name)
+  const push = (kind, o) => {
+    if (!o || !o.name || keep.has(kind + '|' + o.name)) return
+    if (o._manual) return                                  // 手动加的卡不归档
+    if (o.libReadonly === true || o.libId) return          // 库条目的图是跨集共享的，绝不能动
+    out.push({ kind, name: o.name, hasImg: Array.isArray(o.candidates) && o.candidates.length > 0 })
+  }
+  for (const c of (oldEp.chars || [])) push('character', c)
+  for (const s of (oldEp.scenes || [])) push('scene', s)
   return out
 }
 </script>

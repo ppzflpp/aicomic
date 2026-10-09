@@ -12,6 +12,7 @@ const { spawn, spawnSync, execFile } = require('child_process');
 const { writeUnique, sanitize } = require('./assetStore.cjs');
 const models = require('./models.cjs');
 const videoTiers = require('./videoTiers.cjs');
+const profiles = require('./profiles.cjs');
 const projects = require('./projects.cjs');
 const logger = require('./logger.cjs');
 
@@ -25,6 +26,7 @@ let ffmpegWarming = false;
 
 function init(dbRef) {
   db = dbRef;
+  profiles.init(dbRef);   // 模型方案就位后，工作流路径 / 节点锚点 / 帧参数才有得读
   warmFfmpeg();   // 异步预热：'where ffmpeg' 在某些机器上要 5s，绝不能卡在同步路径上
 }
 
@@ -102,7 +104,8 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
   // 先快速探活（1.5s），避免连接挂起时用户干等
   let alive = false;
   try { alive = (await fetchJson(endpoint('llm') + '/v1/models', {}, 1500)).ok; } catch (_) {}
-  if (!alive) throw new Error('LLM 服务不可达（' + endpoint('llm') + '）。请先启动 llama-server，或到 设置→环境检测 修改地址。');
+  if (!alive) throw new Error('LLM 服务不可达（' + endpoint('llm') + '）。软件会自动拉起 llama-server；'
+    + '若反复起不来，看右下角「运行日志」，或到 设置 → 高级设置 检查 llama.cpp 安装目录。');
 
   const body = {
     model: 'local',
@@ -249,56 +252,52 @@ function warmFfmpeg() {
 
 /* ---------------- ComfyUI 工作流执行 ---------------- */
 
-const WORKFLOW_TEMPLATES = {
-  video: 'workflows/video_h3.json'         // H3 视频（M0 spike 后落地）
-};
-
-function workflowPath(key) {
-  // 角色图走「生图工作流模板注册表」：按 设置→生图工作流 激活的模板解析文件
-  if (key === 'character') {
-    const info = models.imageTemplateInfo();
-    return path.join(ws() || '', info.file);
-  }
-  const p = path.join(ws() || '', WORKFLOW_TEMPLATES[key] || ('workflows/' + key + '.json'));
-  return p;
-}
+/** 生成入口 → 模型方案用途：生图（角色 / 场景）走 image，视频走 video */
+const TEMPLATE_KIND = { character: 'image', video: 'video' };
 
 /**
- * 内置默认「角色图」工作流（返回 JSON 文本）。
- * 节点 1/2 是「图生图」支路（LoadImage → VAEEncode），只在用户选了已生成的图重绘时启用：
- *   __LATENT__ / __DENOISE__ 由 comfyGenerate 按有无参考图写成 ["2",0]+0.62 或 ["5",0]+1。
- * 注意：这两个占位符必须「裸露」写进 JSON（不带引号），否则 applyParams 会把它当字符串值
- * 塞进去（变成 "[\"2\", 0]" 这种字符串），ComfyUI 会因为类型不对直接报错。
+ * 工作流模板路径。
+ * key = 'character'（生图）/ 'video'（视频）/ 方案 id（直接指定某套方案）。
+ * 路径由「模型方案」的 workflow 字段给出（相对工作区，如 workflows/video_h3.json）——
+ * 换模型时改的是方案 JSON，这里不用动。
  */
-function defaultCharacterTemplate() {
-  const tpl = {
-    "1": { "class_type": "LoadImage", "inputs": { "image": "__IMAGE__" } },
-    "2": { "class_type": "VAEEncode", "inputs": { "pixels": ["1", 0], "vae": ["4", 2] } },
-    "3": { "class_type": "KSampler", "inputs": { "seed": "__SEED__", "steps": 28, "cfg": 6, "sampler_name": "euler_ancestral", "scheduler": "normal", "denoise": "@@DENOISE@@", "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": "@@LATENT@@" } },
-    "4": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "__CKPT__" } },
-    "5": { "class_type": "EmptyLatentImage", "inputs": { "width": "__WIDTH__", "height": "__HEIGHT__", "batch_size": 1 } },
-    "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "__PROMPT__", "clip": ["4", 1] } },
-    "7": { "class_type": "CLIPTextEncode", "inputs": { "text": "__NEGATIVE__", "clip": ["4", 1] } },
-    "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["4", 2] } },
-    "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "comic/char", "images": ["8", 0] } }
-  };
-  return JSON.stringify(tpl, null, 2)
-    .replace(/"@@DENOISE@@"/g, '__DENOISE__')
-    .replace(/"@@LATENT@@"/g, '__LATENT__');
+function workflowPath(key) {
+  const kind = TEMPLATE_KIND[key];
+  const p = kind ? profiles.active(kind) : profiles.get(key);
+  if (p && p.workflow) return path.join(ws() || '', p.workflow);
+  // 兜底：老的 workflows/<key>.json 约定（方案被删 / 配置写坏时不至于直接崩）
+  return path.join(ws() || '', 'workflows/' + key + '.json');
 }
 
-/** 老版内置角色模板的节点集合（用来识别「还是我们生成的那份」→ 可安全升级） */
-const LEGACY_CHAR_IDS = ['3', '4', '5', '6', '7', '8', '9'];
-
 /**
- * 首次运行落默认工作流模板（角色图 + H3 视频）。
- * 已存在且是用户自己改过的模板一律不动；只升级「还是老内置版本」的那几种情况。
+ * 首次运行把内置工作流模板补到工作区（electron/workflows/*.json → <工作区>/workflows/）。
+ * 缺哪份补哪份；已存在的一律不动（用户可能自己改过参数）。
+ *
+ * 2026-10-09（Dragon）：删掉 SDXL（character.json）与 Z-Image Turbo
+ *   （character_zimage_turbo.json）的专属播种 / 升级特例 —— 这两个方案已下线，
+ *   上面的通用播种已覆盖全部内置模板 —— 角色模板生成 / 升级那两个函数
+ *   与 LEGACY_CHAR_IDS 常量一并移除。
  */
 function ensureDefaultTemplates() {
   const w = ws();
   if (!w) return;
   const dir = path.join(w, 'workflows');
   fs.mkdirSync(dir, { recursive: true });
+
+  // —— 通用播种：内置 electron/workflows/ 里的模板，工作区缺哪份补哪份 ——
+  // 每个「模型方案」的 workflow 字段都指向这里（如 workflows/video_h3.json）。
+  // 用户改过的一律不动（存在即跳过），所以这里只负责「第一次运行把文件放到位」。
+  const builtin = path.join(__dirname, 'workflows');
+  let builtinNames = [];
+  try { builtinNames = fs.readdirSync(builtin).filter(f => /\.json$/i.test(f)); } catch (_) { builtinNames = []; }
+  for (const n of builtinNames) {
+    const dst = path.join(dir, n);
+    if (fs.existsSync(dst)) continue;
+    try {
+      fs.copyFileSync(path.join(builtin, n), dst);
+      logger.info('工作流模板已就位：workflows/' + n);
+    } catch (_) { /* 忽略 */ }
+  }
 
   // —— H3 视频：2026-09 起改为 __H3_UNET__ + 运行时注入「首/尾帧、参考图、参考视频」——
   // 老内置模板用的是 __H3_FL2VA__ / __H3_TURBO_LORA__ 写法，遇到就自动换成新版。
@@ -317,69 +316,6 @@ function ensureDefaultTemplates() {
       if (fs.existsSync(tv)) logger.info('H3 视频工作流模板已更新：支持首帧/尾帧/参考图/参考视频');
     } catch (_) { /* 忽略 */ }
   }
-
-  // —— Z-Image Turbo：官方三件套结构（UNETLoader + CLIPLoader lumina2 + VAELoader）。
-  // 判定「还是我们内置的那份」：含 UNETLoader 就是 Z-Image 版（用户可自行改参数，不动）；
-  // 缺失 / 是老 SDXL 结构 → 播种内置版（SDXL 版本仍保留在 character.json，可随时切回）。
-  const bzi = path.join(__dirname, 'workflows', 'character_zimage_turbo.json');
-  const tzi = path.join(dir, 'character_zimage_turbo.json');
-  let needZi = !fs.existsSync(tzi);
-  if (!needZi) {
-    try {
-      const cur = fs.readFileSync(tzi, 'utf-8');
-      if (!cur.includes('"UNETLoader"')) needZi = true;
-    } catch (_) { needZi = true; }
-  }
-  if (needZi && fs.existsSync(bzi)) {
-    try {
-      fs.copyFileSync(bzi, tzi);
-      logger.info('Z-Image Turbo 工作流模板已就位（workflows/character_zimage_turbo.json）');
-    } catch (_) { /* 忽略 */ }
-  }
-
-  // —— 角色图：老内置模板没有「图生图」支路，节点集合完全一致时升级 ——
-  // ⚠️ 模板里含**裸占位符**（"denoise": __DENOISE__），整体不是合法 JSON，
-  //    所以这里一律用文本匹配判断/改写，不能 JSON.parse（以前用 parse → 永远抛错 → 升级静默失效）。
-  const charFile = path.join(dir, 'character.json');
-  let upgradeChar = false;
-  let charText = '';
-  if (fs.existsSync(charFile)) {
-    try { charText = fs.readFileSync(charFile, 'utf-8'); } catch (_) { charText = ''; }
-    const hasLoad = /"class_type"\s*:\s*"LoadImage"/.test(charText);
-    const hasEnc = /"class_type"\s*:\s*"VAEEncode"/.test(charText);
-    const hasLat = /__LATENT__/.test(charText);
-    upgradeChar = !(hasLoad && hasEnc && hasLat);   // 老版本没有「图生图」支路 → 整体升级
-  }
-  if (!charText || upgradeChar) {
-    try {
-      fs.writeFileSync(charFile, defaultCharacterTemplate(), 'utf-8');
-      if (upgradeChar) logger.info('角色图工作流已升级：新增「图生图」（按已选图重绘）支持');
-    } catch (_) { /* 忽略 */ }
-  } else {
-    // 2026-09-20：node5 宽高写死数字 → 改成 __WIDTH__/__HEIGHT__ 占位符（让每张图的分辨率真正生效）
-    const fixed = upgradeCharTemplateText(charText);
-    if (fixed !== charText) {
-      try {
-        fs.writeFileSync(charFile, fixed, 'utf-8');
-        logger.info('角色图工作流已升级：宽高改为占位符（支持逐张/逐集分辨率配置）');
-      } catch (_) { /* 忽略 */ }
-    }
-  }
-}
-
-/**
- * 角色模板升级：把 EmptyLatentImage 里写死的 width/height 改成占位符。
- * ⚠️ 纯文本改写 —— 模板含裸占位符（"denoise": __DENOISE__），整体不是合法 JSON，
- *    JSON.parse 会抛错（老实现就是这么静默失效的）。
- */
-function upgradeCharTemplateText(text) {
-  if (!text || /"width"\s*:\s*"__WIDTH__"/.test(text)) return text;
-  const blk = text.match(/"class_type"\s*:\s*"EmptyLatentImage"[\s\S]{0,200}?\}/);
-  if (!blk || !/"width"\s*:\s*\d+/.test(blk[0])) return text;
-  const patched = blk[0]
-    .replace(/"width"\s*:\s*\d+/, '"width": "__WIDTH__"')
-    .replace(/"height"\s*:\s*\d+/, '"height": "__HEIGHT__"');
-  return text.replace(blk[0], patched);
 }
 
 /**
@@ -432,38 +368,52 @@ function findPlaceholders(x) {
 }
 
 /**
- * H3 视频参数（设置键 h3.width / h3.height / h3.seconds）。
- * 16GB 显存甜点：864x480、5 秒。
- * length 自动对齐到模型的 17k+5 帧网格（24fps）。
+ * 视频生成参数（设置键 h3.width / h3.height / h3.seconds 仍作高级覆盖）。
+ * 帧率 / 帧网格 / 秒数范围 / 宽高对齐粒度 / 默认宽高全部由「模型方案的 frames 段」给出 ——
+ * 换个视频模型（帧网格与 fps 都不一样）只改方案，这里一行不用动。
+ * 当前方案（H3）的 16GB 显存甜点：864x480、5 秒。
  *
  * 视频档位（三档）是**项目级**设置，在「新建项目 / 项目配置」里和分辨率一起选，
  * 存 projects.res_tier；生成时按 projectId 实时读库 —— 所以改档位对本项目
  * 所有剧集立即生效（分辨率不同：那只影响之后新建的剧集）。
- * 用户只选「快慢质量」，模型 / 步数 / 调度全部由 videoTiers.cjs 注册表解析。
+ * 用户只选「快慢质量」，模型 / 步数 / 调度全部由方案的 tiers 段 + videoTiers.cjs 解析。
+ *
+ * @param {number} [projectId]
+ * @param {object} [profile] 指定方案（不传 = 当前激活的视频方案）
  */
-function h3Params(projectId) {
+function h3Params(projectId, profile) {
+  const p = profile || profiles.active('video');
+  const f = (p && p.frames) || {};
+  const fps = Number(f.fps) > 0 ? Number(f.fps) : 24;
+  const grid = (Array.isArray(f.grid) && f.grid.length === 2) ? f.grid : [17, 5];
+  const snapTo = Number(f.snap) > 0 ? Number(f.snap) : 32;
+  const defW = (Array.isArray(f.default) && Number(f.default[0])) || 864;
+  const defH = (Array.isArray(f.default) && Number(f.default[1])) || 480;
+  const defSec = Number(f.defaultSeconds) > 0 ? Number(f.defaultSeconds) : 5;
+
   const num = (k, d) => { const v = Number(db.getSetting(k)); return Number.isFinite(v) && v > 0 ? v : d; };
-  const snap = v => Math.max(32, Math.round(v / 32) * 32);
-  const width = snap(num('h3.width', 864));
-  const height = snap(num('h3.height', 480));
-  let length = Math.max(5, Math.round(num('h3.seconds', 5) * 24));
-  // 对齐 17k+5 帧网格：恒向上取（+17 防负数取模向下减，见 2026-09-23 修复）
-  length = length + ((5 - (length % 17)) + 17) % 17;
-  const tier = tierOfProject(projectId);
+  const snap = v => Math.max(snapTo, Math.round(v / snapTo) * snapTo);
+  const width = snap(num('h3.width', defW));
+  const height = snap(num('h3.height', defH));
+  let length = Math.max(5, Math.round(num('h3.seconds', defSec) * fps));
+  // 对齐帧网格（恒向上取：+周期 防负数取模向下减，见 2026-09-23 修复）
+  length = length + ((grid[1] - (length % grid[0])) + grid[0]) % grid[0];
+  const tier = tierOfProject(projectId, p);
   // 参考图缩放固定 match（蒸馏模型训练用 match，max 会偏离训练分布）；
-  // 保留设置键仅作高级覆盖（老版本 hq 档默认 max 的行为已废弃）。
-  const refImageSize = String(db.getSetting('h3.refImageSize') || '').trim() || 'match';
-  // 步数由档位注册表给出；h3.steps 仅作高级手动覆盖（设置里默认不写这个键）
+  // 设置键 h3.refImageSize 与方案里的 params.refImageSize 都只作高级覆盖。
+  const refImageSize = String(db.getSetting('h3.refImageSize') || '').trim() ||
+    String((p && p.params && p.params.refImageSize) || '').trim() || 'match';
+  // 步数由档位表给出；h3.steps 仅作高级手动覆盖（设置里默认不写这个键）
   const rawSteps = Number(db.getSetting('h3.steps'));
   const stepsOverride = Number.isFinite(rawSteps) && rawSteps > 0 ? Math.round(rawSteps) : null;
-  return { width, height, length, tier, refImageSize, stepsOverride };
+  return { width, height, length, fps, tier, refImageSize, stepsOverride };
 }
 
 /**
  * 解析本次生成用哪个档位：项目级优先（权威值，实时读库），
- * 老库/无项目上下文时回退旧的全局设置键 h3.quality，再回注册表默认档。
+ * 老库/无项目上下文时回退旧的全局设置键 h3.quality，再回方案声明的默认档。
  */
-function tierOfProject(projectId) {
+function tierOfProject(projectId, profile) {
   const pid = Number(projectId);
   if (Number.isFinite(pid) && pid > 0) {
     try {
@@ -471,126 +421,228 @@ function tierOfProject(projectId) {
       if (r && r.tier) return r.tier;
     } catch (_) { /* 读库失败不阻塞生成，走兜底 */ }
   }
-  return String(db.getSetting('h3.quality') || '') || videoTiers.DEFAULT_TIER;
+  return String(db.getSetting('h3.quality') || '') || videoTiers.defaultTier(profile);
 }
 
-/* ---------------- H3 媒体支路（首帧/尾帧/参考图/参考视频） ---------------- */
+/* ---------------- 媒体支路（首帧/尾帧/参考图/参考视频） ---------------- */
 
 /**
- * 运行时注入到工作流里的节点 id 段（模板里不存在这些节点）：
- *   200/201 首帧 LoadImage + ImageScale   202/203 尾帧
- *   220+i   参考图 LoadImage
- *   230+i   参考视频 LoadVideo   240+i GetVideoComponents（VIDEO → IMAGE 帧）
- *   90+i    首/尾帧锚点 MiniMaxH3AddGuide
- */
-const H3_NODE = {
-  firstImg: '200', firstScale: '201',
-  lastImg: '202', lastScale: '203',
-  refImg: i => String(220 + i),
-  refVid: i => String(230 + i),
-  refVidComp: i => String(240 + i),
-  guide: i => String(90 + i)
-};
-
-/**
- * 把「首帧/尾帧/参考图/参考视频」注入已经占位符替换好的 H3 工作流。
+ * 把「首帧/尾帧/参考图/参考视频」注入已经占位符替换好的工作流。
  *
- * 路由规则：
- *   有参考图或参考视频 → 换成 MiniMaxH3ReferenceToVideo（ref2va），首尾帧改用
- *                        MiniMaxH3AddGuide 锚在开头/结尾（与参考写的是不同的 conditioning 键，可共存）
- *   没有参考            → 沿用 MiniMaxH3ImageToVideo（fl2va），首帧/尾帧是它自身的可选输入
+ * 全部由「模型方案」的 wiring / nodes / classes 段驱动 —— 节点 id、运行时注入段的起始编号、
+ * 条件节点类名、参考媒体的输入键名、首尾帧锚定方式，都是方案里声明的，代码里没有模型名：
+ *   有参考图或参考视频 → 主条件节点换成「参考支路」的类名（如 MiniMaxH3ReferenceToVideo），
+ *                        首尾帧改用锚点节点（如 MiniMaxH3AddGuide）钉在开头 / 结尾；
+ *   没有参考            → 沿用主条件节点，首帧/尾帧是它自身的可选输入。
  *
- * media 里的值一律是「ComfyUI input 目录里的文件名」（LoadImage/LoadVideo 只认那里）。
- * 返回 { condId, latentId, mode }，调用方据此改写 BasicGuider / SamplerCustomAdvanced 的连线。
+ * 🔴 media 里的值一律是「ComfyUI input 目录里的文件名」（LoadImage / LoadVideo 只认那里）。
+ * 返回 { condId, latentId, mode }，调用方据此改写「引导器 / 采样器」的连线。
+ *
+ * @param {object} wf        已解析的工作流图
+ * @param {object} media     { first, last, refImages[], refVideos[], refImageSize }
+ * @param {object} [profile] 模型方案（不传 = 当前激活的视频方案）
  */
-function injectH3Media(wf, media) {
-  const hasRef = (media.refImages || []).length > 0 || (media.refVideos || []).length > 0;
-  const W = wf['16'].inputs.width;
-  const H = wf['16'].inputs.height;
+function injectMedia(wf, media, profile) {
+  const p = profile || profiles.active('video');
+  const N = (p && p.nodes) || {};
+  const C = (p && p.classes) || {};
+  const Wg = (p && p.wiring) || {};
+  const ids0 = Wg.nodeIds || {};
 
-  // 首帧/尾帧都要先缩放到画布尺寸（首帧拉伸铺满，尾帧居中裁剪，和官方模板一致）
-  const addFrame = (id, scaleId, name, crop) => {
-    wf[id] = { class_type: 'LoadImage', inputs: { image: name } };
+  const condId0 = N.conditioning;
+  const condNode = condId0 ? wf[condId0] : null;
+  if (!condNode || !condNode.inputs) {
+    throw new Error('工作流里找不到主条件节点（方案 nodes.conditioning = ' + condId0 +
+      '）—— 模型方案与工作流模板对不上，请检查这份方案的配置');
+  }
+  // 画布尺寸默认读条件节点自己的 width/height；宽高挂在别的节点上时（如 LTX 的宽高在
+  // 空潜变量节点上），方案用 wiring.sizeFrom 指名 —— 首帧/尾帧要按这个尺寸缩放。
+  const sizeNode = (Wg.sizeFrom && wf[Wg.sizeFrom] && wf[Wg.sizeFrom].inputs) ? wf[Wg.sizeFrom] : condNode;
+  const W = sizeNode.inputs.width;
+  const H = sizeNode.inputs.height;
+
+  const pick = (v, d) => (v === undefined || v === null ? d : v);
+  const id = {
+    firstImg: String(pick(ids0.firstImg, 200)), firstScale: String(pick(ids0.firstScale, 201)),
+    lastImg: String(pick(ids0.lastImg, 202)), lastScale: String(pick(ids0.lastScale, 203)),
+    refImg: i => String(pick(ids0.refImg, 220) + i),
+    refVid: i => String(pick(ids0.refVid, 230) + i),
+    refVidComp: i => String(pick(ids0.refVidComp, 240) + i),
+    guide: i => String(pick(ids0.guide, 90) + i)
+  };
+
+  const crop = Wg.frameCrop || {};
+  const firstKey = Wg.firstKey || 'first_frame';
+  const lastKey = Wg.lastKey || 'last_frame';
+  const latentOut = pick(Wg.latentOutput, 1);
+  const condOut = pick(Wg.condOutput, 0);
+
+  // 首帧/尾帧都要先缩放到画布尺寸（首帧拉伸铺满、尾帧居中裁剪，和官方模板一致）；
+  // 方案还可以再声明一道「方案专属的图片预处理」节点（如 LTX 需要 LTXVPreprocess），
+  // 接口不改：addFrame 统一返回「该帧图片最终喂给模型的节点 id」。
+  const prep = Wg.imagePrep || null;
+  const addFrame = (imgId, scaleId, name, c) => {
+    wf[imgId] = { class_type: 'LoadImage', inputs: { image: name } };
     wf[scaleId] = {
       class_type: 'ImageScale',
-      inputs: { image: [id, 0], upscale_method: 'lanczos', width: W, height: H, crop }
+      inputs: { image: [imgId, 0], upscale_method: Wg.scaleMethod || 'lanczos', width: W, height: H, crop: c }
     };
-    return scaleId;
+    if (!prep || !prep.class) return scaleId;
+    const pid = String(Number(imgId) + Number(pick(prep.idOffset, 100)));
+    wf[pid] = { class_type: prep.class, inputs: { image: [scaleId, 0], ...(prep.params || {}) } };
+    return pid;
   };
 
-  if (!hasRef) {
-    // fl2va：不接首帧就是纯文字，不接尾帧就是单帧引导
-    if (media.first) wf['16'].inputs.first_frame = [addFrame(H3_NODE.firstImg, H3_NODE.firstScale, media.first, 'disabled'), 0];
-    if (media.last) wf['16'].inputs.last_frame = [addFrame(H3_NODE.lastImg, H3_NODE.lastScale, media.last, 'center'), 0];
-    return { condId: '16', latentId: '16', mode: 'flf' };
+  const hasRef = (media.refImages || []).length > 0 || (media.refVideos || []).length > 0;
+  // 帧锚点链：方案声明 framesViaGuide 时，首尾帧一律用锚点节点表达，不依赖「条件节点自带的可选输入」。
+  // LTX 这类模型的锚点会把引导帧追加进 latent、且引导本身要正负两条 conditioning，只有这条路能表达。
+  const viaGuide = Wg.framesViaGuide === true;
+
+  if (!hasRef && !viaGuide) {
+    // 主条件节点自身的可选输入：不接首帧就是纯文字，不接尾帧就是单帧引导
+    if (media.first) condNode.inputs[firstKey] = [addFrame(id.firstImg, id.firstScale, media.first, crop.first || 'disabled'), 0];
+    if (media.last) condNode.inputs[lastKey] = [addFrame(id.lastImg, id.lastScale, media.last, crop.last || 'center'), 0];
+    return { condId: condId0, latentId: condId0, mode: 'flf' };
   }
 
-  // ref2va：参考图/参考视频走 autogrow 动态输入名（实测确认为「父键.子键」，下标从 0 起）
-  const ins = {
-    clip: wf['16'].inputs.clip,
-    vae: wf['16'].inputs.vae,
-    audio_vae: ['13', 0],
-    prompt: wf['16'].inputs.prompt,
-    width: W,
-    height: H,
-    length: wf['16'].inputs.length,
-    ref_image_size: media.refImageSize || 'match'
-  };
-  (media.refImages || []).forEach((name, i) => {
-    const id = H3_NODE.refImg(i);
-    wf[id] = { class_type: 'LoadImage', inputs: { image: name } };
-    ins['ref_images.ref_image_' + i] = [id, 0];
-  });
-  (media.refVideos || []).forEach((name, i) => {
-    const id = H3_NODE.refVid(i), cid = H3_NODE.refVidComp(i);
-    wf[id] = { class_type: 'LoadVideo', inputs: { file: name } };
-    wf[cid] = { class_type: 'GetVideoComponents', inputs: { video: [id, 0] } };
-    ins['ref_videos.ref_video_' + i] = [cid, 0];   // RefVideo 要的是帧序列（IMAGE）
-  });
-  wf['16'] = { class_type: 'MiniMaxH3ReferenceToVideo', inputs: ins };
+  // 参考支路：主条件节点整体换成「参考」类名，参考媒体按方案声明的键名挂上去
+  // （autogrow 动态输入名的实际格式是「父键.子键」，下标从 0 起）
+  if (hasRef && !C.conditioningRef) {
+    throw new Error('当前视频模型方案不支持参考图 / 参考视频（方案未声明 classes.conditioningRef）。' +
+      '请去掉本镜头的参考素材，或到「设置 → 生成模型方案」换一个支持它们的模型。');
+  }
+  if (hasRef) {
+    const ex = Wg.refExtra || {};
+    const ins = { clip: condNode.inputs.clip, vae: condNode.inputs.vae };
+    for (const [key, spec] of Object.entries(ex.beforePrompt || {})) ins[key] = refExtraValue(spec, N, media);
+    ins.prompt = condNode.inputs.prompt;
+    ins.width = W;
+    ins.height = H;
+    ins.length = condNode.inputs.length;
+    for (const [key, spec] of Object.entries(ex.afterLength || {})) ins[key] = refExtraValue(spec, N, media);
 
-  let condId = '16';
+    (media.refImages || []).forEach((name, i) => {
+      const nid = id.refImg(i);
+      wf[nid] = { class_type: 'LoadImage', inputs: { image: name } };
+      ins[String(Wg.refImageKey || 'ref_images.ref_image_{i}').replace('{i}', i)] = [nid, 0];
+    });
+    (media.refVideos || []).forEach((name, i) => {
+      const nid = id.refVid(i), cid = id.refVidComp(i);
+      wf[nid] = { class_type: 'LoadVideo', inputs: { file: name } };
+      wf[cid] = { class_type: 'GetVideoComponents', inputs: { video: [nid, 0] } };
+      // 参考视频要的是帧序列（IMAGE），所以中间过一道 GetVideoComponents
+      ins[String(Wg.refVideoKey || 'ref_videos.ref_video_{i}').replace('{i}', i)] = [cid, 0];
+    });
+    wf[condId0] = { class_type: C.conditioningRef || condNode.class_type, inputs: ins };
+  }
+
+  // 首尾帧锚点：参考支路下首尾帧不是原生输入，用锚点节点钉在开头 / 结尾；
+  // 方案声明 framesViaGuide 时（LTX）非参考支路也走这里，于是三种模式共用一条链：
+  //   无帧 = 纯文字、只有首帧 = 图生视频、首+尾 = 首尾帧过渡。
+  // 「正负两条 conditioning」「引导帧会追加进 latent 所以要逐级往下串」都由方案开关声明，
+  // 代码不认识任何模型名：不声明就是 H3 的老行为（只接 positive、latent 恒取条件节点）。
+  const g = Wg.guide || {};
+  const anchorFrame = g.anchorFrame || {};
+  const chain = g.latentChain === true;
+  const hasNeg = g.negOut !== undefined && g.negOut !== null;
+  let condId = condId0;
+  let condIdx = pick(g.baseCondOut, condOut);
+  let negId = condId0;
+  let negIdx = pick(g.baseNegOut, 1);
+  let latId = chain ? String(pick(g.latentBase, N.latent || condId0)) : condId0;
+  let latIdx = chain ? pick(g.baseLatentOut, 0) : latentOut;
   let gi = 0;
   const anchor = (frameIdx, scaleId) => {
-    const id = H3_NODE.guide(gi++);
-    wf[id] = {
-      class_type: 'MiniMaxH3AddGuide',
-      inputs: {
-        positive: [condId, 0],
-        latent: ['16', 1],
-        frame_idx: frameIdx,
-        vae: ['12', 0],
-        image: [scaleId, 0]
-      }
+    const gid = id.guide(gi++);
+    const inputs = {
+      positive: [condId, condIdx],
+      latent: [latId, latIdx],
+      frame_idx: frameIdx,
+      vae: [N[g.vaeRole || 'videoVae'], 0],
+      image: [scaleId, 0]
     };
-    condId = id;
+    if (hasNeg) inputs.negative = [negId, negIdx];
+    if (g.strength !== undefined && g.strength !== null) inputs.strength = Number(g.strength);
+    wf[gid] = { class_type: g.class || C.guide || 'MiniMaxH3AddGuide', inputs };
+    condId = gid; condIdx = pick(g.condOut, 0);
+    if (hasNeg) { negId = gid; negIdx = pick(g.negOut, 1); }
+    if (chain) { latId = gid; latIdx = pick(g.latentOut, 2); }
   };
-  if (media.first) anchor(0, addFrame(H3_NODE.firstImg, H3_NODE.firstScale, media.first, 'disabled'));
-  if (media.last) anchor(-1, addFrame(H3_NODE.lastImg, H3_NODE.lastScale, media.last, 'center'));
+  if (media.first) anchor(pick(anchorFrame.first, 0), addFrame(id.firstImg, id.firstScale, media.first, crop.first || 'disabled'));
+  if (media.last) anchor(pick(anchorFrame.last, -1), addFrame(id.lastImg, id.lastScale, media.last, crop.last || 'center'));
 
-  return { condId, latentId: '16', mode: 'ref' };
+  // 链尾改写接线：方案声明「哪个节点的哪个输入该接最终的 conditioning / latent」。
+  // 由方案声明而不是写死（H3 只有引导器 + 采样器；LTX 还要把裁剪节点的正负条件一起接过来）。
+  for (const t of (Array.isArray(Wg.condTargets) ? Wg.condTargets : [])) {
+    const n = wf[t.node];
+    if (!n || !n.inputs) continue;
+    const neg = t.src === 'negative';
+    n.inputs[t.key] = [neg ? negId : condId, pick(t.out, neg ? negIdx : condIdx)];
+  }
+  for (const t of (Array.isArray(Wg.latentTargets) ? Wg.latentTargets : [])) {
+    const n = wf[t.node];
+    if (!n || !n.inputs) continue;
+    n.inputs[t.key] = [latId, pick(t.out, latIdx)];
+  }
+
+  return { condId, latentId: latId, negId, mode: hasRef ? 'ref' : 'flf' };
 }
 
-/** 占位符 → 模型目录（用于报错时提示用户去哪补） */
-const PH_TIP = {
-  ckpt: 'checkpoints（角色图 SDXL 底模）',
-  z_unet: 'diffusion_models（Z-Image Turbo 主模型，如 z_image_turbo_bf16.safetensors）',
-  z_clip: 'text_encoders（Z-Image 文本编码器 qwen_3_4b.safetensors）',
-  z_vae: 'vae（Z-Image VAE ae.safetensors）',
-  image: '本地参考图（图生图时由软件自动注入，模板里无需手填）',
-  h3_model: 'diffusion_models（H3 主模型）',
-  h3_unet: 'diffusion_models（H3 主模型 fl2va / ref2va）',
-  h3_fl2va: 'diffusion_models（H3 fl2va）',
-  h3_ref2va: 'diffusion_models（H3 ref2va，参考图/参考视频模式必需）',
-  h3_text_encoder: 'text_encoders（H3 文本编码器）',
-  h3_video_vae: 'vae（H3 video vae）',
-  h3_audio_vae: 'vae（H3 audio vae）',
-  h3_lora: 'loras（H3 Turbo LoRA，fl2va 需 fl2v 版、ref2va 需 ref2v 版）',
-  h3_turbo_lora: 'loras（H3 Turbo LoRA）'
+/** 参考支路里方案补充的固定输入：要么接某个节点的输出，要么取本次参数 */
+function refExtraValue(spec, nodes, media) {
+  if (!spec) return null;
+  if (spec.node) return [nodes[spec.node], spec.output || 0];
+  if (spec.param) {
+    const v = media[spec.param];
+    return (v === undefined || v === null || v === '') ? spec.default : v;
+  }
+  return null;
+}
+
+/** 兼容旧签名：老调用 / 离线自测按「当前激活的视频方案」注入 */
+function injectH3Media(wf, media) { return injectMedia(wf, media, null); }
+
+/** 静态兜底提示（只留「不属于任何方案槽位」的那几个特殊占位符） */
+const PH_TIP_FALLBACK = {
+  image: '本地参考图（图生图时由软件自动注入，模板里无需手填）'
 };
 
-/** 可以缺省、缺了就自动摘掉对应节点的占位符（不报错） */
-const OPTIONAL_PH = new Set(['__H3_LORA__', '__IMAGE__']);
+/**
+ * 占位符 → 缺件提示：告诉用户「缺的这个东西该放到哪个目录」。
+ * 从当前模型方案的 assets 实时生成（槽位名 = 占位符名），
+ * 所以换模型 / 改槽位名后提示自动跟着变，不用改代码。
+ */
+function phTips() {
+  const tips = { ...PH_TIP_FALLBACK };
+  for (const kind of ['image', 'video']) {
+    const p = profiles.active(kind);
+    if (!p) continue;
+    for (const a of p.assets) {
+      const where = a.dir + '（' + (a.label || a.slot) + '）';
+      tips[a.slot] = where;
+      for (const alias of a.alsoAs) tips[alias] = where;
+    }
+  }
+  return tips;
+}
+
+/**
+ * 可以缺省、缺了就自动摘掉对应节点的占位符（不报错）。
+ * = 方案里标了 optional 的槽位（如加速 LoRA）+ 图生图用的 __IMAGE__。
+ */
+function optionalPlaceholders() {
+  const out = new Set(['__IMAGE__']);
+  for (const kind of ['image', 'video']) {
+    const p = profiles.active(kind);
+    if (!p) continue;
+    for (const a of p.assets) {
+      if (!a.optional) continue;
+      out.add('__' + a.slot.toUpperCase() + '__');
+      for (const alias of a.alsoAs) out.add('__' + alias.toUpperCase() + '__');
+    }
+  }
+  return out;
+}
 
 /**
  * 提交工作流并等待完成，产物保存到 dir（走 assetStore 永不覆盖）。
@@ -603,10 +655,58 @@ const OPTIONAL_PH = new Set(['__H3_LORA__', '__IMAGE__']);
  * 模型文件名（ckpt / h3_*）自动从 ComfyUI 的模型目录里解析，无需手填。
  * 返回 { files, seed }。
  */
-async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutMs = 1800000 }) {
+/* ---------------- 空闲自动释放显存 ---------------- */
+// 需求：生图/生视频任务结束后，5s 内没有新任务跟上，就让 ComfyUI 卸载模型释放显存。
+// 为什么：H3 / SDXL 权重常驻显存（H3 11G+），空闲时白占 —— 显卡还要跑别的就被逼进共享显存。
+// 代价：释放后下一次生成要重新加载权重（SDXL 秒级，H3 十几秒）；批量任务间隙短，不会触发。
+const VRAM_FREE_IDLE_MS = 5000;
+let vramFreeTimer = null;
+let vramFreeGen = 0;   // 代际计数：防「timer 恰好到点 vs 新任务恰好提交」竞态把新任务的模型卸掉
+
+function disarmVramFree() {
+  if (vramFreeTimer) { clearTimeout(vramFreeTimer); vramFreeTimer = null; }
+  vramFreeGen++;   // 新任务跟上 → 已触发、还在路上的释放请求全部作废
+}
+
+function armVramFree() {
+  disarmVramFree();
+  const gen = ++vramFreeGen;
+  vramFreeTimer = setTimeout(() => { vramFreeTimer = null; freeComfyVram(gen); }, VRAM_FREE_IDLE_MS);
+}
+
+async function freeComfyVram(gen) {
+  if (gen !== vramFreeGen) return;   // 已有新任务跟上，放弃释放
+  // 双保险：释放前再看一眼队列，有任务在跑/排队就绝不卸载（否则会把正在用的模型卸掉）
+  try {
+    const q = await fetchJson(endpoint('comfyui') + '/queue', {}, 3000);
+    if (!q.ok || !q.json) return;
+    if ((q.json.queue_running || []).length || (q.json.queue_pending || []).length) return;
+  } catch (_) { return; }   // ComfyUI 不可达，无事可做
+  if (gen !== vramFreeGen) return;   // queue 检查有耗时，检查期间新任务可能已跟上，再确认一次
+  try {
+    await fetchJson(endpoint('comfyui') + '/free', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unload_models: true, free_memory: true })
+    }, 8000);
+    logger.info('空闲 ' + Math.round(VRAM_FREE_IDLE_MS / 1000) + 's 无新任务，已让 ComfyUI 卸载模型释放显存（下次生成会先重新加载）');
+  } catch (_) { /* 不可达就算了，下个任务自己会重试 */ }
+}
+
+/** 对外入口：进来取消挂起的释放（新任务跟上）；出去（成功/失败都算任务结束）开始空闲倒计时 */
+async function comfyGenerate(args) {
+  disarmVramFree();
+  try {
+    return await comfyGenerateInner(args);
+  } finally {
+    armVramFree();
+  }
+}
+
+async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, timeoutMs = 1800000 }) {
   const tplFile = workflowPath(templateKey);
   if (!fs.existsSync(tplFile)) {
-    throw new Error('工作流模板缺失：' + tplFile + '。请先在 workspace/workflows/ 放置对应工作流 JSON（设置→环境检测 有说明）。');
+    throw new Error('工作流模板缺失：' + tplFile + '。请先在 workspace/workflows/ 放置对应工作流 JSON（规范见 README）。');
   }
   const tplText = fs.readFileSync(tplFile, 'utf-8');
 
@@ -617,56 +717,79 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
   const wantLast = params.lastFrame || null;
   const refMode = refImages.length > 0 || refVideos.length > 0;
 
-  // 模型文件名：用户显式传入优先，其次从 ComfyUI 模型目录自动解析
-  // 视频模板额外注入 H3 分辨率/帧数/步数（设置可改，params 可覆盖）
+  // 本次生成用哪套模型方案 —— 代码不再认任何模型名，一切从方案里读
+  const imgP = profiles.active('image');
+  const vidP = profiles.active('video');
+  const vidN = (vidP && vidP.nodes) || {};
+  const vidC = (vidP && vidP.classes) || {};
+
+  // 模型文件名：用户显式传入优先，其次从「模型方案」声明的槽位自动解析；
+  // 视频模板额外注入分辨率 / 帧数 / 步数（设置可改，params 可覆盖）
   let realParams;
   if (isVideo) {
-    const wm = models.workflowModels();
-    const p = { ...wm, ...h3Params(params.projectId) };
-    // 秒数按「分镜脚本该镜头的 dur」走（渲染端传 seconds，4~15s 含边界）；
-    // 没传才回退设置键 h3.seconds。都自动对齐到 17k+5 帧网格（24fps）。
+    const A = models.resolveAssets('video');
+    const p = { ...models.workflowModels(), ...h3Params(params.projectId, vidP) };
+    const f = (vidP && vidP.frames) || {};
+    const fps = Number(f.fps) > 0 ? Number(f.fps) : 24;
+    const grid = (Array.isArray(f.grid) && f.grid.length === 2) ? f.grid : [17, 5];
+    const secRange = (Array.isArray(f.seconds) && f.seconds.length === 2) ? f.seconds : [4, 15];
+    // 秒数按「分镜脚本该镜头的 dur」走（渲染端传 seconds，边界由方案声明）；
+    // 没传才回退设置键 h3.seconds。两者都自动对齐到方案声明的帧网格。
     const sec = Number(params.seconds);
     if (Number.isFinite(sec) && sec > 0) {
-      let L = Math.max(4, Math.min(15, Math.round(sec))) * 24;
-      // 恒向上对齐 17k+5 网格（+17 防负数取模向下减：4s 曾被砍成 3.75s，台词被截）
-      p.length = L + ((5 - (L % 17)) + 17) % 17;
-      p.seconds = Math.max(4, Math.min(15, Math.round(sec)));
+      const sv = Math.max(secRange[0], Math.min(secRange[1], Math.round(sec)));
+      const L = sv * fps;
+      // 恒向上对齐网格（+周期 防负数取模向下减：4s 曾被砍成 3.75s，台词被截）
+      p.length = L + ((grid[1] - (L % grid[0])) + grid[0]) % grid[0];
+      p.seconds = sv;
     }
-    // 权重与加速 LoRA 必须「档位 × 模型族」成对解析（videoTiers.cjs 注册表）：
-    // 有参考媒体 → ref2v 族，否则 fl2v 族；档位只决定「快慢质量」，模型细节用户不可见
-    const family = refMode ? 'ref2v' : 'fl2v';
-    const tierRes = videoTiers.resolveTier(p.tier, family, wm.h3_lora_files);
+    // 权重与加速 LoRA 必须「档位 × 支路」成对解析（方案的 tiers 段 + videoTiers.cjs）：
+    // 有参考媒体 → 参考支路，否则首尾帧支路；档位只决定「快慢质量」，模型细节用户不可见
+    const family = videoTiers.branchKey(refMode, vidP);
+    const loraFiles = (A.byRole.lora && A.byRole.lora.files) || [];
+    const tierRes = videoTiers.resolve(vidP, p.tier, family, loraFiles);
     p.tierRes = tierRes;
-    p.h3_unet = refMode ? (wm.h3_ref2va || wm.h3_fl2va || wm.h3_model) : (wm.h3_fl2va || wm.h3_model);
+    // 参考支路专用权重优先，没有就退回主线权重（角色名由方案声明，不是写死的键名）
+    p.h3_unet = refMode
+      ? ((A.byRole.unetRef && A.byRole.unetRef.name) || (A.byRole.unet && A.byRole.unet.name))
+      : (A.byRole.unet && A.byRole.unet.name);
     p.h3_lora = tierRes.lora;                       // null = 基础模型直跑（摘 LoRA 节点）
     p.steps = p.stepsOverride || tierRes.steps;     // h3.steps 仅作高级手动覆盖
-    p.h3_shift = tierRes.shift;                     // [v,a] 需注入 SigmaShift；null 不注入
-    p.tierLabel = videoTiers.LABELS[tierRes.tier] || tierRes.tier;
-    // conditioning / latent 的连接目标；注入媒体支路后会由 injectH3Media 改写
-    p.cond_id = '16';
-    p.latent_id = '16';
+    p.h3_shift = tierRes.shift;                     // [v,a] 需注入 σ-shift 节点；null 不注入
+    // 采样序列：蒸馏模型（LTX-2.5）的 sigma 网格是训练时定死的，由档位直接给字符串
+    // （ManualSigmas 节点）。走 LoRA 步数派的模型（H3）不声明，模板里也没有这个占位符。
+    p.sigmas = tierRes.sigmas || (vidP && vidP.params && vidP.params.sigmas) || null;
+    p.tierLabel = videoTiers.labelOf(vidP)[tierRes.tier] || tierRes.tier;
+    // conditioning / latent 的连接目标；注入媒体支路后会由 injectMedia 改写
+    p.cond_id = vidN.conditioning || '16';
+    p.latent_id = p.cond_id;
     realParams = { ...p, ...params };
   } else {
     realParams = { ...models.workflowModels(), ...params };
-    // 角色图「图生图」：选了已生成的图 → 走 VAEEncode 潜变量 + 0.62 denoise；否则空潜变量 + denoise=1
-    realParams.latent = params.image ? '["2", 0]' : '["5", 0]';
-    realParams.denoise = params.image ? 0.62 : 1;
-    // 宽高：剧集分辨率配置传入；没传给默认值（模板占位符 __WIDTH__/__HEIGHT__ 必须有值）
-    realParams.width = Number(params.width) > 0 ? Math.round(params.width) : 1216;
-    realParams.height = Number(params.height) > 0 ? Math.round(params.height) : 832;
+    const N = (imgP && imgP.nodes) || {};
+    const i2i = (imgP && imgP.i2i) || {};
+    const i2iOn = !!(i2i.enabled !== false && N.i2iImage && N.i2iEncode);
+    // 角色图「图生图」：选了已生成的图 → 走参考图编码出的潜变量 + 较低 denoise；否则空潜变量 + denoise=1
+    realParams.latent = (params.image && i2iOn) ? ('["' + N.i2iEncode + '", 0]') : ('["' + N.latent + '", 0]');
+    realParams.denoise = (params.image && i2iOn) ? (Number(i2i.denoise) || 0.62) : 1;
+    // 宽高：剧集分辨率配置传入；没传给默认值（模板占位符 __WIDTH__/__HEIGHT__ 必须有值；兜底同 RES_SDXL 默认档 1920x1080）
+    realParams.width = Number(params.width) > 0 ? Math.round(params.width) : 1920;
+    realParams.height = Number(params.height) > 0 ? Math.round(params.height) : 1080;
   }
   if (params.image) realParams.image = await uploadToComfy(params.image);
   if (realParams.seed === undefined || realParams.seed === null) realParams.seed = Math.floor(Math.random() * 1e9);
 
   const filled = applyParams(tplText, realParams);
-  const left = findPlaceholders(filled).filter(p => !OPTIONAL_PH.has(p));
+  const optionalPH = optionalPlaceholders();
+  const left = findPlaceholders(filled).filter(x => !optionalPH.has(x));
   if (left.length) {
-    const tips = left.map(p => {
-      const k = p.replace(/^__|__$/g, '').toLowerCase();
-      return p + (PH_TIP[k] ? ' → 缺少 ' + PH_TIP[k] : '');
+    const TIPS = phTips();
+    const tips = left.map(x => {
+      const k = x.replace(/^__|__$/g, '').toLowerCase();
+      return x + (TIPS[k] ? ' → 缺少 ' + TIPS[k] : '');
     });
     throw new Error('工作流占位符未解析：' + tips.join('；') +
-      '。请到 设置 → 模型目录 检查 ComfyUI 模型根目录是否正确、模型是否已下载。');
+      '。请到 设置 → 模型管家 看：模型目录对不对、缺哪个模型。');
   }
   let wf;
   try {
@@ -675,50 +798,62 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
     throw new Error('工作流 JSON 解析失败（' + path.basename(tplFile) + '）：' + (e && e.message));
   }
 
+  // 生图的「图生图」支路：节点 id 由方案声明（nodes.i2iImage / i2iEncode），代码不认数字
+  const imgN = (imgP && imgP.nodes) || {};
+  const imgI2i = (imgP && imgP.i2i) || {};
+  const i2iNodes = imgI2i.enabled !== false && imgN.i2iImage && imgN.i2iEncode
+    ? { img: imgN.i2iImage, enc: imgN.i2iEncode } : null;
+
   // 文生图：把模板里的「图生图」支路摘掉（否则 LoadImage 里的 __IMAGE__ 未填，ComfyUI 会直接报错）
-  if (!isVideo && !realParams.image) {
-    if (wf['1'] && wf['1'].class_type === 'LoadImage') delete wf['1'];
-    if (wf['2'] && wf['2'].class_type === 'VAEEncode') delete wf['2'];
+  if (!isVideo && !realParams.image && i2iNodes) {
+    if (wf[i2iNodes.img] && wf[i2iNodes.img].class_type === 'LoadImage') delete wf[i2iNodes.img];
+    if (wf[i2iNodes.enc] && wf[i2iNodes.enc].class_type === 'VAEEncode') delete wf[i2iNodes.enc];
   }
   // 图生图：参考图先缩放到本次选定的分辨率再编码 —— 否则「参考图多大就出多大」，
   // 逐张分辨率选择在 i2i 下形同虚设（crop=center 保持比例不拉伸）
-  if (!isVideo && realParams.image && wf['1'] && wf['2']) {
-    wf['30'] = {
+  if (!isVideo && realParams.image && i2iNodes && wf[i2iNodes.img] && wf[i2iNodes.enc]) {
+    const scaleId = String(imgI2i.scaleId || '30');
+    wf[scaleId] = {
       class_type: 'ImageScale',
       inputs: {
-        image: ['1', 0], upscale_method: 'lanczos',
-        width: realParams.width, height: realParams.height, crop: 'center'
+        image: [i2iNodes.img, 0], upscale_method: imgI2i.scaleMethod || 'lanczos',
+        width: realParams.width, height: realParams.height, crop: imgI2i.scaleCrop || 'center'
       }
     };
-    wf['2'].inputs.pixels = ['30', 0];
+    wf[i2iNodes.enc].inputs.pixels = [scaleId, 0];
   }
 
   if (isVideo) {
-    // Σ-shift 注入：蒸馏 LoRA 的训练 shift ≠ 模型默认（12/3）时才需要（如 768p 系训练 6/3）。
-    // 🔴 节点 20（BasicScheduler）也必须接 shift 后的模型 —— sigma 网格由 model_sampling 生成，
+    const Wg = (vidP && vidP.wiring) || {};
+    const nModel = vidN.model, nLora = vidN.lora, nShift = vidN.shift;
+    const condOut = Wg.condOutput !== undefined ? Wg.condOutput : 0;
+    const latentOut = Wg.latentOutput !== undefined ? Wg.latentOutput : 1;
+
+    // σ-shift 注入：蒸馏 LoRA 的训练 shift ≠ 模型默认（12/3）时才需要（如 768p 系训练 6/3）。
+    // 🔴 调度器节点也必须接 shift 后的模型 —— sigma 网格由 model_sampling 生成，
     //    接错会让「采样网格」和「DiT 内部换算」用两套 shift，画面直接毁。
     const shift = realParams.h3_shift;
-    if (realParams.h3_lora && Array.isArray(shift) && shift.length === 2) {
-      wf['15'] = {
-        class_type: 'MiniMaxH3SigmaShift',
-        inputs: { model: ['14', 0], shift_video: shift[0], shift_audio: shift[1] }
+    if (realParams.h3_lora && Array.isArray(shift) && shift.length === 2 && nShift) {
+      wf[nShift] = {
+        class_type: vidC.shift || 'MiniMaxH3SigmaShift',
+        inputs: { model: [nLora, 0], shift_video: shift[0], shift_audio: shift[1] }
       };
-      for (const n of ['18', '20']) {
-        if (wf[n] && Array.isArray(wf[n].inputs.model) && wf[n].inputs.model[0] === '14') {
-          wf[n].inputs.model = ['15', 0];
+      for (const n of [vidN.guider, vidN.scheduler]) {
+        if (wf[n] && Array.isArray(wf[n].inputs.model) && wf[n].inputs.model[0] === nLora) {
+          wf[n].inputs.model = [nShift, 0];
         }
       }
     }
 
-    // 没有（或该档位不需要）加速 LoRA → 摘掉 LoRA/Σ-shift 节点，基础模型直跑。
-    // 步数已由注册表兜底为 20（基础模型上跑 4/8 步画面会崩），不报错。
+    // 没有（或该档位不需要）加速 LoRA → 摘掉 LoRA / σ-shift 节点，基础模型直跑。
+    // 步数已由档位表兜底为基础步数（基础模型上跑 4/8 步画面会崩），不报错。
     if (!realParams.h3_lora) {
-      delete wf['14'];
-      delete wf['15'];
-      for (const n of ['18', '20']) {
+      delete wf[nLora];
+      if (nShift) delete wf[nShift];
+      for (const n of [vidN.guider, vidN.scheduler]) {
         const m = wf[n] && wf[n].inputs.model;
-        if (Array.isArray(m) && (m[0] === '14' || m[0] === '15')) {
-          wf[n].inputs.model = ['10', 0];
+        if (Array.isArray(m) && (m[0] === nLora || m[0] === nShift)) {
+          wf[n].inputs.model = [nModel, 0];
         }
       }
       if (realParams.tierRes && realParams.tierRes.downgraded) {
@@ -733,17 +868,23 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
     for (const p of refImages) media.refImages.push(await uploadToComfy(p));
     for (const p of refVideos) media.refVideos.push(await uploadToComfy(p));
 
-    const inj = injectH3Media(wf, media);
-    wf['18'].inputs.conditioning = [inj.condId, 0];
-    wf['21'].inputs.latent_image = [inj.latentId, 1];
+    const inj = injectMedia(wf, media, vidP);
+    // 方案自己声明了接线目标（condTargets / latentTargets）时，injectMedia 已经把引导器 /
+    // 采样器（以及裁剪节点）接好了，这里不再按老约定覆盖它们。
+    if (!Wg.condTargets && !Wg.latentTargets) {
+      if (wf[vidN.guider]) wf[vidN.guider].inputs.conditioning = [inj.condId, condOut];
+      if (wf[vidN.samplerAdv]) wf[vidN.samplerAdv].inputs.latent_image = [inj.latentId, latentOut];
+    }
     const bits = [];
     // 日志里带上本地文件名（而不是只给 ×N）：用户核对「这版视频到底用的哪张图」就靠这行
     if (media.first) bits.push('首帧：' + path.basename(String(wantFirst)));
     if (media.last) bits.push('尾帧：' + path.basename(String(wantLast)));
     if (media.refImages.length) bits.push('参考图×' + media.refImages.length + '：' + refImages.map(p => path.basename(p)).join('、'));
     if (media.refVideos.length) bits.push('参考视频×' + media.refVideos.length + '：' + refVideos.map(p => path.basename(p)).join('、'));
-    logger.info('H3 工作流：' + (inj.mode === 'ref' ? '参考模式 ref2va' : '首尾帧模式 fl2va') +
-      '，' + realParams.steps + ' 步，' + realParams.width + 'x' + realParams.height +
+    logger.info((vidP.label || '视频') + ' 工作流：' +
+      videoTiers.branchLabel(videoTiers.branchKey(inj.mode === 'ref', vidP), vidP) +
+      '（' + (inj.mode === 'ref' ? '参考模式' : '首尾帧模式') + '），' + realParams.steps + ' 步，' +
+      realParams.width + 'x' + realParams.height +
       (bits.length ? '，输入：' + bits.join(' + ') : '，纯文字'));
   }
 
@@ -759,17 +900,19 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
     const tr = realParams.tierRes || {};
     logger.info('本次使用模型：' + (realParams.h3_unet || '(未解析到权重文件)') +
       '｜LoRA：' + (realParams.h3_lora || '无（基础模型直跑）') +
-      '｜模型族：' + (tr.family === 'ref2v' ? 'ref2va（参考图 / 参考视频支路）' : 'fl2va（文生图 / 首尾帧支路）') +
-      '｜σ shift：' + (realParams.h3_shift
-        ? realParams.h3_shift[0] + '/' + realParams.h3_shift[1] + '（已注入 MiniMaxH3SigmaShift）'
-        : '模型默认 12/3（不注入节点）') +
+      '｜模型族：' + videoTiers.branchLabel(tr.family, vidP) + '（' + tr.family + '）' +
+      '｜采样网格：' + (realParams.sigmas
+        ? '方案自带 ' + realParams.steps + ' 步蒸馏序列（ManualSigmas）'
+        : (realParams.h3_shift
+          ? realParams.h3_shift[0] + '/' + realParams.h3_shift[1] + '（已注入 σ-shift 节点）'
+          : '模型默认 12/3（不注入节点）')) +
       (tr.downgraded ? '｜⚠ 该档位 LoRA 文件缺失，本次已降级为基础模型 20 步' : ''));
   } else {
     logger.info('本次图片生成配置：' + realParams.width + 'x' + realParams.height +
       (realParams.image ? '，图生图（denoise ' + realParams.denoise + '）' : '，文生图') +
       '，工作流 ' + models.activeImageTemplate());
   }
-  logger.info('提交 ComfyUI 工作流：' + (templateKey === 'video' ? 'H3 视频' : '角色图') + ' → ' + baseName);
+  logger.info('提交 ComfyUI 工作流：' + (templateKey === 'video' ? ((vidP && vidP.label) || '视频') : '角色图') + ' → ' + baseName);
   let submit;
   try {
     submit = await fetchJson(endpoint('comfyui') + '/prompt', {
@@ -778,7 +921,8 @@ async function comfyGenerate({ templateKey, dir, baseName, params = {}, timeoutM
       body: JSON.stringify({ prompt: wf, client_id: clientId })
     }, 15000);
   } catch (e) {
-    throw new Error('ComfyUI 服务不可达（' + endpoint('comfyui') + '）。请先启动 ComfyUI，或到 设置→环境检测 修改地址。');
+    throw new Error('ComfyUI 服务不可达（' + endpoint('comfyui') + '）。请先手动打开一次 ComfyUI Desktop'
+      + '（之后软件会自己接管，不需要在本软件里配 ComfyUI 路径）。');
   }
   if (!submit.ok || !submit.json || !submit.json.prompt_id) {
     throw new Error('ComfyUI 拒绝工作流：' + JSON.stringify(submit.json).slice(0, 400));
@@ -881,7 +1025,7 @@ function srtTime(sec) {
 async function exportVideo(outDir, outName, videos, { subtitles = true, width = 1920, height = 1080, scope = '' } = {}) {
   // 导出是一次性长任务：这里同步确认一次 ffmpeg（避免「预热没跑完」被误判成没装）
   const ffmpeg = findFfmpeg({ forceSync: true });
-  if (!ffmpeg) throw new Error('未找到 ffmpeg。请将 ffmpeg.exe 放到 workspace/tools/，或到 设置→环境检测 指定路径。');
+  if (!ffmpeg) throw new Error('未找到 ffmpeg。请将 ffmpeg.exe 放到 workspace/tools/，或到 设置 → 高级设置 指定路径。');
   fs.mkdirSync(outDir, { recursive: true });
   if (!videos.length) throw new Error('没有可拼接的视频片段');
   const W = Math.max(16, Math.round(Number(width) || 1920));
@@ -1076,6 +1220,8 @@ module.exports = {
   init, health, llmChat, extractJson, pickArray, endpoint, setEndpoint,
   comfyGenerate, workflowPath, ensureDefaultTemplates, findFfmpeg, exportVideo,
   applyParams, findPlaceholders, h3Params, forgetWorkspace, listVideosWithMeta,
+  // 模型方案驱动的部分（换模型只改配置，下面是代码侧入口）
+  injectMedia, phTips, optionalPlaceholders,
   // 导出仅为离线自测（test/h3-inject-check.cjs 直接验证连线，不需要显卡/ComfyUI）
-  injectH3Media, defaultCharacterTemplate, upgradeCharTemplateText
+  injectH3Media
 };

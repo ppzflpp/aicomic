@@ -21,7 +21,7 @@
       <span v-if="pl.timeText(1)" class="gen-ms" :class="{ live: pl.genStartAt[1] }">{{ pl.timeText(1) }}</span>
     </Teleport>
     <Teleport v-if="tpReady" to="#adapt-ops">
-      <button class="btn" :disabled="!adapted.trim() || busy" @click="nextToShots">生成分镜</button>
+      <button class="btn h-sm" :disabled="!adapted.trim() || busy" @click="nextToShots">生成分镜</button>
     </Teleport>
 
     <!-- 字数胶囊：Teleport 到本模块标题行右侧（App.vue 的 #adapt-count）。
@@ -30,6 +30,30 @@
     <Teleport v-if="tpReady" to="#adapt-count">
       <span class="head-ms" title="改编稿字数">{{ adapted.trim().length }} 字</span>
     </Teleport>
+
+    <!-- 重新生成分镜前的确认（2026-10-07）：分镜是「从零重来」—— 新分镜里没提到的角色/场景
+         会被清除，这是破坏性操作，必须先把影响面说清楚再动手 -->
+    <div v-if="askRegen" class="mask" @click.self="askRegen = null">
+      <div class="dialog" style="width:520px">
+        <h3>重新生成分镜</h3>
+        <p class="regen-note">
+          本集已有 <b>{{ askRegen.shots }}</b> 个镜头、<b>{{ askRegen.chars }}</b> 个角色 / <b>{{ askRegen.scenes }}</b> 个场景档案<span
+            v-if="askRegen.imgs">、<b>{{ askRegen.imgs }}</b> 张已出的图</span>。
+        </p>
+        <p class="regen-note">
+          重新生成会<b>从零重来</b>：
+        </p>
+        <ul class="regen-list">
+          <li>新分镜里<b>没有出现</b>的角色 / 场景 → 档案与卡片一并清除，<b>图片移到 <code>_trash/</code>（不删除，可找回）</b>；</li>
+          <li>仍然出现（同名）的 → 保留档案与已出的图，只覆盖档案内容；</li>
+          <li>全部 {{ askRegen.shots }} 个镜头的提示词{{ askRegen.prompts ? '（已有 ' + askRegen.prompts + ' 条）' : '' }}与视频记录一并清空。</li>
+        </ul>
+        <div class="row">
+          <button class="btn ghost" @click="askRegen = null">取消</button>
+          <button class="btn" @click="doNextToShots">确认重新生成</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -45,7 +69,7 @@ import { revsOf, touchRevs } from './stale.js'
 
 export default {
   name: 'StageAdapt',
-  data() { return { adapted: '', busy: false, tpReady: false } },
+  data() { return { adapted: '', busy: false, tpReady: false, askRegen: null } },
   computed: {
     st() { return useProjectStore() },
     pl() { return usePipeline() },
@@ -94,7 +118,7 @@ export default {
       const L = stepLog('阶段2 内容AI优化')
       L.start('正在生成改编稿：LLM 改编章节原文（' + this.chapter.length + ' 字，长文需数分钟）')
       try {
-        const system = await composeSystem({ specs: ['adapt.md'], mustHave: ['## 输出格式'] })
+        const system = await composeSystem({ specs: ['adapt.md'], mustHave: ['## 输出格式'], task: 'adapt' })
         const user = await composeUser('adapt.md', { chapter: this.chapter })
         dbgPrompt('阶段2 内容AI优化', '文字模型', [['system', system], ['user', user]])
         const text = await window.studio.llmChat([
@@ -117,9 +141,34 @@ export default {
       this.pl.confirm(1, this.ep.id)
       this.$root.toast('改编稿已确认')
     },
-    /** 「生成分镜」：确认改编稿 → 进入第 3 块（分镜脚本）→ 无需额外操作自动开始生成分镜 */
+    /**
+     * 「生成分镜」：确认改编稿 → 进入第 3 块（分镜脚本）→ 无需额外操作自动开始生成分镜。
+     *
+     * 🔴 本集已经有分镜 / 档案时，这一步是**重新生成**（从零重来）：新分镜里没提到的角色/场景
+     *    会被清除。破坏性操作要先把影响面摆出来，不能默默清掉（2026-10-07）。
+     */
     async nextToShots() {
       if (this.busy || !this.adapted.trim()) return
+      const imp = this.impact()
+      if (imp && (imp.shots || imp.chars || imp.scenes)) { this.askRegen = imp; return }
+      await this.doNextToShots()
+    },
+    /** 本集现有内容的规模（确认框要摆给人看的影响面） */
+    impact() {
+      const ep = this.ep
+      if (!ep) return null
+      const arch = [...(ep.chars || []), ...(ep.scenes || [])]
+      return {
+        shots: (ep.shots || []).length,
+        chars: (ep.chars || []).length,
+        scenes: (ep.scenes || []).length,
+        imgs: arch.reduce((a, c) => a + ((c && c.candidates) || []).length, 0),
+        prompts: (ep.prompts || []).filter(p => p && String(p.text || '').trim()).length
+      }
+    },
+    /** 确认框点「确认重新生成」之后才真正开跑 */
+    async doNextToShots() {
+      this.askRegen = null
       await this.st.saveArtifact('adapted', this.adapted)
       this.pl.confirm(1, this.ep.id)
       this.pl.autoShots = true          // 由 StageShots 消费（它可能晚一步才挂载/解锁）

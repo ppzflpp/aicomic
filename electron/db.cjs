@@ -52,10 +52,10 @@ function init(userDataDir, documents) {
 
   // 分辨率配置（2026-09-20）：项目级 = 新建剧集的初始模板；剧集级 = 实际生效值。
   // 格式统一为 '宽x高' 字符串（如 '864x480'），宽高比由前端选项文案标注。
-  addColumn('projects', 'res_img', "TEXT NOT NULL DEFAULT '1216x832'");
+  addColumn('projects', 'res_img', "TEXT NOT NULL DEFAULT '1920x1080'");
   addColumn('projects', 'res_vid', "TEXT NOT NULL DEFAULT '864x480'");
   addColumn('projects', 'res_out', "TEXT NOT NULL DEFAULT '1920x1080'");
-  addColumn('episodes', 'res_img', "TEXT NOT NULL DEFAULT '1216x832'");
+  addColumn('episodes', 'res_img', "TEXT NOT NULL DEFAULT '1920x1080'");
   addColumn('episodes', 'res_vid', "TEXT NOT NULL DEFAULT '864x480'");
   addColumn('episodes', 'res_out', "TEXT NOT NULL DEFAULT '1920x1080'");
 
@@ -63,6 +63,12 @@ function init(userDataDir, documents) {
   // 与分辨率不同 —— 档位对本项目**所有剧集立即生效**（生成时实时读项目行），
   // 不做集级快照，因此只在 projects 上建列（episodes 无此列）。
   addColumn('projects', 'res_tier', "TEXT NOT NULL DEFAULT 'balanced'");
+
+  // 风格包（2026-10-07）：项目级题材 / 画风（如古装 / 现代都市 / 二次元）。
+  // 与档位同理 —— 对本项目**所有剧集立即生效**（渲染层每次读规范时实时读项目行），
+  // 不做集级快照，因此只在 projects 上建列。默认值 = 改造前的唯一风格，
+  // 存量项目自动落到它，行为与改造前一致（规范正文经风格包替换后逐字不变）。
+  addColumn('projects', 'style', "TEXT NOT NULL DEFAULT 'guofeng-real'");
 
   // 历史路径迁移（目录改为纯英文路径后，把库里残留的旧路径改写成新路径）
   migratePaths();

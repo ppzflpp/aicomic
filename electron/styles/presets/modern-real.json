@@ -1,0 +1,13 @@
+{
+  "_note": "预置组合（preset）= 给一个四轴组合起个名字。做汽车 / 家电广告用「car-ad-commercial」那个预置（真人实拍 + 现代都市 + 广告 + 商业广告大片）；本预置是同一套世界与画风、但走剧集 + 电影感的版本。",
+  "id": "modern-real",
+  "name": "现代都市真人",
+  "desc": "真人实拍 · 现代都市 · 剧集 · 电影感",
+  "rev": 2,
+  "tags": { "render": "live-action", "world": "modern", "genre": "story", "tone": "cinematic" },
+  "render": "live-action",
+  "world": "modern",
+  "genre": "story",
+  "tone": "cinematic",
+  "vars": {}
+}

@@ -1,0 +1,13 @@
+{
+  "_note": "预置组合：给「真人实拍 + 现代都市 + 广告 + 商业广告大片」这个四轴组合起个名字。它只是名字 —— 产物完全由四轴提供，所以手选四个轴得到的提示词与选本预置一模一样。",
+  "id": "car-ad-commercial",
+  "name": "汽车 / 产品广告大片",
+  "desc": "真人实拍 · 现代都市 · 广告 · 商业广告大片：影棚级布光、高级色彩设计、主体特写优先",
+  "rev": 1,
+  "tags": { "render": "live-action", "world": "modern", "genre": "ad", "tone": "commercial" },
+  "render": "live-action",
+  "world": "modern",
+  "genre": "ad",
+  "tone": "commercial",
+  "vars": {}
+}

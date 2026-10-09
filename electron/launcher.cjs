@@ -306,7 +306,8 @@ async function startLlama() {
   if (!info.modelOk) {
     return {
       ok: false,
-      message: '没找到 GGUF 模型。请把 *.gguf 放到 ' + (info.modelDir || 'runtime\\models\\llm') + ' 后重试。'
+      message: '没找到剧本大模型（*.gguf）。在「设置 → 模型管家」点这一行右边的「导入…」选文件即可（会自动拷到 '
+        + (info.modelDir || '模型根目录\\text_encoders') + '）。'
     };
   }
 

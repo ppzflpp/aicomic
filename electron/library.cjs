@@ -15,7 +15,8 @@
  *    `李白-老年`），变体解析只在角色上做（场景名本身可能含「-」，如「馄饨摊·外-晨」，不能当分隔符）。
  *  - 集内卡片永远保存**自己的副本**（写进 <集名>.chars.json），只记 `libId` + `libRevAt` 做来源标记；
  *    库里改了不会偷改历史集，必须先提示、用户确认才更新副本。
- *  - 本批不做删除（Dragon 定）。
+ *  - 删除（2026-09-30 加）：`removeEntry` 二选一 —— 仅移出库（保留图片目录）/ 连同目录一起删。
+ *    删条目不清理集里的引用：集内卡片退化成普通本地卡、分镜里名字照旧，UI 在删前把引用范围提示清楚。
  */
 const path = require('path');
 const fs = require('fs');
@@ -75,6 +76,17 @@ function uniqueName(lib, kind, name) {
   let n = 2;
   while (used.has(name + ' (' + n + ')')) n++;
   return name + ' (' + n + ')';
+}
+
+/**
+ * 名字是否已被同类型条目占用（含 id 比较：id 是名字消毒后的结果，「张 伯」与「张伯」算同一个）。
+ * 手动新增走这条硬校验（拒绝 + 让用户改名）；自动入库（从集里保存到项目）走 uniqueName 兜底改名。
+ */
+function nameTaken(lib, kind, name) {
+  const clean = String(name || '').trim();
+  if (!clean) return null;
+  const sid = sanitizeId(clean);
+  return ((lib && lib.entries) || []).find(e => e.kind === kind && (e.name === clean || e.id === sid)) || null;
 }
 
 /* ---------- 基础读写 ---------- */
@@ -266,12 +278,60 @@ function saveEntry(db, workspace, projectId, payload) {
   return { entry: e, created: true, renamed: name !== rawName };
 }
 
-/** 手动新增空条目（不靠 LLM 提取） */
+/**
+ * 手动新增空条目（不靠 LLM 提取）。
+ * 🔴 重名**直接报错**（不自动加「 (2)」）：手动新增是人在操作，撞名时该由人决定叫什么，
+ *    悄悄改名会让人以为建的是另一个条目。自动入库（集里「保存到项目」）仍走 uniqueName 兜底。
+ */
 function addEntry(db, workspace, projectId, kind, name) {
+  const lib = ensureLibrary(db, workspace, projectId);
+  const clean = String(name || '').trim();
+  const what = kind === 'scene' ? '场景' : '角色';
+  if (!clean) throw new Error('名字不能为空');
+  const dup = nameTaken(lib, kind, clean);
+  if (dup) throw new Error('已有同名' + what + '「' + dup.name + '」，请换一个名字');
   return saveEntry(db, workspace, projectId, {
-    kind, name, role: kind === 'scene' ? '场景' : '配角',
+    kind, name: clean, role: kind === 'scene' ? '场景' : '配角',
     profile: '', prompt: '', negative: '', res: '', cur: -1
   });
+}
+
+/**
+ * 删除库条目。
+ * @param opts { deleteFiles }
+ *   false（默认）= 「仅删除显示」：只从 library.json 里移除，图片目录原样留在磁盘（以后重新入库可复用旧图）
+ *   true          = 「删除所有文件」：连同条目图片目录一起删（不可恢复）
+ * @returns { id, name, kind, filesDeleted, delErr, images, usage }
+ *   usage 是**删除前**的引用快照（哪些集/镜还在用这个名字），供 UI 提示后果
+ */
+function removeEntry(db, workspace, projectId, id, opts) {
+  const lib = ensureLibrary(db, workspace, projectId);
+  const e = entryOf(lib, id);
+  if (!e) throw new Error('库条目不存在：' + id);
+  const usage = entryUsage(db, workspace, projectId, id);   // 必须在移除之前算（entryUsage 依赖库里还有这条）
+  const del = !!(opts && opts.deleteFiles);
+  const dir = entryDir(db, workspace, projectId, e.kind, e.id);
+  const images = del ? listImages(dir) : [];
+
+  lib.entries = (lib.entries || []).filter(x => x.id !== id);
+  lib.rev = (lib.rev || 1) + 1;
+  writeLibrary(db, workspace, projectId, lib);
+
+  let filesDeleted = false, delErr = '';
+  if (del && dir) {
+    // 🔴 路径白名单：只允许删 <项目>/assets/{characters|scenes}/<条目目录>，且目录名必须等于条目 id。
+    //    删目录不可逆，任何路径拼装异常都必须在动手前拦下来（宁可不删也不能删错）。
+    const aRoot = projects.assetsRoot(db, workspace, projectId);
+    const rootDir = aRoot ? path.resolve(path.join(aRoot, kindDir(e.kind))) : '';
+    const target = path.resolve(dir);
+    if (rootDir && target.startsWith(rootDir + path.sep) && path.basename(target) === sanitizeId(e.id)) {
+      try { fs.rmSync(target, { recursive: true, force: true }); filesDeleted = true; }
+      catch (err) { delErr = err.message; }
+    } else {
+      delErr = '目录不在项目资产目录下，已跳过文件删除';
+    }
+  }
+  return { id: e.id, name: e.name, kind: e.kind, filesDeleted, delErr, images, usage };
 }
 
 /** 更新库条目某个字段（编辑器里逐字段保存用） */
@@ -406,6 +466,56 @@ function entryUsage(db, workspace, projectId, id) {
   return out;
 }
 
+/**
+ * 全库引用快照：一次遍历项目下所有集，返回 { [entryId]: usage[] }（结果与逐条调用 entryUsage 同构）。
+ * 库视图整页铺卡时每个条目都要显示「被哪些集/镜引用」，逐条调 entryUsage 会变成 N 条目 × M 集 次读盘；
+ * 这里改成「每个集只读一遍（chars/scenes/shots 各一次），再按名字分发给所有条目」。
+ */
+function usageAll(db, workspace, projectId) {
+  const lib = ensureLibrary(db, workspace, projectId);
+  const list = lib.entries || [];
+  const out = {};
+  for (const e of list) out[e.id] = [];
+  if (!list.length) return out;
+  for (const ep of projectEps(db, projectId)) {
+    const chars = readJsonAt(projects.artifactPath(db, workspace, ep, 'chars.json'), []);
+    const scenes = readJsonAt(projects.artifactPath(db, workspace, ep, 'scenes.json'), []);
+    const hasName = new Set();
+    const hasId = new Set();
+    const mark = (arr, kind) => {
+      if (!Array.isArray(arr)) return;
+      for (const c of arr) {
+        if (!c) continue;
+        if (c.name) hasName.add(kind + '|' + c.name);
+        if (c.libId) hasId.add(c.libId);
+      }
+    };
+    mark(chars, 'character');
+    mark(scenes, 'scene');
+    const shots = readJsonAt(projects.artifactPath(db, workspace, ep, 'shots.json'), []);
+    const hit = {};
+    if (Array.isArray(shots)) {
+      shots.forEach((s, i) => {
+        if (!s) return;
+        const sc = String(s.scene || '').trim();
+        if (sc) { const k = 'scene|' + sc; (hit[k] = hit[k] || []).push(i); }
+        for (const n of String(s.chars || '').split(/[、,，/]/).map(x => x.trim()).filter(Boolean)) {
+          const k = 'character|' + n; (hit[k] = hit[k] || []).push(i);
+        }
+      });
+    }
+    for (const e of list) {
+      const k = e.kind + '|' + e.name;
+      const idx = hit[k] || [];
+      const hasCard = hasName.has(k) || hasId.has(e.id);
+      if (hasCard || idx.length) {
+        out[e.id].push({ episodeId: ep.id, epName: ep.name, hasCard, shots: idx, count: idx.length });
+      }
+    }
+  }
+  return out;
+}
+
 /** 一条引用摘要文案：「第1集 镜2/镜5、第3集 镜1」 */
 function usageText(usage) {
   return (usage || []).map(u => u.epName + (u.shots.length
@@ -414,7 +524,8 @@ function usageText(usage) {
 }
 
 module.exports = {
-  libraryPath, entryDir, kindDir, baseNameOf, variantsOf, uniqueName,
-  ensureLibrary, initLibrary, listLibrary, saveEntry, addEntry, patchEntry, renameEntry, renameInEpisode,
-  entryUsage, usageText, listImages
+  libraryPath, entryDir, kindDir, baseNameOf, variantsOf, uniqueName, nameTaken,
+  ensureLibrary, initLibrary, listLibrary, saveEntry, addEntry, patchEntry, removeEntry,
+  renameEntry, renameInEpisode,
+  entryUsage, usageAll, usageText, listImages
 };

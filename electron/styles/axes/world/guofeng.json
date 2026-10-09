@@ -1,0 +1,48 @@
+{
+  "_note": "世界设定「古装」= 提供 w_* 事实槽位：题材名词、时代约束、物件与材质举例、光线举例、称谓与身份线索、世界观外形表、英文年代与光线词，以及**举例替换槽位**（exFabric / exProp / exSign … 规范正文里所有题材举例都由它给，正文里零硬编码题材词）。其中 w_subjectStart / w_subjectEnd / w_actorWorld 是**词序模板**（引用 {{S.renderWho}} / {{S.w_noun}}）—— 这就是新增画风族时不用碰这个文件的原因。古装是基线（base.json 就是它的原文）。",
+  "id": "guofeng",
+  "label": "古装",
+  "desc": "古代中国：木质建筑、丝绸衣料、宫廷与市井；不含任何现代物件",
+  "order": 10,
+  "vars": {
+    "w_noun": "古装",
+    "w_full": "古装",
+    "w_styleHead": "古风",
+    "w_subjectStart": "{{S.renderWho}}{{S.w_noun}}",
+    "w_subjectEnd": "{{S.renderWho}}{{S.w_noun}}剧",
+    "w_actorWorld": "中国{{S.w_noun}}",
+
+    "w_worldRule": "档案里出现的时代与物件必须属于古装背景",
+    "w_sceneStart": "古装剧实景照片",
+    "w_sceneKind": "古装剧实景布景照",
+    "w_sceneRef": "古装剧实景布景照",
+    "w_sceneEnd": "古装剧实景布景照片",
+    "w_keeper": "古装剧实景布景空镜",
+    "w_costume": "古风服饰",
+    "w_costumeNpc": "古风服装",
+    "w_material": "朱红木柱、青绿琉璃瓦、青砖地面",
+    "w_place": "庭院·外、书房·内",
+    "w_light": "黄昏黄金时刻光线、温暖的阳光穿透花枝",
+    "w_lightMain": "黄昏黄金时刻光线",
+    "w_terms": "老夫、小生、在下、末将、卑职、贫僧、弟子、师父、娘子",
+    "w_roleExamples": "「老丈」→ 六十岁上下、布衣老者；「末将」→ 中年武将、铠甲在身；「贫僧」→ 僧人、剃度、僧袍",
+    "w_lookTable": "- 老丈 / 老夫 / 老者 → 深皱纹、花白须发、佝背、手杖；\n  - 少年 / 小生 / 童子 → 圆润脸、短碎发或双丫髻、身形单薄；\n  - 武将 / 末将 / 卫士 → 方脸浓眉、短须、肩宽背厚、眉骨或颊边旧伤疤；\n  - 文士 / 书生 / 先生 → 清瘦长脸、细长目、蓄须、束发儒巾；\n  - 憨直 / 粗豪角色 → 浓眉大眼、圆脸阔口、粗手大脚；\n  - 阴鸷 / 狠辣反派 → 细长眼、薄唇、高颧骨、苍白少须；\n  - 商贾 / 掌柜 → 富态圆脸、细眼含笑、手指粗短戴扳指；\n  - 贫僧 / 出家人 → 剃度、戒疤、清瘦、粗布僧袍。",
+
+    "w_excludeWorld": "现代",
+    "w_antiWorld": "",
+    "w_antiWorldCn": "",
+    "w_enEra": "period",
+    "w_enLight": "golden hour light",
+    "w_enLtxScene": "period scene inside a dim, lamp-lit study at night, warm light spilling across a wooden desk",
+
+    "w_exFabric": "丝绸、锦缎、刺绣纹样、腰带",
+    "w_exProp": "灯笼、伞、酒壶、兵器、提灯",
+    "w_exSign": "碑刻、匾额、楹联、招牌幌子、路牌门牌、告示启事、黑板板书、书页信笺、账册票据、包装标签、印章钤记、旗帜、织物刺绣",
+    "w_exText": "`石碑上刻着「黑白问道」四个汉字，楷书阴刻`、`门楣悬着一块写着「同仁堂」三字的木匾，金漆楷书`、`墙上贴着一张写着「公告」的红纸告示`",
+    "w_exAnchor": "左颊一道旧疤、断眉、常年握着的酒葫芦、素黑无纹披风、铜环宽腰带",
+    "w_exPalette": "主人公暖金或月白，对立方暗紫墨黑，辅助角色青灰或褐",
+    "w_exWardrobe": "发饰冠帽、胡须、外披披风",
+    "w_exState": "湿透、破损、沾血、解开外袍、暂时提在手里的灯笼或伞",
+    "w_exLeak": "竹林戏里角色参考图的村庄庭院背景被画进了视频；角色图手里的灯笼出现在剧本没要求的镜头里"
+  }
+}

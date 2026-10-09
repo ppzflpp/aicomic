@@ -9,12 +9,16 @@
  *   text_encoders / vae / loras ...）读取。
  *   → 在 ComfyUI 里下载的模型，本软件立刻可用，不需要复制第二份。
  *
- * 特例：llm（llama.cpp 的 GGUF）不属于 ComfyUI 的模型体系，
- *   优先看模型根目录下有没有 llm/LLM 子目录，否则退回项目 runtime\models\llm。
+ * 特例：剧本大模型（llama.cpp 的 GGUF）不是 ComfyUI 的节点权重，但目录也统一放
+ *   在模型根目录下 —— ComfyUI 没有 llm 这一类目，GGUF 与文本编码器同属「文本模型」，
+ *   所以落在标准目录 text_encoders\ 里（用户只需记一个模型目录）。
+ *   取用时按顺序找：模型根\text_encoders → 旧布局 llm/gguf 子目录 → 项目 runtime\models\llm。
  */
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+
+const profiles = require('./profiles.cjs');
 
 let db = null;
 
@@ -32,8 +36,17 @@ const STANDARD_SUBDIRS = [
   'text_encoders', 'unet', 'upscale_models', 'vae', 'vae_approx'
 ];
 
-/** ComfyUI 模型根下可能存放 GGUF 的子目录名 */
-const LLM_SUBDIRS = ['llm', 'LLM', 'LLMs', 'gguf', 'GGUF'];
+/**
+ * 剧本大模型（llama.cpp 的 GGUF）落点 = ComfyUI 标准目录 text_encoders。
+ * ComfyUI 的目录规范里没有 llm 这一类目，而 GGUF 本身就是文本模型权重，
+ * 与 text_encoders 里的文本编码器同类 —— 放这里既符合「一个模型目录」的原则，
+ * 也不用再教用户认识一个私有目录。
+ */
+const LLM_SUBDIR = 'text_encoders';
+/** 历史布局：GGUF 曾单独放模型根下的 llm / gguf 目录（仍然识别，老环境不至于突然变红） */
+const LEGACY_LLM_SUBDIRS = ['llm', 'LLM', 'LLMs', 'gguf', 'GGUF'];
+/** GGUF 里带 vl 的是 H3 的 qwen3vl 文本编码器，不是剧本大模型，不能拿来跑 llama-server */
+const LLM_NOT_RE = /vl/i;
 
 /**
  * 模型清单。key = ComfyUI 标准子目录名（llm 例外）。
@@ -43,15 +56,10 @@ const LLM_SUBDIRS = ['llm', 'LLM', 'LLMs', 'gguf', 'GGUF'];
  */
 const ITEMS = [
   {
-    key: 'llm', sub: null, group: 'engine', short: 'LLM',
+    key: 'llm', sub: LLM_SUBDIR, group: 'engine', short: 'LLM',
     label: 'LLM 文本模型（llama.cpp GGUF）', exts: ['.gguf'], prefer: /qwen|gemma|llama|mistral/i,
-    required: true, hint: '改编稿 / 分镜脚本生成，llama-server 加载'
-  },
-  {
-    key: 'checkpoints', sub: 'checkpoints', group: 'comfy', short: '底模',
-    label: '角色图底模 checkpoints', exts: ['.safetensors', '.ckpt'], prefer: /xl|anime|illustrious|noob|pony|novelai/i,
-    exclude: /^(sam|vit|blip|swin|nsfw_detector)/i,
-    required: true, hint: '第 4 块「角色库」出图用的 SD / SDXL 底模'
+    exclude: LLM_NOT_RE,   // qwen3vl 的 GGUF 是 H3 编码器，不是剧本大模型
+    required: true, hint: '改编稿 / 分镜脚本生成，llama-server 加载（放在模型根目录的 text_encoders 下）'
   },
   {
     key: 'diffusion_models', sub: 'diffusion_models', group: 'comfy', short: 'H3主模型',
@@ -77,6 +85,7 @@ const ITEMS = [
 
 function init(dbRef) {
   db = dbRef;
+  profiles.init(dbRef);   // 模型方案先就位（下面 ensure() 里的迁移与检测都要读它）
   ensure();
 }
 
@@ -232,6 +241,50 @@ function redetect() {
  * 目录解析 / 文件枚举
  * ------------------------------------------------------------------ */
 
+/** 目录里有没有「剧本大模型」的 GGUF（带 vl 的是 H3 文本编码器，不算） */
+function hasLlmGguf(dir) {
+  try {
+    return fs.readdirSync(dir).some(n => /\.gguf$/i.test(n) && !LLM_NOT_RE.test(n));
+  } catch (_) { return false; }
+}
+
+/**
+ * 剧本大模型（GGUF）目录 —— 一律在模型根目录体系内，不再单开私有目录：
+ *   1) ComfyUI 标准目录 text_encoders（新落点，与文本编码器同类）
+ *   2) 历史布局：模型根下的 llm / gguf 子目录（老用户不动文件也能继续跑）
+ *   3) 更老的兜底：项目 runtime\models\llm
+ * 命中条件 = 目录里真的有非 vl 的 GGUF；一个都没命中时返回「应该放的那一个」，
+ * 这样界面提示出来的路径就是用户该用的位置。
+ */
+function llmDir() {
+  const root = modelsRoot();
+  const pr = projectRoot();
+  const legacy = pr ? path.join(pr, 'runtime', 'models', 'llm') : '';
+  const cands = [];
+  if (root) {
+    cands.push(path.join(root, LLM_SUBDIR));
+    for (const s of LEGACY_LLM_SUBDIRS) cands.push(path.join(root, s));
+  }
+  if (legacy) cands.push(legacy);
+  for (const d of cands) if (hasLlmGguf(d)) return d;
+  return root ? path.join(root, LLM_SUBDIR) : legacy;
+}
+
+/**
+ * 解析一个 ComfyUI 标准子目录的绝对路径。
+ * 用户手改过该子目录（设置键 modelpath.<sub>）时以用户的为准 ——
+ * 这样「模型方案」里声明的目录与生成时真正用的目录永远是同一个。
+ */
+function dirOfSub(sub) {
+  if (!sub) return null;
+  const custom = db.getSetting('modelpath.' + sub);
+  if (custom) return custom;
+  const root = modelsRoot();
+  if (root) return path.join(root, sub);
+  const pr = projectRoot();
+  return pr ? path.join(pr, 'runtime', 'models', sub) : null;
+}
+
 function resolveDir(key) {
   if (!key) return null;
   if (key === ROOT_KEY || key === 'comfyuiRoot') return modelsRoot();
@@ -242,32 +295,21 @@ function resolveDir(key) {
   const it = item(key);
   if (!it) return null;
 
-  if (it.sub) {
-    const root = modelsRoot();
-    if (root) return path.join(root, it.sub);
-    const pr = projectRoot();
-    return pr ? path.join(pr, 'runtime', 'models', it.sub) : null;
-  }
+  // llm：GGUF 也放在 ComfyUI 模型根目录里（标准目录 text_encoders），见 llmDir()
+  if (it.key === 'llm') return llmDir();
 
-  // llm：优先模型根下的 llm 目录（若 GGUF 也放在 ComfyUI 里），否则项目 runtime
-  const root = modelsRoot();
-  if (root) {
-    for (const s of LLM_SUBDIRS) {
-      const p = path.join(root, s);
-      if (fs.existsSync(p)) return p;
-    }
-  }
-  const pr = projectRoot();
-  return pr ? path.join(pr, 'runtime', 'models', 'llm') : '';
+  return it.sub ? dirOfSub(it.sub) : null;
 }
 
-/** 枚举某个 key 下的模型文件（返回相对名，ComfyUI 认的就是相对名） */
-function listFiles(key) {
-  const it = item(key);
-  const dir = resolveDir(key);
+/**
+ * 列出一个目录下的模型文件（递归；按体积降序 —— 大文件通常就是主模型）。
+ * @param {string} dir      绝对路径
+ * @param {string[]} exts   认得的扩展名（空 = 全认）
+ * @param {RegExp|null} exclude  命中则跳过（同名的非底模文件，如 sam3.1）
+ */
+function listInDir(dir, exts, exclude) {
   const out = [];
-  if (!it || !dir || !fs.existsSync(dir)) return out;
-
+  if (!dir || !fs.existsSync(dir)) return out;
   const stack = [{ d: dir, rel: '' }];
   while (stack.length) {
     const cur = stack.pop();
@@ -277,14 +319,113 @@ function listFiles(key) {
       if (e.name.startsWith('.')) continue;
       const rel = cur.rel ? cur.rel + '/' + e.name : e.name;
       if (e.isDirectory()) { stack.push({ d: path.join(cur.d, e.name), rel }); continue; }
-      if (it.exts.length && !it.exts.some(x => e.name.toLowerCase().endsWith(x))) continue;
-      if (it.exclude && it.exclude.test(e.name)) continue;   // 排除同名场景的非底模文件（如 sam3.1）
+      if (exts && exts.length && !exts.some(x => e.name.toLowerCase().endsWith(x))) continue;
+      if (exclude && exclude.test(e.name)) continue;
       let size = 0;
       try { size = fs.statSync(path.join(cur.d, e.name)).size; } catch (_) { /* ignore */ }
       out.push({ name: rel, size });
     }
   }
-  out.sort((a, b) => b.size - a.size);   // 大文件通常是主模型
+  out.sort((a, b) => b.size - a.size);
+  return out;
+}
+
+/** 枚举某个 key 下的模型文件（返回相对名，ComfyUI 认的就是相对名） */
+function listFiles(key) {
+  const it = item(key);
+  if (!it) return [];
+  return listInDir(resolveDir(key), it.exts, it.exclude);
+}
+
+/* ------------------------------------------------------------------ *
+ * 模型方案 → 实际文件
+ * ------------------------------------------------------------------ */
+
+/** 安全编译配置里写的正则（用户写错了不能让生成整个挂掉） */
+function safeRe(src, flags) {
+  if (!src) return null;
+  if (src instanceof RegExp) return src;
+  try { return new RegExp(String(src), flags || ''); } catch (_) { return null; }
+}
+
+/**
+ * 按「模型方案」里的一条 assets 声明，解析这个槽位实际用哪个文件。
+ *   pick: 'strict' → 文件名必须命中特征，否则视为没装（H3 的 fl2va / ref2va 这类「必须是指定那一个」）
+ *   pick: 'any'    → 命中不了就用该目录里最大的那个（普通底模：装了什么就用什么）
+ * @returns {{ name: string|null, files: string[] }}
+ *   files = 该目录里可用的全部文件名（list: true 的槽位要用它做档位解析）
+ */
+function resolveAsset(asset) {
+  const all = listInDir(dirOfSub(asset.dir), asset.exts, null);
+  const re = safeRe(asset.match, 'i');
+  const exRe = safeRe(asset.exclude, 'i');
+  const usable = exRe ? all.filter(f => !exRe.test(path.basename(f.name))) : all;
+  const hit = re ? usable.filter(f => re.test(path.basename(f.name))) : usable;
+  const files = asset.list ? usable.map(f => f.name) : hit.map(f => f.name);
+  if (hit.length) return { name: hit[0].name, files };
+  if (asset.pick === 'any' && usable.length) return { name: usable[0].name, files };
+  return { name: null, files };
+}
+
+/**
+ * 按「角色」索引当前方案的模型文件 —— 生成流程只认角色
+ * （unet / textEncoder / videoVae / lora …），不认槽位名，
+ * 所以换模型（改槽位名 / 加别名）不需要改生成代码。
+ */
+function resolveAssets(kind) {
+  const p = profiles.active(kind);
+  const byRole = {}, bySlot = {};
+  if (!p) return { profile: null, byRole, bySlot };
+  for (const a of p.assets) {
+    const r = resolveAsset(a);
+    byRole[a.role] = { slot: a.slot, name: r.name, files: r.files };
+    bySlot[a.slot] = { role: a.role, name: r.name, files: r.files };
+  }
+  return { profile: p, byRole, bySlot };
+}
+
+/** 某个角色当前解析到的文件名（拿不到返回 null） */
+function assetName(kind, role) {
+  const a = resolveAssets(kind);
+  return (a.byRole[role] && a.byRole[role].name) || null;
+}
+
+/** 某个角色对应槽位的全部文件（档位解析 LoRA 用） */
+function assetFiles(kind, role) {
+  const a = resolveAssets(kind);
+  return (a.byRole[role] && a.byRole[role].files) || [];
+}
+
+/**
+ * 供 ComfyUI 工作流使用的模型文件名集合。
+ * 🔴 键名 = 工作流模板里的占位符名（小写）：声明了 slot `z_unet`，模板里就写 `__Z_UNET__`。
+ *    值为 null 的会被 applyParams 跳过，最后由「占位符未解析」统一报缺哪个模型。
+ *
+ * @param {string} [kind] 'image' | 'video'；
+ *        省略 = 合并「所有生图方案 + 当前视频方案」—— 生图模板可能同时引用两套方案的槽位
+ *        （如 Z-Image 三件套与 SDXL 底模各留一份模板），视频同时只跑一套。
+ */
+function workflowModels(kind) {
+  const out = {};
+  const list = [];
+  if (kind) {
+    const p = profiles.active(kind);
+    if (p) list.push(p);
+  } else {
+    for (const p of profiles.all('image')) list.push(p);
+    const v = profiles.active('video');
+    if (v) list.push(v);
+  }
+  for (const p of list) {
+    for (const a of p.assets) {
+      const r = resolveAsset(a);
+      out[a.slot] = r.name;
+      // 档位解析要「这个目录里有哪些 LoRA」的完整清单
+      if (a.list) out[a.slot + '_files'] = r.files;
+      // 历史别名：老工作流模板里的旧占位符（如 __H3_MODEL__）指同一个文件
+      for (const alias of a.alsoAs) out[alias] = r.name;
+    }
+  }
   return out;
 }
 
@@ -314,71 +455,34 @@ function pickStrict(key, re) {
 }
 
 /**
- * 供 ComfyUI 工作流使用的模型文件名集合（缺失的为 null，替换时会被跳过并给出缺件提示）
+ * 旧版的「模型文件名硬编码表」已被「模型方案」取代 —— 见上面的 workflowModels()。
+ * 保留这段历史说明，因为它记录的坑仍然成立：
  *
  * 🔴 H3 的权重与加速 LoRA 必须「显式配对」：fl2va 只能配 fl2v 系列的 LoRA，
  *    ref2va 只能配 ref2v 系列的 LoRA，混配会直接毁掉画面。
- *    所以这里绝不用 /turbo/ 这种模糊匹配 —— 目录里同时存在
- *    fl2v_turbo_4step / fl2v_turbo_8step / ref2v_turbo_4step 三份，
+ *    所以方案里一律用「精确正则 + pick: strict」，绝不用 /turbo/ 这种模糊匹配 ——
+ *    目录里同时存在 fl2v_turbo_4step / fl2v_turbo_8step / ref2v_turbo_4step 三份，
  *    「第一个含 turbo 的文件」会随机配错。
  */
-function workflowModels() {
-  return {
-    ckpt: pick('checkpoints'),
-    // —— Z-Image Turbo 三件套（生图模板 character_zimage_turbo.json 用）——
-    z_unet: pickStrict('diffusion_models', /z_image/i),
-    z_clip: pickStrict('text_encoders', /qwen_3_4b/i),
-    z_vae: pickStrict('vae', /^ae[\._-]/i),
-    h3_model: pick('diffusion_models', /fl2va/i) || pick('diffusion_models'),
-    h3_fl2va: pickStrict('diffusion_models', /fl2va/i),
-    h3_ref2va: pickStrict('diffusion_models', /ref2va/i),
-    h3_text_encoder: pick('text_encoders', /qwen3vl|h3/i) || pick('text_encoders'),
-    h3_video_vae: pickStrict('vae', /video_vae/i),
-    h3_audio_vae: pickStrict('vae', /audio_vae/i),
-    // fl2v 加速 LoRA：快速档 = 4step，高质量档 = 8step（两份都留，按档位选）
-    h3_fl2v_lora_fast: pickStrict('loras', /fl2v[a-z_]*turbo_4step|fl2v.*4step/i) || pickStrict('loras', /fl2v/i),
-    h3_fl2v_lora_hq: pickStrict('loras', /fl2v.*8step/i) || pickStrict('loras', /fl2v/i),
-    // ref2v 专用加速 LoRA —— 只能配 ref2va，不能配到 fl2va 上
-    h3_ref2v_lora: pickStrict('loras', /ref2v/i),
-    // LoRA 目录文件名清单 —— videoTiers.cjs 档位注册表按它解析「档位 → 具体 LoRA」
-    h3_lora_files: listFiles('loras').map(f => f.name),
-    // 兼容旧占位符：默认一律走 fl2v（= 文字/首帧/首尾帧那条线）
-    h3_lora: pickStrict('loras', /fl2v/i),
-    h3_turbo_lora: pickStrict('loras', /fl2v/i)
-  };
-}
-
 /* ------------------------------------------------------------------ *
- * 分辨率档位（按当前模型过滤）
- *   图片：看底模 —— SDXL 系给 1024 档，SD1.5 系给 512 档
- *   视频：看 diffusion_models —— 检出 H3（fl2va/ref2va）给 H3 档，否则给通用档
+ * 分辨率档位（按当前方案与模型过滤）
+ *   图片：用方案声明的 resolutions（每个内置生图方案都自带，走不到兜底）
+ *   视频：用方案自己的 resolutions（不同视频模型支持的分辨率完全不同）
  *   输出：成片导出档位（与模型无关）
  * 返回 [{ value:'WxH', label:'宽×高（比）' }]，value 直接存库/传生成。
  * ------------------------------------------------------------------ */
-const RES_SDXL = [
+/** 图片档位兜底（正常走不到：内置生图方案都自带 resolutions） */
+const RES_IMG_FALLBACK = [
   ['1024x1024', '1024×1024（1:1）'],
-  ['1216x832',  '1216×832（3:2）'],
-  ['832x1216',  '832×1216（2:3）'],
+  ['1920x1080', '1920×1080（16:9）'],
+  ['1080x1920', '1080×1920（9:16）'],
+  ['2560x1440', '2560×1440（16:9）'],
+  ['1440x2560', '1440×2560（9:16）'],
+  ['2048x2048', '2048×2048（1:1）'],
   ['1344x768',  '1344×768（16:9）'],
   ['768x1344',  '768×1344（9:16）'],
   ['1152x896',  '1152×896（9:7）'],
   ['896x1152',  '896×1152（7:9）']
-];
-const RES_SD15 = [
-  ['512x512', '512×512（1:1）'],
-  ['768x512', '768×512（3:2）'],
-  ['512x768', '512×768（2:3）'],
-  ['640x640', '640×640（1:1）']
-];
-const RES_H3 = [
-  ['864x480', '864×480（16:9）'],
-  ['480x864', '480×864（9:16）'],
-  ['960x544', '960×544（16:9）'],
-  ['544x960', '544×960（9:16）'],
-  ['1344x768', '1344×768（16:9）'],
-  ['768x1344', '768×1344（9:16）'],
-  ['768x768', '768×768（1:1）'],
-  ['640x640', '640×640（1:1）']
 ];
 const RES_VID_GENERIC = [
   ['1280x720',  '1280×720（16:9）'],
@@ -395,51 +499,22 @@ const RES_OUT = [
 const toOpts = (a) => a.map(([value, label]) => ({ value, label }));
 
 /* ------------------------------------------------------------------ *
- * 生图工作流模板（插件化：新增工作流 = electron/workflows/ 放模板文件 + 这里加一行）
+ * 生图方案（模型方案的一部分；这里保留老的「模板注册表」接口名做兼容）
+ *   生图用哪个工作流、要哪些模型文件、参数与分辨率档全部由「模型方案」声明
+ *   （electron/profiles/*.json 内置，workspace/profiles/*.json 覆盖）。
+ *   新增一个生图模型 = 加一份方案 JSON + 一个工作流模板，这里一行都不用改。
  * ------------------------------------------------------------------ */
 
-/**
- * 生图工作流模板注册表。
- * file   : workspace/workflows/ 下的模板文件（缺省时由 ensureDefaultTemplates 从内置播种）
- * resTier: 分辨率档位 —— '1024' 固定 1024 档（Z-Image / SDXL），'ckpt' 按底模文件名判断
- * 模板内占位符契约：__PROMPT__ __NEGATIVE__ __SEED__ __WIDTH__ __HEIGHT__
- *                   __IMAGE__（图生图支路，节点1/2）__LATENT__（节点5 空潜变量）__DENOISE__
- *                   __CKPT__（SDXL）/ __Z_UNET__ __Z_CLIP__ __Z_VAE__（Z-Image 三件套）
- */
-const IMAGE_TEMPLATES = {
-  'zimage-turbo': {
-    key: 'zimage-turbo', label: 'Z-Image Turbo（中文提示词 · 8 步）',
-    file: 'workflows/character_zimage_turbo.json', resTier: '1024'
-  },
-  'sdxl': {
-    key: 'sdxl', label: 'SDXL 底模（旧版，animagine-xl）',
-    file: 'workflows/character.json', resTier: 'ckpt'
-  }
-};
-const DEFAULT_IMAGE_TEMPLATE = 'zimage-turbo';
-
-/** 当前激活的生图模板 key（设置缺失 / 非法时回默认） */
-function activeImageTemplate() {
-  const k = db.getSetting('imageTemplate');
-  return (k && IMAGE_TEMPLATES[k]) ? k : DEFAULT_IMAGE_TEMPLATE;
-}
-
-function imageTemplateInfo() { return IMAGE_TEMPLATES[activeImageTemplate()]; }
-
-/** 给设置界面的下拉列表：全部候选 + 当前激活标记 */
-function imageTemplates() {
-  const act = activeImageTemplate();
-  return Object.values(IMAGE_TEMPLATES).map(t => ({ key: t.key, label: t.label, active: t.key === act }));
-}
+/** 当前激活的生图方案 id（设置缺失 / 非法时回默认方案；只用于缺件提示文案） */
+function activeImageTemplate() { return profiles.activeId('image'); }
 
 function resOptions() {
-  const act = activeImageTemplate();
-  // Z-Image 原生 1024 档，与 SDXL 同档；SD1.5 才降到 512 档
-  const isXL = IMAGE_TEMPLATES[act].resTier === '1024' ||
-    /xl|pony|illustrious|noob|z_image/i.test(String(pick('checkpoints') || ''));
-  const wm = workflowModels();
-  const vid = (wm.h3_fl2va || wm.h3_ref2va || /h3/i.test(String(wm.h3_model || ''))) ? RES_H3 : RES_VID_GENERIC;
-  return { img: toOpts(isXL ? RES_SDXL : RES_SD15), vid: toOpts(vid), out: toOpts(RES_OUT) };
+  const img = profiles.active('image');
+  const vid = profiles.active('video');
+  // 方案自己声明分辨率清单；缺了才用兜底档（正常情况走不到兜底）
+  const imgRes = (img && Array.isArray(img.resolutions) && img.resolutions.length) ? img.resolutions : RES_IMG_FALLBACK;
+  const vidRes = (vid && Array.isArray(vid.resolutions) && vid.resolutions.length) ? vid.resolutions : RES_VID_GENERIC;
+  return { img: toOpts(imgRes), vid: toOpts(vidRes), out: toOpts(RES_OUT) };
 }
 
 /* ------------------------------------------------------------------ *
@@ -448,12 +523,21 @@ function resOptions() {
 
 function check() {
   const root = modelsRoot();
-  const act = activeImageTemplate();
+  const imgP = profiles.active('image');
+  const vidP = profiles.active('video');
+
+  // 当前方案要求哪些目录（决定下面那 6 个目录项的「必需」标记）
+  const needDirs = new Set();
+  for (const p of [imgP, vidP]) {
+    if (!p) continue;
+    for (const a of p.assets) if (a.required) needDirs.add(a.dir);
+  }
+
   const items = ITEMS.map(it => {
     const dir = resolveDir(it.key);
     const files = (dir && fs.existsSync(dir)) ? listFiles(it.key) : [];
-    // checkpoints（SDXL 底模）只在激活 SDXL 模板时才算必需；Z-Image 模板下由下面的动态项接管
-    const required = it.key === 'checkpoints' ? act !== 'zimage-turbo' : !!it.required;
+    // 引擎项（剧本大模型）恒必需；comfy 目录项只在该目录被当前方案要求时才算必需
+    const required = it.group === 'engine' ? true : needDirs.has(it.sub);
     return {
       key: it.key, label: it.label, short: it.short, group: it.group,
       hint: it.hint, required, sub: it.sub,
@@ -462,23 +546,31 @@ function check() {
       isCustom: !!db.getSetting('modelpath.' + it.key)
     };
   });
-  if (act === 'zimage-turbo') {
-    const zmain = workflowModels().z_unet;
-    items.push({
-      key: 'zimage', label: 'Z-Image Turbo 主模型 diffusion_models', short: '生图主模', group: 'comfy',
-      hint: '第 4 块「角色库」出图用的 Z-Image Turbo 主模型（z_image_turbo_*.safetensors）',
-      required: true, sub: 'diffusion_models',
-      path: resolveDir('diffusion_models') || '',
-      ok: !!zmain, count: zmain ? 1 : 0, sample: zmain ? [zmain] : [],
-      isCustom: !!db.getSetting('modelpath.diffusion_models')
-    });
+
+  // 方案要求的具体模型文件 —— 同一个目录里可能混放多套方案的权重（如 diffusion_models 里
+  // 既放生图主模型又放视频主模型），只看目录项看不出到底缺哪一个，所以逐个列出来。
+  for (const p of [imgP, vidP]) {
+    if (!p) continue;
+    for (const a of p.assets) {
+      const r = resolveAsset(a);
+      items.push({
+        key: a.slot, label: a.label, short: a.short || a.role, group: 'asset',
+        hint: a.why || a.hint, required: a.required, sub: a.dir,
+        path: dirOfSub(a.dir) || '', ok: !!r.name,
+        count: r.name ? Math.max(1, r.files.length) : 0,
+        sample: r.files.slice(0, 3),
+        isCustom: !!db.getSetting('modelpath.' + a.dir)
+      });
+    }
   }
+
   const required = items.filter(i => i.required);
   return {
     ready: required.every(i => i.ok),
     items,
-    comfyItems: items.filter(i => i.group === 'comfy'),
+    comfyItems: items.filter(i => i.group === 'comfy' || i.group === 'asset'),
     engineItems: items.filter(i => i.group === 'engine'),
+    assetItems: items.filter(i => i.group === 'asset'),
     modelsRoot: root || '',
     modelsRootOk: scoreRoot(root) > 0,
     modelsRootIsCustom: !!db.getSetting(ROOT_KEY),
@@ -514,9 +606,13 @@ function ensure() {
 }
 
 module.exports = {
-  init, check, setPath, resolveDir, ensure,
+  init, check, setPath, resolveDir, dirOfSub, ensure,
   modelsRoot, setModelsRoot, redetect, detectModelsRoot,
-  listFiles, pick, pickStrict, workflowModels, scoreRoot, drives, ITEMS, ROOT_KEY, AUTO_KEY,
-  IMAGE_TEMPLATES, activeImageTemplate, imageTemplateInfo, imageTemplates,
-  resOptions
+  listFiles, listInDir, pick, pickStrict, scoreRoot, drives, ITEMS, ROOT_KEY, AUTO_KEY,
+  llmDir, hasLlmGguf, LLM_SUBDIR,
+  // 模型方案 → 实际文件：换模型只改配置，下面是代码侧唯一入口
+  workflowModels, resolveAsset, resolveAssets, assetName, assetFiles,
+  // 生图方案：换模型只改方案 JSON，代码侧只保留「当前激活项」这一个入口
+  activeImageTemplate,
+  resOptions, profiles
 };

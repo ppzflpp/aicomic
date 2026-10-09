@@ -1,0 +1,18 @@
+{
+  "_note": "内容体裁「广告 / 品牌短片」= 改的是**结构**不是词汇：产品主角、特写优先、卖点必须能拍到、品牌文字写全。它带一份追加说明（ad.md）+ 一张「本项目该读哪些规范」的清单（prompt.files）—— 词汇仍然是「世界设定」那一层的事，vars 为空。",
+  "id": "ad",
+  "label": "广告 / 品牌短片",
+  "desc": "产品即主角：细节特写优先、卖点必须能从画面读出来、品牌文字写全",
+  "order": 20,
+  "append": ["shots.md", "promptgen.md"],
+  "prompt": {
+    "_note": "值 = 这个项目实际要读的文件清单：写一份 = 整份替换（两边的规则互斥），写两份 = 基座 + 体裁增量（JSON 契约共用）。键必须是代码里认的逻辑规范名（adapt / shots / chars / scenes / profile / promptgen / split / h3 / h3ref / ltx）。文件名必须是内置表里有同名基规范的变体（adapt-ad.md 这类）。",
+    "files": {
+      "adapt.md": ["adapt-ad.md"],
+      "shots.md": ["shots.md", "shots-ad.md"],
+      "profile.md": ["profile.md", "profile-ad.md"],
+      "chars.md": ["chars.md", "chars-ad.md"]
+    }
+  },
+  "vars": {}
+}

@@ -1,0 +1,13 @@
+{
+  "_note": "预置组合：给「真人实拍 + 古装 + 剧集 + 纪实」这个四轴组合起个名字。同一套古装世界与真人画风，但档次从电影感换成纪实 —— 用来验证「调性层是独立的第四根轴」，也是真实事件改编 / 传记题材常用的档次。",
+  "id": "guofeng-docu",
+  "name": "古风写实（纪实）",
+  "desc": "真人实拍 · 古装 · 剧集 · 纪实：自然光、低饱和写实色、现场感优先于好看",
+  "rev": 1,
+  "tags": { "render": "live-action", "world": "guofeng", "genre": "story", "tone": "documentary" },
+  "render": "live-action",
+  "world": "guofeng",
+  "genre": "story",
+  "tone": "documentary",
+  "vars": {}
+}

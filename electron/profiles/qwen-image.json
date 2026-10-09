@@ -1,0 +1,67 @@
+{
+  "id": "qwen-image",
+  "kind": "image",
+  "label": "Qwen-Image 2.1（中文强 · 25 步）",
+  "desc": "Comfy-Org 官方三件套（UNETLoader + Qwen3-VL 8B 文本编码器 + 独立 VAE），中文提示词与画面内文字是强项，VAE 自带 alpha 通道。⚠ 需要 ComfyUI ≥ 0.37.0，并且装过配套的 EmptyQwenImage21LatentImage 节点（见 设置 → 模型管家 提示）。⚠ 该模型为 Qwen 研究许可，商用需另行授权。",
+  "default": true,
+
+  "workflow": "workflows/character_qwen_image.json",
+
+  "assets": [
+    {
+      "slot": "q_unet", "role": "unet", "dir": "diffusion_models",
+      "match": "qwen[._-]?image[._-]?2", "importRe": "qwen[._-]?image[._-]?2(?!.*vae)", "pick": "strict", "required": true,
+      "label": "生图主模型（Qwen-Image 2.1）", "short": "Q主模",
+      "need": "举例：qwen_image_2.1_int8_convrot.safetensors（约 7.3 GB）",
+      "why": "缺了无法生成角色图 / 场景图"
+    },
+    {
+      "slot": "q_clip", "role": "clip", "dir": "text_encoders",
+      "match": "qwen3vl[._-]?8b", "pick": "strict", "required": true,
+      "label": "生图文本编码器（Qwen3-VL 8B）", "short": "Q编码",
+      "need": "举例：qwen3vl_8b_int8_convrot.safetensors（约 9.4 GB）",
+      "why": "缺了生图工作流跑不起来"
+    },
+    {
+      "slot": "q_vae", "role": "vae", "dir": "vae",
+      "match": "^qwen_image_2[._-]?1.*vae", "pick": "strict", "required": true,
+      "label": "生图 VAE（Qwen-Image 2.1）", "short": "Q-VAE",
+      "need": "举例：qwen_image_2.1_vae_bf16.safetensors（约 0.7 GB）",
+      "why": "缺了生图工作流跑不起来"
+    }
+  ],
+
+  "nodes": {
+    "i2iImage": "1", "i2iEncode": "2", "sampler": "3", "latent": "5",
+    "positive": "6", "negative": "6", "decode": "8", "save": "9",
+    "model": "10", "clip": "20", "vae": "21"
+  },
+
+  "params": { "steps": 25, "cfg": 1, "sampler": "euler", "scheduler": "simple" },
+
+  "i2i": { "enabled": true, "denoise": 0.62, "scaleId": "30", "scaleCrop": "center" },
+
+  "resTier": "hi",
+  "resolutions": [
+    ["1024x1024", "1024×1024（1:1）"],
+    ["1920x1088", "1920×1088（16:9）"],
+    ["1088x1920", "1088×1920（9:16）"],
+    ["2048x2048", "2048×2048（1:1）"],
+    ["1344x768", "1344×768（7:4）"],
+    ["768x1344", "768×1344（4:7 竖）"],
+    ["1152x896", "1152×896（9:7）"],
+    ["896x1152", "896×1152（7:9 竖）"],
+    ["1216x832", "1216×832（19:13）"],
+    ["832x1216", "832×1216（13:19 竖）"]
+  ],
+
+  "capabilities": { "i2i": true, "negative": false },
+
+  "prompt": {
+    "append": {
+      "chars.md": ["model-qwen.md"],
+      "scenes.md": ["model-qwen.md"],
+      "promptgen.md": ["model-qwen.md"]
+    }
+  }
+}

@@ -32,17 +32,11 @@
     "productName": "飞鱼AI短剧 Studio",
     "files": [
       "dist/**/*",
-      "electron/**/*"
-    ],
-    "extraResources": [
-      {
-        "from": "resources/ffmpeg",
-        "to": "ffmpeg"
-      }
+      "electron/**/*",
+      "skills/**/*"
     ],
     "win": {
-      "target": "nsis",
-      "icon": "resources/icon.ico"
+      "target": "nsis"
     },
     "nsis": {
       "oneClick": false,

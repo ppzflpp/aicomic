@@ -13,30 +13,36 @@
         <span class="tb-slash">/</span><b>{{ st.current.name }}</b>
       </template>
       <template v-if="st.view==='settings'">
-        <span class="tb-slash">/</span><b>设置与环境检测</b>
+        <span class="tb-slash">/</span><b>设置</b>
       </template>
     </div>
     <span style="flex:1"></span>
 
-    <!-- 实时系统监控：GPU / CPU / 内存（大小 + 使用率） -->
+    <!-- 实时系统监控（2026-09-29 Dragon：4 个独立项，各带百分比 + 进度条；宽度随内容自适应） -->
     <div class="tb-sys" :class="{narrow}">
       <span class="tb-metric" :class="gpuView.cls" :title="gpuView.title">
         <b>GPU</b>
-        <i class="mm-bar"><em :style="{width: gpuView.pct + '%'}"></em></i>
-        <span class="mm-txt">{{ gpuView.text }}</span>
-        <span class="mm-sub">{{ gpuView.sub }}</span>
+        <i class="tb-bar"><em :style="{width: gpuView.pct + '%'}"></em></i>
+        <span class="tb-num">{{ gpuView.text }}</span>
+        <span class="tb-sub">{{ gpuView.sub }}</span>
       </span>
       <span class="tb-metric" :class="cpuView.cls" :title="cpuView.title">
         <b>CPU</b>
-        <i class="mm-bar"><em :style="{width: cpuView.pct + '%'}"></em></i>
-        <span class="mm-txt">{{ cpuView.text }}</span>
-        <span class="mm-sub">{{ cpuView.sub }}</span>
+        <i class="tb-bar"><em :style="{width: cpuView.pct + '%'}"></em></i>
+        <span class="tb-num">{{ cpuView.text }}</span>
+        <span class="tb-sub">{{ cpuView.sub }}</span>
+      </span>
+      <span class="tb-metric" :class="vramView.cls" :title="vramView.title">
+        <b>显存</b>
+        <i class="tb-bar"><em :style="{width: vramView.pct + '%'}"></em></i>
+        <span class="tb-num">{{ vramView.text }}</span>
+        <span class="tb-sub">{{ vramView.sub }}</span>
       </span>
       <span class="tb-metric" :class="memView.cls" :title="memView.title">
         <b>内存</b>
-        <i class="mm-bar"><em :style="{width: memView.pct + '%'}"></em></i>
-        <span class="mm-txt">{{ memView.text }}</span>
-        <span class="mm-sub">{{ memView.sub }}</span>
+        <i class="tb-bar"><em :style="{width: memView.pct + '%'}"></em></i>
+        <span class="tb-num">{{ memView.text }}</span>
+        <span class="tb-sub">{{ memView.sub }}</span>
       </span>
     </div>
 
@@ -62,7 +68,7 @@
             <span class="caret">{{ st.expanded.has('p'+p.id) ? '▼' : '▶' }}</span>
             <span>{{ p.name }}</span>
             <span class="ops">
-              <button title="项目配置（分辨率）" @click.stop="openProjCfg(p.id)">配置</button>
+              <button title="项目配置（分辨率 / 视频质量 / 风格）" @click.stop="openProjCfg(p.id)">配置</button>
               <button title="新建子文件夹" @click.stop="newFolder(p.id, null)">＋夹</button>
               <button title="新建集数" @click.stop="newEpisode(p.id, null)">＋集</button>
               <button class="op-del" title="删除项目" @click.stop="st.askDelete('project', p.id, p.name)">✕</button>
@@ -168,17 +174,16 @@
               <div v-if="!mediaGroups(p.id, 'films').length" class="tree-row leaf-row muted">（暂无成片）</div>
             </template>
 
-            <!-- 项目提示词规范：<项目>/prompts/*.md（五个模块的风格规范，可编辑；缺失/旧版自动补内置版） -->
-            <div class="tree-row sub-row" @click="togglePrompts(p.id)">
-              <span class="caret">{{ st.expanded.has('q'+p.id) ? '▼' : '▶' }}</span>
-              <span>📝 提示词规范</span>
+            <!-- 提示词配置中心（整页视图）：成品预览与整段覆写 + 通用规范 + 模型专属规范 + 风格轴。
+                 2026-10-07：老的「逐份改文件」入口已删 —— 它只是「按文件改」的快捷方式，
+                 能力被这里的「通用规范」分区完整覆盖（还多一个「恢复内置版」）。 -->
+            <div class="tree-row sub-row"
+                 :class="{ active: st.view==='prompts' && st.promptTarget && st.promptTarget.projectId===p.id }"
+                 title="成品提示词 / 通用规范 / 模型专属规范 / 风格轴 —— 都看得见、改得动"
+                 @click="st.openPrompts(p.id)">
+              <span class="caret">🎛</span>
+              <span>提示词配置中心</span>
             </div>
-            <template v-if="st.expanded.has('q'+p.id)">
-              <div v-for="f in promptFiles" :key="'q' + p.id + f.name" class="tree-row leaf-row"
-                   @click="openPromptEdit(p.id, f)">
-                <span class="leaf-ico">📄</span>{{ f.label }}
-              </div>
-            </template>
 
             <!-- 项目角色场景库：跨集共享的角色/场景条目（名字=图片目录名=分镜 chars 的键）。
                  点条目 → 右侧库编辑区（不属于任何一集，无当前集也能打开） -->
@@ -222,17 +227,22 @@
   <!-- 主区域 -->
   <div class="main">
     <div class="pathbar">
-      <button class="btn ghost" style="padding:3px 10px; font-size:12px" v-if="st.view==='settings'" @click="st.view='dash'">← 返回</button>
+      <button class="btn ghost" style="padding:3px 10px; font-size:12px"
+              v-if="st.view==='settings' || st.view==='prompts'" @click="st.view='dash'">← 返回</button>
       <span class="crumb">工作区 <b>{{ workspaceName }}</b></span>
       <template v-if="st.view==='dash' && st.current">
         <span class="crumb">/ <b>{{ st.current.name }}</b></span>
       </template>
       <template v-if="st.view==='settings'">
-        <span class="crumb">/ <b>设置与环境检测</b></span>
+        <span class="crumb">/ <b>设置</b></span>
       </template>
       <template v-if="st.view==='lib'">
         <span class="crumb">/ <b>项目角色场景库</b></span>
         <span class="crumb" v-if="libProject">/ <b>{{ libProject }}</b></span>
+      </template>
+      <template v-if="st.view==='prompts'">
+        <span class="crumb">/ <b>提示词配置中心</b></span>
+        <span class="crumb" v-if="promptProject">/ <b>{{ promptProject }}</b></span>
       </template>
       <span style="flex:1"></span>
       <button class="btn ghost" style="padding:4px 12px; font-size:12px" @click="chooseWs">更改工作区</button>
@@ -243,9 +253,23 @@
       <settings-panel />
     </div>
 
-    <!-- 项目角色场景库视图（不属于任何一集：左树点库条目进来，改的是全项目共享的库） -->
+    <!-- 项目角色场景库视图（不属于任何一集：左树点库条目进来，改的是全项目共享的库）。
+         标题行 = 库视图的模块头（对齐块 2 的角色&场景：标题 + 右侧条目数与批量按钮落点） -->
     <div class="content" v-else-if="st.view==='lib'">
+      <div class="lib-head">
+        <span class="lh-title">项目角色场景库</span>
+        <span class="lh-sub">跨集共享的角色 / 场景条目 —— 布局与「角色 &amp; 场景」一致</span>
+        <span style="flex:1"></span>
+        <span id="lib-count" style="display:inline-flex;align-items:center"></span>
+        <span id="lib-batch" style="display:inline-flex;gap:8px;align-items:center"></span>
+      </div>
       <stage-library />
+    </div>
+
+    <!-- 提示词配置中心（整页视图；不属于任何一集：左树点「提示词配置中心」进来）。
+         四个分区：成品提示词（看 / 整段改）/ 通用规范 / 模型专属规范 / 风格轴 -->
+    <div class="content pv-content" v-else-if="st.view==='prompts'">
+      <prompts-view />
     </div>
 
     <!-- 仪表盘视图 -->
@@ -272,7 +296,7 @@
             <span id="adapt-count" style="display:inline-flex;align-items:center"></span>
             <!-- 2026-09-27 二改（Dragon）：「改编」「生成分镜」按钮移到模块标题栏右边（耗时挂改编左边） -->
             <span id="adapt-ms" style="display:inline-flex;align-items:center"></span>
-            <button class="btn" :disabled="chapter.trim().length<50" @click="startAdapt">改编</button>
+            <button class="btn h-sm" :disabled="chapter.trim().length<50" @click="startAdapt">改编</button>
             <span id="adapt-ops" style="display:inline-flex;align-items:center"></span>
           </div>
           <div class="stage-body">
@@ -344,15 +368,15 @@
     <log-panel />
 
     <div class="statusbar">
-      <span>阶段：{{ st.view==='settings' ? '—' : blockPos + '/4' }}</span>
+      <span>阶段：{{ st.view==='dash' ? blockPos + '/4' : '—' }}</span>
       <span class="sb-sep"></span>
       <!-- 推理服务 -->
       <span class="sbc" :class="st.health && st.health.llm ? 'on' : 'off'" title="LLM 推理服务（llama-server）">LLM</span>
-      <span class="sbc" :class="st.health && st.health.comfyui ? 'on' : 'off'" title="ComfyUI（角色出图 / H3 视频）">ComfyUI</span>
+      <span class="sbc" :class="st.health && st.health.comfyui ? 'on' : 'off'" title="ComfyUI（角色出图 / 视频生成）">ComfyUI</span>
       <span class="sbc" :class="st.health && st.health.ffmpeg ? 'on' : 'off'" title="ffmpeg（合成成片与字幕）">ffmpeg</span>
       <span class="sb-sep"></span>
       <!-- 模型就位情况（底模 / H3 等，悬停看文件名与缺失原因） -->
-      <span v-for="m in st.models.items" :key="m.key" class="sbc" :class="m.ok ? 'on' : 'off'" :title="modelTip(m)">
+      <span v-for="m in statusModels" :key="m.key" class="sbc" :class="m.ok ? 'on' : 'off'" :title="modelTip(m)">
         {{ m.short || m.key }}<b v-if="m.ok">{{ m.count }}</b>
       </span>
       <span v-if="pl.totalMs">累计耗时：{{ fmtMs(pl.totalMs) }}</span>
@@ -386,8 +410,8 @@
         <div class="proj-head-txt">
           <h3>{{ projModal.mode === 'create' ? '新建项目' : '项目配置' }}</h3>
           <p class="proj-sub">{{ projModal.mode === 'create'
-            ? '设置项目级分辨率，作为本项目下新建剧集的初始配置'
-            : projModal.name + ' · 分辨率模板' }}</p>
+            ? '设置项目级风格与分辨率，作为本项目下新建剧集的初始配置'
+            : projModal.name + ' · 风格与分辨率' }}</p>
         </div>
       </div>
 
@@ -414,13 +438,68 @@
             <option v-for="t in st.tierOptions" :key="t.key" :value="t.key">{{ t.label }}{{ t.default ? '（推荐）' : '' }}</option>
           </select>
         </div>
+        <!-- 风格 = 四轴：画面风格 × 世界设定 × 内容体裁 × 制作调性（项目级）。
+             规范正文里的题材词随它们替换；四轴各管一件事，组合起来才是这部片子的风格。
+             🔴 2026-10-07：四轴由「下拉」改为「点选网格」（点一下即选中）——
+             轴选项自带 label + desc，卡片能把「这一轴有哪几个选择、各自是什么」一次摊开；
+             下拉只能看见当前那一个词，用户得逐个展开才知道还有什么。
+             🔴 2026-10-08：第三轴之后新增「制作调性」（电影感 / 商业广告大片 / 纪实 / 时尚杂志 / 剧集质感）——
+             它管的是「拍成什么档次」（光影要求 / 调色 / 构图守则 / 英文调性词），
+             与「世界」正交：同一个世界既能拍纪实质感，也能拍商业广告大片。
+             `.proj-style-*` 四个类名保留在网格容器上（外部按它定位），单个选项靠 `data-opt`。 -->
+        <div class="proj-row col">
+          <span class="proj-kind">{{ st.axisLabel('render') }}</span>
+          <div class="popt-grid proj-style-render">
+            <button type="button" v-for="o in st.axisOptions('render')" :key="o.id"
+                    class="popt" :class="{on: projModal.render === o.id}"
+                    :data-opt="o.id" @click="projModal.render = o.id">
+              <b>{{ o.label }}</b>
+              <span v-if="o.desc">{{ o.desc }}</span>
+            </button>
+          </div>
+        </div>
+        <div class="proj-row col">
+          <span class="proj-kind">{{ st.axisLabel('world') }}</span>
+          <div class="popt-grid proj-style-world">
+            <button type="button" v-for="o in st.axisOptions('world')" :key="o.id"
+                    class="popt" :class="{on: projModal.world === o.id}"
+                    :data-opt="o.id" @click="projModal.world = o.id">
+              <b>{{ o.label }}</b>
+              <span v-if="o.desc">{{ o.desc }}</span>
+            </button>
+          </div>
+        </div>
+        <div class="proj-row col">
+          <span class="proj-kind">{{ st.axisLabel('genre') }}</span>
+          <div class="popt-grid proj-style-genre">
+            <button type="button" v-for="o in st.axisOptions('genre')" :key="o.id"
+                    class="popt" :class="{on: projModal.genre === o.id}"
+                    :data-opt="o.id" @click="projModal.genre = o.id">
+              <b>{{ o.label }}</b>
+              <span v-if="o.desc">{{ o.desc }}</span>
+            </button>
+          </div>
+        </div>
+        <div class="proj-row col">
+          <span class="proj-kind">{{ st.axisLabel('tone') }}</span>
+          <div class="popt-grid proj-style-tone">
+            <button type="button" v-for="o in st.axisOptions('tone')" :key="o.id"
+                    class="popt" :class="{on: projModal.tone === o.id}"
+                    :data-opt="o.id" @click="projModal.tone = o.id">
+              <b>{{ o.label }}</b>
+              <span v-if="o.desc">{{ o.desc }}</span>
+            </button>
+          </div>
+        </div>
       </div>
       <p class="proj-hint" v-if="projTierDesc()">{{ projTierDesc() }}</p>
+      <p class="proj-hint" v-if="projStyleDesc()">{{ projStyleDesc() }}</p>
+      <p class="proj-hint warn" v-if="projStyleIssue()">{{ projStyleIssue() }}</p>
 
       <div class="proj-note">
         {{ projModal.mode === 'create'
-          ? '分辨率将在本项目下新建剧集时作为初始值；视频质量对本项目的所有剧集立即生效。'
-          : '⚠ 分辨率修改只影响之后新建的剧集；视频质量立即对全部剧集生效。' }}
+          ? '风格与视频质量对本项目的所有剧集立即生效；分辨率只作为新建剧集的初始值。'
+          : '⚠ 风格与视频质量立即对全部剧集生效；分辨率修改只影响之后新建的剧集。' }}
       </div>
 
       <div class="row">
@@ -458,24 +537,6 @@
     </div>
   </div>
 
-  <!-- 提示词编辑弹窗：<项目>/prompts/*.md，保存后下次生成即生效 -->
-  <div class="mask" :class="{hidden: !promptEdit}" @click.self="promptEdit = null">
-    <div class="dialog media-dialog prompt-dialog" v-if="promptEdit">
-      <div class="md-head">
-        <div class="md-title">
-          <b>{{ promptEdit.label }}</b>
-          <span class="md-sub">{{ promptEdit.name }} · 这是风格规范（不是直接发给大模型的提示词），可自由编辑，保存后下次生成即生效</span>
-        </div>
-        <span style="flex:1"></span>
-        <button class="btn ghost sm" @click="promptEdit = null">关闭</button>
-        <button class="btn sm" :disabled="promptEdit.busy" @click="savePromptEdit">保存</button>
-      </div>
-      <div class="md-body">
-        <textarea v-model="promptEdit.text" class="prompt-editor" :disabled="promptEdit.busy" spellcheck="false"></textarea>
-      </div>
-    </div>
-  </div>
-
   <!-- 危险确认弹窗（删除） -->
   <div class="mask" :class="{hidden: !st.confirmDel}">
     <div class="dialog danger">
@@ -499,17 +560,17 @@ import StageShots from './StageShots.vue'
 import StageChars from './StageChars.vue'
 import StageLibrary from './StageLibrary.vue'
 import StageExport from './StageExport.vue'
+import PromptsView from './PromptsView.vue'
 import LogPanel from './LogPanel.vue'
-import { PROMPT_FILES } from './prompts.js'
+import { clearStylePack } from './prompts.js'
 import { moduleStale, ackModule, MODULE_STALE_KINDS } from './stale.js'
 
 export default {
-  components: { FolderNode, SettingsPanel, StageAdapt, StageShots, StageChars, StageLibrary, StageExport, LogPanel },
+  components: { FolderNode, SettingsPanel, StageAdapt, StageShots, StageChars, StageLibrary, StageExport, PromptsView, LogPanel },
   data() {
     return {
       chapter: '',
       projModal: null,   // 项目配置弹窗 {mode:'create'|'edit', id, name, img, vid, out}
-      promptEdit: null,  // 提示词编辑弹窗 {pid, name, label, text, busy}
       preview: null,     // 媒体预览弹窗 {kind:'image'|'video', file, sub, src, path}
       toastMsg: null,
       m: null,          // 系统指标快照 { cpu, mem, gpu }
@@ -534,11 +595,24 @@ export default {
     resOpts() {
       return this.st.resOptions || { img: [], vid: [], out: [] }
     },
-    /** 项目提示词文件清单（固定四个：adapt/shots/chars/h3） */
-    promptFiles() { return PROMPT_FILES },
+    /**
+     * 状态栏模型胶囊：只显示「目录 / 引擎」级项。
+     * 方案逐槽位的明细（Z主模 / Z编码 / H3主模型 / LoRA…）放在设置页的模型检测里，
+     * 状态栏只留目录级，避免同一个文件在胶囊上重复出现两次。
+     */
+    statusModels() {
+      return (this.st.models.items || []).filter(m => m.group !== 'asset')
+    },
     /** 库编辑区当前所属项目名（面包屑用） */
     libProject() {
       const t = this.st.libTarget
+      if (!t) return ''
+      const p = this.st.tree.find(x => x.id === t.projectId)
+      return p ? p.name : ''
+    },
+    /** 提示词配置中心当前所属项目名（面包屑用） */
+    promptProject() {
+      const t = this.st.promptTarget
       if (!t) return ''
       const p = this.st.tree.find(x => x.id === t.projectId)
       return p ? p.name : ''
@@ -555,12 +629,28 @@ export default {
       const procs = (g.procs || []).filter(p => p.memMiB > 800)
         .map(p => p.name + ' ' + (p.memMiB / 1024).toFixed(1) + 'G').join('、')
       return {
-        text: util + '% · 显存 ' + memPct + '%',
+        text: util + '%',
         sub: g.tempC != null ? g.tempC + '℃' : '',
-        pct: (g.memPercent || 0),
-        cls: (g.memPercent || 0) >= 92 ? 'hi' : (util >= 90 ? 'hot' : ''),
+        pct: util,
+        cls: util >= 90 ? 'hot' : '',
         title: g.name + '｜GPU 算力占用 ' + util + '%｜显存 ' + used + ' / ' + total + ' GB（' + memPct + '%）'
           + (procs ? '｜显存占用：' + procs : '｜当前无进程占用显存')
+      }
+    },
+    /** 显存使用率（2026-09-29 Dragon：从 GPU 胶囊拆出来单独显示） */
+    vramView() {
+      const g = this.m && this.m.gpu
+      if (!g || !g.ok || g.memPercent == null) {
+        return { text: '—', sub: '', pct: 0, cls: 'off', title: '未检测到 NVIDIA 显卡（或 nvidia-smi 不可用）' }
+      }
+      const used = (g.usedMiB / 1024).toFixed(1)
+      const total = (g.totalMiB / 1024).toFixed(1)
+      return {
+        text: g.memPercent + '%',
+        sub: used + '/' + Math.round(g.totalMiB / 1024) + 'G',
+        pct: g.memPercent,
+        cls: g.memPercent >= 92 ? 'hi' : '',
+        title: '显存 ' + used + ' / ' + total + ' GB（' + g.memPercent + '%）'
       }
     },
     cpuView() {
@@ -580,8 +670,8 @@ export default {
       const used = (mm.used / 1024 / 1024 / 1024).toFixed(1)
       const total = (mm.total / 1024 / 1024 / 1024).toFixed(1)
       return {
-        text: mm.percent + '% · ' + used + '/' + total + 'G',
-        sub: '',
+        text: mm.percent + '%',
+        sub: used + '/' + Math.round(mm.total / 1024 / 1024 / 1024) + 'G',
         pct: mm.percent,
         cls: mm.percent >= 92 ? 'hi' : '',
         title: '物理内存 ' + used + ' / ' + total + ' GB'
@@ -604,8 +694,8 @@ export default {
     this._tickTimer = setInterval(() => this.pl.tickLive(), 1000)
     // 每 5s 轮询一次 llama / ComfyUI 真实健康状态（标题栏胶囊实时准确）
     this._healthTimer = setInterval(() => this.st.refreshHealth(), 5000)
-    // 窄窗口折叠指标文字
-    this._offResize = () => { this.narrow = window.innerWidth < 1400 }
+    // 窄窗口折叠指标文字（2026-09-29：指标拆成 4 个后整体更宽，阈值 1400 → 1500）
+    this._offResize = () => { this.narrow = window.innerWidth < 1500 }
     this._offResize()
     window.addEventListener('resize', this._offResize)
   },
@@ -711,26 +801,38 @@ export default {
       this.pl.autoAdapt = true
       this.toast('已确认原文，正在自动改编…')
     },
-    /** 新建项目：弹窗里一并定三个分辨率 + 视频生成档位（项目级，档位对本项目全部剧集生效） */
+    /** 新建项目：弹窗里一并定三个分辨率 + 视频生成档位 + 风格三轴（都是项目级） */
     newProject() {
       const d = this.st.resOptions || { img: [], vid: [], out: [] }
+      const ax = this.st.defaultAxes()
       this.projModal = {
         mode: 'create', id: null, name: '',
-        img: (d.img[0] || {}).value || '1216x832',
+        img: (d.img[0] || {}).value || '1920x1080',
         vid: (d.vid[0] || {}).value || '864x480',
         out: (d.out[0] || {}).value || '1920x1080',
-        tier: this.st.defaultTier()
+        tier: this.st.defaultTier(),
+        render: ax.render, world: ax.world, genre: ax.genre, tone: ax.tone,
+        styleOld: ''
       }
     },
-    /** 项目配置：读项目当前三项 + 视频档位；分辨率改了只影响之后新建的剧集，档位立即生效 */
+    /** 项目配置：读项目当前三项 + 视频档位 + 风格三轴；分辨率改了只影响之后新建的剧集，
+     *  档位与风格立即生效（风格决定提示词规范里的题材词，见 prompts.js 的 readPrompt） */
     openProjCfg(pid) {
       const p = this.st.tree.find(x => x.id === pid)
       if (!p) return
       const r = p.res || {}
+      const old = r.style || this.st.defaultStyle()
+      const tri = this.st.parseTriple(old)
+      // 某个轴值已经不存在了（风格包被删/改名）→ 该轴先退回清单第一项，免得下拉显示空白；
+      // 但是否真的改掉由用户点保存决定（projStyleIssue 会明确提示"原来用的 X 已不存在"）
+      const fix = (ax) => this.st.axisOptions(ax).some(x => x.id === tri[ax])
+        ? tri[ax] : ((this.st.axisOptions(ax)[0] || {}).id || tri[ax])
       this.projModal = {
         mode: 'edit', id: pid, name: p.name,
-        img: r.img || '1216x832', vid: r.vid || '864x480', out: r.out || '1920x1080',
-        tier: r.tier || this.st.defaultTier()
+        img: r.img || '1920x1080', vid: r.vid || '864x480', out: r.out || '1920x1080',
+        tier: r.tier || this.st.defaultTier(),
+        render: fix('render'), world: fix('world'), genre: fix('genre'), tone: fix('tone'),
+        styleOld: old
       }
     },
     /** 当前弹窗选中的档位说明（画在 select 下方的小字） */
@@ -739,10 +841,49 @@ export default {
       const t = (this.st.tierOptions || []).find(x => x.key === (m && m.tier))
       return t ? t.desc : ''
     },
+    /** 当前弹窗四轴选择的说明小字（四轴各一句 + 若等于某个预置就点名它） */
+    projStyleDesc() {
+      const m = this.projModal
+      if (!m) return ''
+      const parts = []
+      for (const ax of ['render', 'world', 'genre', 'tone']) {
+        const o = this.st.axisOptions(ax).find(x => x.id === m[ax]) || {}
+        const t = [o.label, o.desc].filter(Boolean).join('：')
+        if (t) parts.push(t)
+      }
+      if (!parts.length) return ''
+      const pre = this.st.presetNameOf({ render: m.render, world: m.world, genre: m.genre, tone: m.tone })
+      return parts.join('　｜　') + (pre ? '　（等于预置：' + pre + '）' : '')
+    },
+    /**
+     * 风格体系的警告（黄条）—— 两类：
+     * ① 主进程报的结构性问题（风格包文件坏了 / 核心键缺失 / 世界没给某个画面风格备短语）；
+     * ② 本项目原来用的风格已经解析不了了（styleOld 里的轴值不在清单里）。
+     * 🔴 这些以前全都被悄悄吞掉（styles.errors() 是死代码），结果是「项目设的是 A 风格、
+     *    实际出的是 B 风格」而用户毫不知情。必须显示出来。
+     */
+    projStyleIssue() {
+      const m = this.projModal
+      const iss = this.st.styleIssues || {}
+      const msgs = []
+      for (const x of (iss.errors || [])) msgs.push(x)
+      for (const x of (iss.warnings || [])) msgs.push(x)
+      if (m && m.mode === 'edit' && m.styleOld) {
+        const miss = this.st.missingAxes(this.st.parseTriple(m.styleOld))
+        if (miss.length) {
+          msgs.push('本项目原来用的 ' + miss.join('、') + ' 已经不在可用清单里，下拉已退回默认值；' +
+            '不改就会在保存时按现在选的生效')
+        }
+      }
+      if (!msgs.length) return ''
+      return '⚠ 风格配置需要注意：' + msgs.slice(0, 3).join('；') +
+        (msgs.length > 3 ? '（还有 ' + (msgs.length - 3) + ' 条，详见日志面板）' : '')
+    },
     async confirmProj() {
       const m = this.projModal
       if (!m) return
-      const res = { img: m.img, vid: m.vid, out: m.out, tier: m.tier }
+      const style = this.st.tripleId({ render: m.render, world: m.world, genre: m.genre, tone: m.tone })
+      const res = { img: m.img, vid: m.vid, out: m.out, tier: m.tier, style }
       if (m.mode === 'create') {
         const name = (m.name || '').trim()
         if (!name) { this.toast('请填写项目名称'); return }
@@ -750,9 +891,16 @@ export default {
         await this.st.createProject(name, res)
         this.toast('已新建项目：' + name)
       } else {
+        const before = ((this.st.tree.find(x => x.id === m.id) || {}).res || {}).style
         this.projModal = null
         await this.st.setProjectRes(m.id, res)
-        this.toast('已保存（只影响之后新建的剧集）')
+        if (before !== style) {
+          // 换风格 → 渲染层的风格包缓存作废（下次读规范时按新风格重新取）
+          clearStylePack()
+          this.toast('已切换风格 —— 之后新生成的档案与提示词会按新风格写；已有的档案 / 提示词要重新生成才会变')
+        } else {
+          this.toast('已保存（分辨率只影响之后新建的剧集）')
+        }
       }
     },
     /* ---- 左侧树：项目媒体节点（剧本 / assets / 分镜 / 成片），展开时才拉数据 ---- */
@@ -907,41 +1055,6 @@ export default {
     },
     newFolder(pid, parentId) {
       this.st.askText('子文件夹名称', '', name => this.st.addFolder(pid, parentId, name).then(() => this.toast('已新建文件夹')))
-    },
-    /* ---- 左侧树：项目提示词文件（<项目>/prompts/*.md，固定四个） ---- */
-    async togglePrompts(pid) {
-      const key = 'q' + pid
-      const wasOpen = this.st.expanded.has(key)
-      this.st.toggleExpand(key)
-      if (!wasOpen) {
-        // 主进程在 list 时会把缺失的内置提示词补齐（新项目/被删过都能自愈）
-        try { await window.studio.promptsList(this.st.workspace, pid) } catch (_) {}
-      }
-    },
-    async openPromptEdit(pid, f) {
-      this.promptEdit = { pid, name: f.name, label: f.label, text: '', busy: true }
-      try {
-        const text = await window.studio.readPrompt(this.st.workspace, pid, f.name)
-        if (!this.promptEdit || this.promptEdit.pid !== pid || this.promptEdit.name !== f.name) return
-        this.promptEdit.text = text
-        this.promptEdit.busy = false
-      } catch (e) {
-        this.toast('读取失败：' + (e && e.message || e))
-        this.promptEdit = null
-      }
-    },
-    async savePromptEdit() {
-      const p = this.promptEdit
-      if (!p || p.busy) return
-      p.busy = true
-      try {
-        await window.studio.savePrompt(this.st.workspace, p.pid, p.name, p.text)
-        this.toast('提示词已保存，下次生成即生效')
-        this.promptEdit = null
-      } catch (e) {
-        this.toast('保存失败：' + (e && e.message || e))
-        p.busy = false
-      }
     },
     newEpisode(pid, folderId) {
       const p = this.st.tree.find(x => x.id === pid)

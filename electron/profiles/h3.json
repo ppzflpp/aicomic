@@ -1,0 +1,171 @@
+{
+  "id": "h3",
+  "kind": "video",
+  "label": "MiniMax H3（本地 · 带音频）",
+  "desc": "文生视频 / 首尾帧 / 参考图 / 参考视频四路，音视频同出；快慢质量三档由 tiers 决定权重与加速 LoRA",
+  "default": true,
+
+  "workflow": "workflows/video_h3.json",
+
+  "assets": [
+    {
+      "slot": "h3_fl2va", "role": "unet", "alsoAs": ["h3_model", "h3_unet"], "dir": "diffusion_models",
+      "match": "fl2va", "pick": "strict", "required": true,
+      "label": "视频主模型（H3 · 文字/首帧线 fl2va）", "short": "H3主模",
+      "need": "举例：minimax_h3_fl2va.safetensors",
+      "why": "缺了无法生成分镜视频"
+    },
+    {
+      "slot": "h3_ref2va", "role": "unetRef", "dir": "diffusion_models",
+      "match": "ref2va", "pick": "strict", "required": false,
+      "label": "视频主模型（H3 · 参考图线 ref2va）", "short": "H3参考",
+      "need": "举例：minimax_h3_ref2va.safetensors",
+      "why": "缺了无法用参考图 / 参考视频生成"
+    },
+    {
+      "slot": "h3_text_encoder", "role": "textEncoder", "dir": "text_encoders",
+      "match": "qwen_?3[._-]?vl|h3", "importRe": "qwen_?3[._-]?vl", "pick": "any", "required": true,
+      "label": "视频文本编码器（H3 必需）", "short": "H3编码",
+      "need": "举例：qwen3vl_32b.safetensors",
+      "why": "缺了视频工作流跑不起来"
+    },
+    {
+      "slot": "h3_video_vae", "role": "videoVae", "dir": "vae",
+      "match": "video_vae", "pick": "strict", "required": true,
+      "label": "视频 VAE（画面）", "short": "H3画V",
+      "need": "举例：h3_video_vae.safetensors",
+      "why": "缺了视频工作流跑不起来"
+    },
+    {
+      "slot": "h3_audio_vae", "role": "audioVae", "dir": "vae",
+      "match": "audio_vae", "pick": "strict", "required": true,
+      "label": "视频 VAE（音频）", "short": "H3音V",
+      "need": "举例：h3_audio_vae.safetensors",
+      "why": "缺了视频工作流跑不起来"
+    },
+    {
+      "slot": "h3_lora", "role": "lora", "alsoAs": ["h3_turbo_lora"], "dir": "loras",
+      "match": "(fl2v|ref2v|turbo)", "pick": "strict", "list": true, "required": false, "optional": true,
+      "label": "加速 LoRA（H3 Turbo，可选）", "short": "H3加速",
+      "need": "举例：h3_fl2v_turbo_8step.safetensors",
+      "why": "可选：装了能把采样从 20 步压到 4-8 步"
+    }
+  ],
+
+  "nodes": {
+    "model": "10", "textEncoder": "11", "videoVae": "12", "audioVae": "13",
+    "lora": "14", "shift": "15", "conditioning": "16",
+    "noise": "17", "guider": "18", "sampler": "19", "scheduler": "20",
+    "samplerAdv": "21", "decodeVideo": "22", "decodeAudio": "23",
+    "makeVideo": "24", "save": "25"
+  },
+
+  "classes": {
+    "conditioning": "MiniMaxH3ImageToVideo",
+    "conditioningRef": "MiniMaxH3ReferenceToVideo",
+    "guide": "MiniMaxH3AddGuide",
+    "shift": "MiniMaxH3SigmaShift"
+  },
+
+  "params": { "steps": 20, "sampler": "res_multistep", "scheduler": "simple" },
+
+  "frames": {
+    "fps": 24,
+    "grid": [17, 5],
+    "seconds": [4, 15],
+    "defaultSeconds": 5,
+    "snap": 32,
+    "default": [864, 480]
+  },
+
+  "resolutions": [
+    ["864x480", "864×480（16:9）"],
+    ["480x864", "480×864（9:16）"],
+    ["960x544", "960×544（16:9）"],
+    ["544x960", "544×960（9:16）"],
+    ["1344x768", "1344×768（16:9）"],
+    ["768x1344", "768×1344（9:16）"],
+    ["768x768", "768×768（1:1）"],
+    ["640x640", "640×640（1:1）"]
+  ],
+
+  "branches": [
+    { "key": "fl2v", "when": "noref", "label": "文字 / 首尾帧支路" },
+    { "key": "ref2v", "when": "ref", "label": "参考图 / 参考视频支路" }
+  ],
+
+  "tierOrder": ["fast", "balanced", "hq"],
+  "defaultTier": "balanced",
+  "tierLabels": { "fast": "速度优先", "balanced": "平衡", "hq": "质量优先" },
+  "tierDescs": {
+    "fast": "最快出片，适合批量验证分镜节奏",
+    "balanced": "质量接近最佳、速度适中",
+    "hq": "质量上限最高，出片最慢，适合关键镜头与终稿"
+  },
+
+  "tiers": {
+    "fast": {
+      "fl2v": [
+        { "match": "fl2v.*8step(?!.*768p)", "steps": 8, "shift": [12, 3] },
+        { "match": "fl2v.*4step", "steps": 4, "shift": [6, 3] }
+      ],
+      "ref2v": [
+        { "match": "turbo_v4_step600", "steps": 4, "shift": null },
+        { "match": "ref2v", "steps": 4, "shift": null }
+      ]
+    },
+    "balanced": {
+      "fl2v": [
+        { "match": "fl2v.*8step.*768p", "steps": 8, "shift": [6, 3] },
+        { "match": "fl2v.*8step", "steps": 8, "shift": [12, 3] }
+      ],
+      "ref2v": [
+        { "match": "turbo_v4_step600", "steps": 6, "shift": null },
+        { "match": "ref2v", "steps": 4, "shift": null }
+      ]
+    },
+    "hq": {
+      "fl2v": [ { "match": null, "steps": 20, "shift": null } ],
+      "ref2v": [
+        { "match": "turbo_v4_step600", "steps": 8, "shift": null },
+        { "match": null, "steps": 20, "shift": null }
+      ]
+    }
+  },
+
+  "wiring": {
+    "framing": "native",
+    "firstKey": "first_frame",
+    "lastKey": "last_frame",
+    "frameCrop": { "first": "disabled", "last": "center" },
+    "scaleMethod": "lanczos",
+    "condOutput": 0,
+    "latentOutput": 1,
+    "refCondClass": "MiniMaxH3ReferenceToVideo",
+    "refImageKey": "ref_images.ref_image_{i}",
+    "refVideoKey": "ref_videos.ref_video_{i}",
+    "refVideoNeedsFrames": true,
+    "refExtra": {
+      "beforePrompt": {
+        "audio_vae": { "node": "audioVae", "output": 0 }
+      },
+      "afterLength": {
+        "ref_image_size": { "param": "refImageSize", "default": "match" }
+      }
+    },
+    "guide": {
+      "class": "MiniMaxH3AddGuide",
+      "vaeRole": "videoVae",
+      "anchorFrame": { "first": 0, "last": -1 }
+    },
+    "nodeIds": {
+      "firstImg": 200, "firstScale": 201,
+      "lastImg": 202, "lastScale": 203,
+      "refImg": 220, "refVid": 230, "refVidComp": 240, "guide": 90
+    }
+  },
+
+  "capabilities": { "firstFrame": true, "lastFrame": true, "refImage": true, "refVideo": true, "audio": true },
+
+  "prompt": { "files": { "base": "h3.md", "ref": "h3ref.md" } }
+}

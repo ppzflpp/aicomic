@@ -144,7 +144,7 @@ async function _ensureComfy(label) {
       // startComfy 内部已等 150s，这里再兜底 120s（Desktop 偶发更慢）
       const ok = await launcher.waitHealth('comfyui', 120000, { label: 'ComfyUI', stepMs: 15000 });
       if (!ok) {
-        const m = 'ComfyUI 启动超时（共约 270 秒）。请检查 ComfyUI 窗口是否有报错；也可以手动打开 ComfyUI，等它完全启动后再回来重试，或到 设置 → 环境检测 重新检测。';
+        const m = 'ComfyUI 启动超时（共约 270 秒）。请检查 ComfyUI 窗口是否有报错；也可以手动打开 ComfyUI，等它完全启动后再回来重试。';
         logger.error(m);
         throw new Error(m);
       }

@@ -36,11 +36,6 @@ function write(patch) {
   return next;
 }
 
-function clear() {
-  if (!db) return;
-  try { db.setSetting(KEY, '{}'); } catch (_) {}
-}
-
 function stamp() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
@@ -109,4 +104,4 @@ function trackWindow(win) {
   return save;
 }
 
-module.exports = { KEY, DEF, init, read, write, clear, windowState, trackWindow };
+module.exports = { KEY, DEF, init, read, write, windowState, trackWindow };

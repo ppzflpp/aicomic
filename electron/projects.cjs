@@ -1,9 +1,10 @@
 'use strict';
 const path = require('path');
 const fs = require('fs');
-const { sanitize } = require('./assetStore.cjs');
+const { sanitize, copyDir: copyDirTree } = require('./assetStore.cjs');
 const prompts = require('./prompts.cjs');
 const videoTiers = require('./videoTiers.cjs');
+const styles = require('./styles.cjs');
 
 /* ---------- 路径工具（2026-09-24 扁平化：项目下只留 剧本/分镜/成片 三个平铺目录） ----------
  *
@@ -66,6 +67,103 @@ function characterDir(db, workspace, projectId, charName) {
 function sceneDir(db, workspace, projectId, sceneName) {
   const a = assetsRoot(db, workspace, projectId);
   return a ? path.join(a, 'scenes', sanitize(sceneName)) : null;
+}
+
+/**
+ * 集私有素材根：<项目>/assets/episodes/<集名前缀>
+ * 🔴 集名在项目内唯一且不可改（addEpisode 保证唯一；没有改名功能）→ 可安全当目录名。
+ * 分工：assets/{characters,scenes}/ = 项目角色场景库的**共享素材**（libReadonly=true 的卡看这里）；
+ *      assets/episodes/<集>/ = **本集自己的素材**（libReadonly=false 的卡看这里，跨集互不污染）。
+ */
+function episodeAssetsRoot(db, workspace, ep) {
+  const a = assetsRoot(db, workspace, ep.project_id);
+  return a ? path.join(a, 'episodes', sanitize(ep.name)) : null;
+}
+
+/** 集私有素材下的类型目录：<集私有根>/characters 或 /scenes */
+function episodeKindDir(db, workspace, ep, kind) {
+  const r = episodeAssetsRoot(db, workspace, ep);
+  return r ? path.join(r, kind === 'scene' ? 'scenes' : 'characters') : null;
+}
+
+/**
+ * 归档「不再出现的角色 / 场景」的图片目录（2026-10-07）。
+ *
+ * 重新生成分镜的语义是**从零开始**：新分镜里没提到的角色/场景，档案与卡片都不该留。
+ * 但那些图是花显卡时间出的，不能一声不吭删掉 → **移动**到
+ *   <集私有素材根>/_trash/<时间戳>/{characters,scenes}/<名字>/
+ * UI 上干干净净，想找回时去 _trash 里按时间戳翻。
+ *
+ * 🔴 只处理**集私有**素材（card.libReadonly !== true 的那批）。库条目的图是跨集共享的，
+ *    归档它会连带毁掉别的集 → 调用方负责过滤，这里只按传进来的名字动手。
+ * 🔴 禁用 fs.cpSync（中文路径段错误）→ renameSync 优先，失败退回 copyDir 手写拷贝 + 删源。
+ *
+ * @param {Array<{kind:'character'|'scene', name:string}>} items 要归档的名字
+ * @returns {{moved:string[], failed:string[], trashDir:string|null}}
+ */
+function archiveEpisodeAssets(db, workspace, ep, items) {
+  const out = { moved: [], failed: [], trashDir: null };
+  const list = (Array.isArray(items) ? items : []).filter(x => x && x.name);
+  if (!list.length || !ep) return out;
+  const root = episodeAssetsRoot(db, workspace, ep);
+  if (!root) return out;
+  const trashDir = path.join(root, '_trash', String(Date.now()));
+  for (const it of list) {
+    const kind = it.kind === 'scene' ? 'scene' : 'character';
+    const from = path.join(episodeKindDir(db, workspace, ep, kind), sanitize(it.name));
+    if (!fs.existsSync(from)) continue;          // 本来就没图（没出过图）→ 无图可归档
+    const to = path.join(trashDir, kind === 'scene' ? 'scenes' : 'characters', sanitize(it.name));
+    try {
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      try {
+        fs.renameSync(from, to);                 // 同盘：瞬间完成
+      } catch (_) {
+        const n = copyDirTree(from, to);         // 跨盘 / 被占用 → 手写拷贝（绕开 cpSync 的段错误）
+        if (!n) throw new Error('拷贝失败');
+        fs.rmSync(from, { recursive: true, force: true });
+      }
+      out.moved.push((kind === 'scene' ? 'scenes/' : 'characters/') + it.name);
+    } catch (err) {
+      out.failed.push(it.name + '（' + ((err && err.message) || err) + '）');
+    }
+  }
+  out.trashDir = out.moved.length ? trashDir : null;
+  return out;
+}
+
+/**
+ * 幂等迁移：把「本集自己的卡」（chars/scenes.json 里 libReadonly !== true 的卡）的图目录
+ * 从项目共享素材目录**复制**到集私有目录。
+ *   - libReadonly === true 的卡 = 库条目的只读视图 → 图归库，原地不动
+ *   - 其它卡（手动新增的、入库后本集仍可编辑的）→ 图归本集
+ * 🔴 只复制、不删原目录 —— 要回退就删掉 assets/episodes 目录，图一份没少。
+ * 🔴 复制走 assetStore.copyDir，**不要用 fs.cpSync**：Node 在 Windows 上对中文路径
+ *    （「路人甲」这种）调 cpSync 会直接段错误把进程干掉（2026-10-07 实测）。
+ * @returns 实际搬动的 "<类型>/<名字>" 列表
+ */
+function migrateEpisodePrivateAssets(db, workspace, ep) {
+  const aRoot = assetsRoot(db, workspace, ep.project_id);
+  if (!aRoot) return [];
+  const eName = sanitize(ep.name);
+  const moved = [];
+  for (const [file, sub] of [['chars.json', 'characters'], ['scenes.json', 'scenes']]) {
+    const p = artifactPath(db, workspace, ep, file);
+    if (!p || !fs.existsSync(p)) continue;
+    let arr = [];
+    try { arr = JSON.parse(fs.readFileSync(p, 'utf-8')); } catch (_) { continue; }
+    if (!Array.isArray(arr)) continue;
+    for (const c of arr) {
+      if (!c || !c.name) continue;
+      if (c.libReadonly === true) continue;            // 库条目的只读视图：图归库
+      const id = sanitize(c.name);
+      const src = path.join(aRoot, sub, id);
+      const dst = path.join(aRoot, 'episodes', eName, sub, id);
+      if (!fs.existsSync(src) || fs.existsSync(dst)) continue;
+      const n = copyDirTree(src, dst);                 // 单条失败返回 0，不挡其它
+      if (n > 0) moved.push(sub + '/' + id);
+    }
+  }
+  return moved;
 }
 
 /** 镜头视频目录（项目级共享，不再按集建子目录）：<项目>/分镜 */
@@ -162,16 +260,21 @@ function normRes(v) {
 function normResAll(res) {
   if (!res || typeof res !== 'object') return null;
   const img = normRes(res.img), vid = normRes(res.vid), out = normRes(res.out);
-  if (!img && !vid && !out) return null;
+  // style 与分辨率同路提交，但它**不是分辨率** —— 所以不能进那个「三个都空就返回 null」的判断
+  const style = res.style == null ? null : (String(res.style).trim() || null);
+  if (!img && !vid && !out && !style) return null;
   // tier 是项目级视频档位，与分辨率同路存取（渲染层一次提交四个值）
   const tier = res.tier == null ? null : videoTiers.normalizeTier(res.tier);
-  return { img, vid, out, tier };
+  return { img, vid, out, tier, style };
 }
 
 function readRes(row) {
   const r = { img: row.res_img, vid: row.res_vid, out: row.res_out };
   // 只有 projects 有 res_tier 列（剧集不带档位，生成时实时读所属项目）
   if (row.res_tier != null) r.tier = videoTiers.normalizeTier(row.res_tier);
+  // 同理只有 projects 有 style 列：剧集的风格在「读提示词规范」时实时读所属项目，
+  // 不做集级快照 —— 改风格对本项目全部剧集立即生效（跟档位一致）
+  if (row.style != null) r.style = String(row.style || '').trim() || styles.defaultId();
   return r;
 }
 
@@ -189,8 +292,8 @@ function getProjectRes(db, projectId) {
 function setProjectRes(db, projectId, res) {
   const n = normResAll(res);
   if (!n) throw new Error('分辨率格式不合法（应为 宽x高，如 864x480）');
-  db.raw.prepare('UPDATE projects SET res_img=COALESCE(?,res_img), res_vid=COALESCE(?,res_vid), res_out=COALESCE(?,res_out), res_tier=COALESCE(?,res_tier) WHERE id=?')
-    .run(n.img, n.vid, n.out, n.tier, projectId);
+  db.raw.prepare('UPDATE projects SET res_img=COALESCE(?,res_img), res_vid=COALESCE(?,res_vid), res_out=COALESCE(?,res_out), res_tier=COALESCE(?,res_tier), style=COALESCE(?,style) WHERE id=?')
+    .run(n.img, n.vid, n.out, n.tier, n.style, projectId);
   return getProjectRes(db, projectId);
 }
 
@@ -240,10 +343,11 @@ function getTree(db, workspace) {
 function createProject(db, workspace, name, res) {
   const clean = sanitize(name);
   const n = normResAll(res) || {};
-  const img = n.img || '1216x832', vid = n.vid || '864x480', out = n.out || '1920x1080';
+  const img = n.img || '1920x1080', vid = n.vid || '864x480', out = n.out || '1920x1080';
   const tier = n.tier || videoTiers.DEFAULT_TIER;   // 视频档位：项目级，随项目一起落库
-  const info = db.raw.prepare('INSERT INTO projects(name,res_img,res_vid,res_out,res_tier) VALUES(?,?,?,?,?)')
-    .run(clean, img, vid, out, tier);
+  const style = n.style || styles.defaultId();      // 风格包：项目级，新建时选定
+  const info = db.raw.prepare('INSERT INTO projects(name,res_img,res_vid,res_out,res_tier,style) VALUES(?,?,?,?,?,?)')
+    .run(clean, img, vid, out, tier, style);
   const pid = info.lastInsertRowid;
   // 第一集：直接用刚创建的项目分辨率初始化
   db.raw.prepare('INSERT INTO episodes(project_id,folder_id,name,res_img,res_vid,res_out) VALUES(?,NULL,?,?,?,?)').run(pid, '第1集', img, vid, out);
@@ -263,7 +367,7 @@ function addFolder(db, workspace, projectId, parentId, name) {
 function addEpisode(db, workspace, projectId, folderId, name) {
   // 新建剧集：分辨率用项目当前配置初始化（项目配置改了只影响从现在起新建的剧集）
   const p = db.raw.prepare('SELECT * FROM projects WHERE id=?').get(projectId);
-  const img = (p && p.res_img) || '1216x832', vid = (p && p.res_vid) || '864x480', out = (p && p.res_out) || '1920x1080';
+  const img = (p && p.res_img) || '1920x1080', vid = (p && p.res_vid) || '864x480', out = (p && p.res_out) || '1920x1080';
   // 🔴 扁平化后集名就是磁盘文件名前缀：同项目内必须唯一，否则两集的 shots / 视频会互相覆盖。
   //    重名自动加序号（「第1集」→「第1集 (2)」），并把最终名字返回给渲染层。
   const base = sanitize(name);
@@ -441,6 +545,13 @@ function getEpisodeFull(db, workspace, episodeId) {
   const sDir = shotDir(db, workspace, ep);
   const fDir = filmDir(db, workspace, ep);
   try { fs.mkdirSync(sDir, { recursive: true }); } catch (_) {}
+  // 集私有素材目录：本集自己的卡（libReadonly !== true）看这里；库共享素材仍在 aRoot 下。
+  // 老项目第一次打开时做一次幂等迁移（把本集卡的图从共享目录**复制**过来，只复制不删）。
+  const epRoot = episodeAssetsRoot(db, workspace, ep);
+  if (epRoot && !fs.existsSync(epRoot)) {
+    migrateEpisodePrivateAssets(db, workspace, ep);
+    try { fs.mkdirSync(epRoot, { recursive: true }); } catch (_) {}
+  }
   // 🔴 分镜/成片目录是全项目共用的 → 只挑「本集前缀」的文件（<集名>_shot_1.mp4 / <集名>_时间戳.mp4）
   const mine = (dirPath, re) => {
     if (!dirPath || !fs.existsSync(dirPath)) return [];
@@ -452,7 +563,10 @@ function getEpisodeFull(db, workspace, episodeId) {
   const exportFiles = mine(fDir, new RegExp('^' + escRe(pre) + '_' + '.*\\.mp4$', 'i'));
   return {
     id: ep.id, name: ep.name, projectId: ep.project_id, dir, prefix: pre,
-    projectDir: pRoot, assetsDir: aRoot, shotDir: sDir, filmDir: fDir,
+    projectDir: pRoot, assetsDir: aRoot, epAssetsDir: epRoot, shotDir: sDir, filmDir: fDir,
+    // 风格包（项目级）：渲染层每次读提示词规范都要用它，所以随集对象一起下发 ——
+    // 免得每读一份规范都回主进程查一次项目行。
+    style: (db.raw.prepare('SELECT style FROM projects WHERE id=?').get(ep.project_id) || {}).style || styles.defaultId(),
     res: readRes(ep),
     chapter: read('chapter.txt'),
     adapted: read('adapted.md'),
@@ -495,6 +609,8 @@ module.exports = {
   getProjectRes, setProjectRes, getEpisodeRes, setEpisodeRes, normRes,
   // 项目级目录（资产 / 分镜 / 成片）
   projectRoot, assetsRoot, characterDir, sceneDir, shotDir, filmDir, ensureProjectDirs, listProjectEpisodes,
+  // 集私有素材（本集自己的角色/场景图）：与库共享素材分开，跨集互不污染
+  episodeAssetsRoot, episodeKindDir, migrateEpisodePrivateAssets, archiveEpisodeAssets,
   // 左侧树「剧本」节点：按集列举剧本工件
   listProjectScripts, SCRIPT_KINDS
 };

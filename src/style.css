@@ -215,7 +215,8 @@ body{
   box-shadow:0 0 8px rgba(168,85,247,.35);
 }
 /* 时长建议提示行：挂在「分镜 X」下方单独一行（无警告时不渲染、不占位） */
-.shot-row .zone-1 .shot-sub{margin:-3px 0 7px; padding-left:2px;}
+/* 第二行提示区：时长/合并/拆镜三类黄标 + 拆镜的「AI 重写 / 撤回」两个小按钮同行排列 */
+.shot-row .zone-1 .shot-sub{margin:-3px 0 7px; padding-left:2px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;}
 /* 🔴 行内标题行必须恒定 20px 单行高：脏标签出现与否都一个高度（实测脏标签自带高度会把
    本行标题行从 20px 顶到 25px → 整行比别的行高 5px）；标签本身也收紧字号/行高 */
 .shot-row .row-head .stale{
@@ -377,6 +378,13 @@ input[type=search]:focus{
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 @keyframes popIn{from{opacity:0; transform:scale(.94) translateY(6px)}to{opacity:1; transform:none}}
 .dialog h3{font-size:15px; font-weight:600; margin-bottom:16px; color:#e8eefc;}
+/* 重新生成分镜的确认框：把影响面（会丢什么 / 什么会保留）摆清楚 */
+.regen-note{margin:0 0 8px; font-size:13px; line-height:1.7; color:#a9bad6;}
+.regen-note b{color:#e8eefc;}
+.regen-list{margin:0 0 4px; padding-left:18px; font-size:12.5px; line-height:1.85; color:#9fb0cc;}
+.regen-list li{margin:0 0 3px;}
+.regen-list b{color:#e8eefc;}
+.regen-list code{background:rgba(59,130,246,.14); border-radius:4px; padding:1px 5px; color:#93c5fd;}
 /* 项目配置弹窗：三项分辨率网格 */
 .cfg-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:10px;}
 .cfg-grid label{font-size:12px; color:#8ea0bd; display:flex; flex-direction:column; gap:5px;}
@@ -460,19 +468,20 @@ input[type=search]:focus{
 /* 镜头合并黄标（可点击 → 打开合并确认弹窗；复用 .dur-warn 配色，加指针与 hover） */
 .shot-row .dur-warn.mrg{cursor:pointer;}
 .shot-row .dur-warn.mrg:hover{color:#ffd98a; border-color:rgba(245,198,109,.55); background:rgba(245,198,109,.14);}
+/* 拆镜黄标（第 2 批）：本镜由程序按台词边界拆开而来。用冷色区分于琥珀系的时长/合并提示，
+   右侧同行的两个小按钮（AI 重写 / 撤回）比 .btn.sm 再小一档，不撑高提示行 */
+.shot-row .dur-warn.spl{color:#93c5fd; background:rgba(147,197,253,.10); border-color:rgba(147,197,253,.32);}
+.shot-row .shot-sub .btn.tiny{padding:2px 8px; font-size:11px; border-radius:5px; box-shadow:none; font-weight:500;}
+.shot-row .shot-sub .btn.tiny.ghost{background:rgba(255,255,255,.06); color:#a8bccf; box-shadow:none;}
+.shot-row .shot-sub .btn.tiny.ghost:hover:not(:disabled){background:rgba(255,255,255,.12); color:#dbe6f5;}
+.shot-row .shot-sub .btn.tiny:disabled{opacity:.4;}
 /* 合并确认弹窗：两镜并排 + 合并预览 */
 .merge-cols{display:flex; gap:8px;}
 .merge-col{flex:1; min-width:0; border:1px solid rgba(255,255,255,.12); border-radius:8px; padding:7px 9px;}
 .merge-h{font-size:11px; color:#9fb0c6; margin-bottom:4px;}
 .merge-b{font-size:12px; color:#cbd5e1; line-height:1.6; margin-top:3px; word-break:break-all;}
 .merge-b.dlg{color:#8fd0b8;}
-/* 角色卡「参考图背景非纯色」提示：绝对定位在图右上角分辨率角标下方，不占布局高度 */
-.bg-warn{
-  position:absolute; top:34px; right:6px; z-index:2;
-  padding:3px 9px; border-radius:99px; font-size:11.5px;
-  color:#f5c66d; background:rgba(10,14,22,.78); border:1px solid rgba(245,198,109,.38);
-  backdrop-filter:blur(4px); cursor:help; max-width:calc(100% - 12px);
-}
+/* 角色卡「参考图背景非纯色」角标（.bg-warn）已于 2026-10-08 按 Dragon 要求整体移除（提示太吵、误报多） */
 .scard .f{display:flex; flex-direction:column; gap:4px; min-width:0;}
 .scard .f label{font-size:10.5px; color:#7c8798; letter-spacing:.04em;}
 .scard .row2{display:grid; grid-template-columns:1fr 88px; gap:9px;}
@@ -514,10 +523,11 @@ input[type=search]:focus{
   backdrop-filter:blur(5px);
 }
 .char-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(430px,1fr)); gap:14px;}
-/* 新增入口虚线卡（2026-09-27 三改）：三入口合一卡；min-height 对齐角色/场景卡的实际高度（约 460px，
+/* 新增入口虚线卡（2026-09-27 三改）：三入口合一卡；min-height 对齐角色/场景卡的实际高度（506px，
+   与 .ccard 的 min-height 同步，2026-10-08 卡片加高约 10% 时一起改的；
    与卡片同一网格行时还会被拉伸到同高），卡内 3 个纯文字按钮纵向排列、点哪个执行哪个 */
 .add-tile{
-  border:1.5px dashed rgba(96,165,250,.45); border-radius:var(--r-md); min-height:460px;
+  border:1.5px dashed rgba(96,165,250,.45); border-radius:var(--r-md); min-height:506px;
   display:flex; align-items:center; justify-content:center;
   background:rgba(59,130,246,.06); transition:border-color .2s, background .2s;
 }
@@ -531,6 +541,7 @@ input[type=search]:focus{
 .tile-link:disabled{opacity:.4; cursor:not-allowed;}
 /* 卡片左右结构：左大预览图（按原图比例完整显示）+ 右参数列（生图按钮固定右下角） */
 .ccard{
+  min-height:506px;                        /* 2026-10-08（Dragon）：卡再高约 10%（原约 460px）；.add-tile 同步同高 */
   border:1px solid var(--line); border-radius:var(--r-md); padding:14px;
   display:grid; grid-template-columns:225px minmax(0,1fr); gap:13px; align-items:stretch;
   background:linear-gradient(180deg,#161c28 0%,#131822 100%);
@@ -542,6 +553,39 @@ input[type=search]:focus{
 .ccard.character:hover{border-color:rgba(96,165,250,.55);}
 .ccard.scene{border-color:rgba(139,92,246,.34); background:linear-gradient(180deg,rgba(124,58,237,.16) 0%,#131822 64%);}
 .ccard.scene:hover{border-color:rgba(167,139,250,.6);}
+/* 主体组（`主体名--视角` 双横杠命名，2026-10-08）：同组的每张卡挂**同一个组色的加粗边框** + 同色名称徽标 ——
+   🔴 2026-10-08 三改（Dragon：「只是边框颜色不同，背景颜色还是相同的」）：底色**不再**上组色，
+      回归 .ccard / .ccard.character / .ccard.scene 的原有蓝紫底；组与组之间只靠边框颜色区分。
+      所以本规则**绝不能出现 background**（prompts-check 有反面断言盯着）。
+   色相由 src/variant.js 的 hashName(主体名) 取 GROUP_HUES 决定（8 档、每档相隔 45°）→
+   同一主体在任何会话 / 项目里都是同一个颜色，而**任意两组之间色差都 ≥45°**（Dragon：「不同组区别大点」）。
+   只有「组内 ≥2 张」的主体才上组色，单张卡保持原有蓝 / 紫配色，避免满屏花。
+   🔴 第一版曾把整组装进一个醒目大框（vgroup / vg-head / vg-body 三个类），Dragon 反馈「太丑」→
+      已整体撤掉，不要再加回来。
+   🔴 内缩总量守恒（不引起布局跳动）：普通卡 = 1px 边框 + 14px padding = 15px；
+      本规则 = 2px 全边 + 13px padding = 15px，左侧 5px 边框 + 10px padding = 15px。
+      改边框宽度时**必须同步改 padding**。
+   🔴 类名刻意叫 .vgrp 而不是 .grp —— .grp 是外层网格容器的既有类（.grp{margin-bottom:18px}），
+      卡片再挂 .grp 会吃到那条外边距（且 verify3 断言过 .grp 只能出现 1 次）。 */
+.ccard.vgrp{
+  border-width:2px;
+  border-color:hsl(var(--grp-h) 75% 55%);
+  border-left:5px solid hsl(var(--grp-h) 90% 62%);
+  padding:13px 13px 13px 10px;
+}
+.ccard.vgrp:hover{border-color:hsl(var(--grp-h) 85% 64%); border-left-color:hsl(var(--grp-h) 95% 72%);}
+/* 主体卡名称角标右侧的「+」= 派生一张视角卡（只在主体卡上出现；视角子卡上没有入口，
+   否则会派生出台 `V9X--正面--侧面` 这种语义不明的卡） */
+.derive-btn{
+  width:20px; height:20px; flex:none; padding:0; margin-top:1px;
+  display:inline-flex; align-items:center; justify-content:center;
+  font-size:14px; line-height:1; font-weight:600; cursor:pointer;
+  border-radius:50%; color:#e6edf7; background:rgba(11,16,25,.74);
+  border:1px solid rgba(255,255,255,.3); backdrop-filter:blur(5px);
+  transition:background .14s, border-color .14s, transform .14s;
+}
+.derive-btn:hover{background:rgba(30,64,175,.88); border-color:rgba(96,165,250,.9); transform:scale(1.08);}
+.derive-btn:disabled{opacity:.45; cursor:not-allowed; transform:none;}
 .cleft{display:flex; flex-direction:column; gap:8px; min-width:0;}
 .bigprev{
   position:relative; flex:1; min-height:240px; border-radius:var(--r-sm); overflow:hidden;
@@ -555,7 +599,7 @@ input[type=search]:focus{
 .cright .f label{font-size:10.5px; color:#7c8798; letter-spacing:.04em; display:block; margin-bottom:2px;}
 /* 档案区（角色档案 / 场景档案）：在左列（大预览图下方）；标题行 + 右侧「生成提示词」按钮 + 脏标记 */
 .pf-head{display:flex; align-items:center; gap:7px; margin-bottom:3px; flex-wrap:wrap;}
-.pf-head label{margin-bottom:0 !important;}
+.pf-head label{font-size:10.5px; color:#7c8798; letter-spacing:.04em; margin-bottom:0 !important;}
 .pf-head .btn.sm{flex-shrink:0; white-space:nowrap;}
 .pf-head .stale{font-size:10.5px; padding:2px 8px;}
 /* 档案 / 正向 / 负向三个框：宽高固定（宽度=所在列宽），内容超出出滚动条 */
@@ -594,11 +638,16 @@ input[type=search]:focus{
 .ta-head .btn.icon svg{width:10px; height:10px;}
 /* 「一键填充」行与「文生图」行之间空隙加大（2026-09-27，Dragon：两行挨得太近） */
 .ops-row{margin-top:auto; padding-top:12px; display:flex; align-items:center; justify-content:flex-end; gap:8px;}
+/* 分辨率并进本行（2026-10-08，Dragon）：靠左、宽度按内容自适应；其余元素仍靠右 */
+.ops-row .card-res{margin-top:0; margin-right:auto; width:auto; flex:0 0 auto;}
+.ops-row .card-res select{flex:0 0 auto; width:auto; min-width:0;}
 /* 出图耗时：紧贴「生图」按钮左边 */
 .ops-row .gen-ms{margin-right:2px;}
 /* 「一键填充」独立一行、靠左（右下角的「生图 / 图生图」按钮位置保持不动）；
    2026-09-23：缩成小号胶囊 + 字号再收一档，更精致 */
 .cops.fill-row{justify-content:flex-start; margin-top:2px;}
+/* 视角变体卡：一键填充 / 存到项目 / 写入镜头 三个按钮都不给 → 整行收起，不留空档（2026-10-08，Dragon） */
+.cops.fill-row.row-empty{display:none;}
 .cops.fill-row .btn{padding:3px 9px; font-size:10.5px; line-height:1.35; border-radius:99px; box-shadow:0 2px 10px rgba(34,197,94,.26);}
 .char-img{
   position:relative; width:100%; aspect-ratio:2/3;
@@ -622,7 +671,7 @@ input[type=search]:focus{
 /* 2026-09-23：图下方的名称行（角色名 + 角色定位）已从卡片里删除 ——
    名称与定位只在图左上角的 .kind-tag-pos 角标上显示一次；上面两条规则保留备用 */
 .ccard textarea{font-size:12px;}
-.thumbs{display:flex; gap:6px;}
+.thumbs{display:flex; gap:6px; flex-wrap:wrap;}
 .thumbs img{
   width:46px; height:64px; object-fit:contain; border-radius:6px;
   background:#0b0f16;
@@ -631,8 +680,24 @@ input[type=search]:focus{
 }
 .thumbs img:hover{transform:translateY(-1px); opacity:1;}
 .thumbs img.cur{border-color:var(--blue-hi); opacity:1; box-shadow:0 0 12px rgba(56,189,248,.5);}
+/* 小预览图末尾的虚线「+」= 从本地导入一张图当参考图（2026-10-08，Dragon）：
+   与小预览图同尺寸（46×64）；外观参考「新增角色」的 .add-tile —— 同样的虚线框 + 悬停变蓝 */
+.thumb-add{
+  flex:0 0 auto; width:46px; height:64px; padding:0;
+  border:1.5px dashed rgba(96,165,250,.45); border-radius:6px;
+  background:rgba(59,130,246,.06); color:#8ab4f8;
+  font-size:20px; line-height:1; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition:border-color .2s, background .2s, color .2s;
+}
+.thumb-add:hover:not(:disabled){border-color:rgba(96,165,250,.85); background:rgba(59,130,246,.13); color:#c3dbfc;}
+.thumb-add:disabled{opacity:.4; cursor:not-allowed;}
 .cops{display:flex; gap:6px; flex-wrap:wrap;}
-.btn.sm{padding:5px 11px; font-size:12px;}
+/* 2026-10-08（需求）：块 1「改编」/「生成分镜」与块 2「批量生成提示词」(.btn.sm) 等高 ——
+   两边都显式声明 line-height，高度 = 上下 padding + 行盒 = 5+5+14 = 24px，可精确相等；
+   只改行高不动字号/内边距，主按钮仍是 13px 字号。 */
+.btn.sm{padding:5px 11px; font-size:12px; line-height:14px;}
+.btn.h-sm{padding:5px 18px; font-size:13px; line-height:14px;}
 /* 锁定态：提示 + 解锁按钮同一行（锁定不再是死胡同） */
 .lock-row{display:flex; align-items:center; justify-content:center; gap:8px; padding:4px 0; flex-wrap:wrap;}
 .lock-row .hint{text-align:center;}
@@ -760,6 +825,47 @@ input[type=search]:focus{
 /* 可点击的文字链接（设置页「打开服务日志目录…」等） */
 .link{color:var(--blue-hi); cursor:pointer; text-decoration:underline; text-underline-offset:2px;}
 .link:hover{opacity:.82;}
+/* ---- 模型管家（2026-09-28）：把模型从别处拷进模型根目录的正确子目录 ---- */
+.mm-head{display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;}
+.mm-head h3{margin-bottom:0;}
+.mm-root{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:52%;}
+.mm-row{
+  display:flex; align-items:center; gap:10px; padding:7px 0;
+  border-top:1px solid var(--line-soft);
+}
+.mm-row:first-of-type{border-top:none;}
+.mm-dot{width:8px; height:8px; border-radius:50%; flex-shrink:0;}
+.mm-dot.on{background:var(--ok); box-shadow:0 0 7px rgba(52,211,153,.5);}
+.mm-dot.off{background:var(--danger); box-shadow:0 0 7px rgba(226,75,74,.45);}
+.mm-name{width:250px; font-size:12.5px; color:#c3cddd; flex-shrink:0;}
+.mm-stat{width:82px; font-size:12px; flex-shrink:0;}
+.mm-sub{width:150px; flex-shrink:0; color:#8b97a8;}
+.mm-need{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.mm-ops{display:flex; align-items:center; gap:10px; margin-top:12px; padding-top:12px; border-top:1px solid var(--line-soft);}
+.mm-pending{
+  margin-top:12px; padding:12px; border-radius:var(--r-md);
+  background:rgba(59,130,246,.06); border:1px solid rgba(59,130,246,.22);
+}
+.mm-pending-head{display:flex; align-items:center; gap:10px; margin-bottom:8px;}
+.mm-pending-head b{font-size:12.5px; color:#dbe6f5;}
+.mm-p-row{display:flex; align-items:center; gap:10px; padding:4px 0;}
+.mm-p-name{flex:1; min-width:0; font-size:12px; color:#c3cddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.mm-p-size{width:74px; text-align:right; flex-shrink:0;}
+.mm-p-dst{width:170px; flex-shrink:0; color:#8ab4f8;}
+.mm-p-sel{
+  width:320px; flex-shrink:0; font-size:12px; padding:4px 8px;
+  background:#0f1521; color:#dbe6f5; border:1px solid var(--line); border-radius:6px;
+}
+.mm-prog{
+  margin-top:12px; padding:12px; border-radius:var(--r-md);
+  background:rgba(59,130,246,.07); border:1px solid rgba(59,130,246,.25);
+}
+.mm-prog-head{display:flex; align-items:center; gap:10px; margin-bottom:4px;}
+.mm-prog-file{flex:1; min-width:0; font-size:12px; color:#dbe6f5; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.mm-bar{height:8px; margin-bottom:8px; border-radius:4px;}
+.mm-bar .bar{height:100%; background:var(--grad); border-radius:4px; transition:width .28s ease; box-shadow:0 0 12px rgba(56,189,248,.5);}
+.mm-prog-foot{display:flex; align-items:center; gap:10px;}
+.mm-result{display:flex; align-items:center; gap:10px; margin-top:12px; font-size:12.5px; flex-wrap:wrap;}
 /* 模型样例文件名：过长截断，悬停看全文 */
 .sample{font-size:11px; color:#586172; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex-shrink:0;}
 /* 从属行（如 llama 启动参数）：向内缩进，弱化层级 */
@@ -767,25 +873,37 @@ input[type=search]:focus{
 .env-row.sub .env-name{color:#8b97a8;}
 .export-done{text-align:center; padding:24px 0;}
 
-/* ================= 标题栏实时指标（GPU / CPU / 内存） ================= */
-.tb-sys{display:flex; align-items:center; gap:10px;}
+/* ================= 标题栏实时指标（GPU 算力 / CPU / 显存 / 内存） =================
+   2026-09-29 Dragon：胶囊宽度随内容自适应。此前标题栏直接复用了模型管家的
+   .mm-bar/.mm-txt/.mm-sub 类名，被 .mm-sub{width:150px} 锁成等宽，看着像固定宽度；
+   现已独立成 tb-bar/tb-num/tb-sub，并把 4 段收进一个容器 + 细分隔线。 */
+.tb-sys{
+  display:flex; align-items:center; flex-wrap:nowrap; min-width:0;
+  padding:3px; border-radius:99px;
+  background:rgba(255,255,255,.025); border:1px solid var(--line);
+}
 .tb-metric{
-  display:flex; align-items:center; gap:6px; font-size:11px; color:var(--sub);
-  padding:3px 9px; border-radius:99px; border:1px solid var(--line);
-  background:rgba(255,255,255,.03); white-space:nowrap;
+  display:inline-flex; align-items:center; gap:7px; font-size:11px; color:var(--sub);
+  padding:2px 10px; border-radius:99px; white-space:nowrap; position:relative;
+  transition:background .2s;
+}
+.tb-metric + .tb-metric::before{        /* 段间细分隔线 */
+  content:""; position:absolute; left:0; top:50%; transform:translateY(-50%);
+  width:1px; height:12px; background:var(--line);
 }
 .tb-metric b{font-weight:600; color:#8fa0b8; font-size:10.5px; letter-spacing:.02em;}
-.tb-metric .mm-txt{color:#c6d2e2; font-variant-numeric:tabular-nums;}
-.tb-metric .mm-sub{color:#5f6878; font-variant-numeric:tabular-nums; font-size:10.5px;}
-.mm-bar{width:34px; height:4px; border-radius:99px; background:rgba(255,255,255,.08); overflow:hidden; display:inline-block; flex-shrink:0;}
-.mm-bar em{display:block; height:100%; background:linear-gradient(90deg,#2563eb,#38bdf8); transition:width .45s ease;}
-.tb-metric.hot .mm-bar em{background:linear-gradient(90deg,#d97706,#fbbf24);}
-.tb-metric.hi{border-color:rgba(248,113,113,.45); background:rgba(248,113,113,.1);}
-.tb-metric.hi .mm-bar em{background:linear-gradient(90deg,#dc2626,#f87171);}
-.tb-metric.hi .mm-txt{color:#fca5a5;}
-.tb-metric.off{opacity:.55;}
-.tb-sys.narrow .mm-sub{display:none;}
-@media(max-width:1240px){ .tb-sys .mm-txt{display:none;} .tb-sys .mm-bar{width:26px;} }
+.tb-metric .tb-num{color:#c6d2e2; font-variant-numeric:tabular-nums; min-width:29px; text-align:right;}
+.tb-metric .tb-sub{color:#5f6878; font-variant-numeric:tabular-nums; font-size:10.5px;}
+.tb-bar{width:36px; height:4px; border-radius:99px; background:rgba(255,255,255,.08); overflow:hidden; display:block; flex-shrink:0;}
+.tb-bar em{display:block; height:100%; background:linear-gradient(90deg,#2563eb,#38bdf8); transition:width .45s ease;}
+.tb-metric.hot .tb-bar em{background:linear-gradient(90deg,#d97706,#fbbf24);}
+.tb-metric.hot .tb-num{color:#fbbf24;}
+.tb-metric.hi{background:rgba(248,113,113,.12);}
+.tb-metric.hi .tb-bar em{background:linear-gradient(90deg,#dc2626,#f87171);}
+.tb-metric.hi .tb-num{color:#fca5a5;}
+.tb-metric.off{opacity:.5;}
+.tb-sys.narrow .tb-sub{display:none;}
+@media(max-width:1240px){ .tb-sys .tb-num{display:none;} .tb-sys .tb-bar{width:26px;} }
 
 /* 阶段耗时徽标（完成显示总耗时+生成耗时） */
 .s-time{
@@ -931,6 +1049,11 @@ input[type=search]:focus{
   border:1px solid var(--line); background:#0f141d; flex-shrink:0;
 }
 .ref-thumb img{width:100%; height:100%; object-fit:contain; background:#0b0f16; border-radius:6px; display:block;}
+/* 参考图拖动排序（2026-10-08）：起点半透明 + 抓手光标；当前悬停的目标位描边高亮 */
+.ref-thumb[draggable="true"]{cursor:grab;}
+.ref-thumb[draggable="true"]:active{cursor:grabbing;}
+.ref-thumb.drag-src{opacity:.4;}
+.ref-thumb.drag-to{border-color:rgba(125,211,252,.95); box-shadow:0 0 0 2px rgba(125,211,252,.45);}
 /* 素材角标：贴在每张缩略图左上角（替代原来的左侧文字标签），不挡点击 */
 .rtag{
   position:absolute; left:3px; top:3px; z-index:2; pointer-events:none;
@@ -1032,7 +1155,11 @@ input[type=search]:focus{
 }
 
 /* ================= 项目配置弹窗（大气的分组式设计） ================= */
-.proj-dialog{width:460px; padding:0; overflow:hidden;}
+/* 项目配置弹窗：比通用弹窗宽（三轴的选项卡片要摊开），高了可滚（用户加轴选项后不会被裁掉） */
+.proj-dialog{
+  width:620px; max-width:calc(100vw - 40px); padding:0;
+  max-height:92vh; overflow-x:hidden; overflow-y:auto;
+}
 .proj-head{
   display:flex; align-items:center; gap:12px; padding:18px 22px 14px;
   background:linear-gradient(135deg,rgba(37,99,235,.16),rgba(56,189,248,.06));
@@ -1053,17 +1180,57 @@ input[type=search]:focus{
   background:rgba(255,255,255,.015); transition:border-color .15s;
 }
 .proj-row:hover{border-color:#2c3a4f;}
-/* 下拉与角色库卡片级选择器同款样式（深底细边框） */
-.proj-row select{
+/* 竖排版：标签独占一行，控件摊在下面占满宽度（三轴的选项网格用） */
+.proj-row.col{flex-direction:column; align-items:stretch; gap:9px; padding:11px 12px;}
+.proj-row.col .proj-kind{width:auto;}
+
+/* ---- 三轴「点选网格」：点一下即选中（替代原来的下拉） ----
+   卡片把 label 与 desc 一起摊开：这几个选项本来就不多，藏进下拉反而要逐个展开才知道有什么。 */
+.popt-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:9px;}
+.popt{
+  display:flex; flex-direction:column; gap:3px; text-align:left;
+  padding:9px 11px; margin:0; font:inherit; cursor:pointer;
+  -webkit-appearance:none; appearance:none;   /* 清掉 <button> 的原生外观，否则原生边框会漏出来 */
+  background:#141a26; border:1px solid #232d3e; border-radius:var(--r-sm);
+  color:#d8e2f2; transition:border-color .15s, background .15s, box-shadow .15s;
+  position:relative;
+}
+.popt:hover{border-color:#2c3646; background:#161d2a;}
+.popt b{font-size:12.5px; font-weight:600; color:#dbe5f5; line-height:1.35;}
+.popt span{
+  font-size:11px; line-height:1.5; color:#7f8ea8;
+  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden;
+}
+/* 选中态：蓝描边 + 淡蓝底 + 右上角勾（不靠颜色单一维度表达，色弱也认得出） */
+.popt.on{
+  border-color:rgba(96,165,250,.85); background:linear-gradient(135deg,rgba(37,99,235,.22),rgba(56,189,248,.10));
+  box-shadow:0 0 0 1px rgba(96,165,250,.35), 0 4px 14px rgba(37,99,235,.22);
+}
+.popt.on b{color:#fff;}
+.popt.on span{color:#9fb6d6;}
+.popt.on::after{
+  content:"✓"; position:absolute; top:6px; right:9px;
+  font-size:11px; font-style:normal; color:#7dd3fc;
+}
+/* 下拉与角色库卡片级选择器同款样式（深底细边框）；设置页「生成模型方案」的下拉（.env-row）共用同一套 */
+.proj-row select,
+.env-row select{
   flex:1; min-width:0; margin:0; padding:7px 10px; font-size:12.5px;
   background:#141a26; border:1px solid #232d3e; border-radius:var(--r-sm); color:#d8e2f2;
   transition:border-color .15s;
 }
-.proj-row select:hover{border-color:#2c3646;}
-.proj-row select:focus{outline:none; border-color:var(--blue);}
+.proj-row select:hover,.env-row select:hover{border-color:#2c3646;}
+.proj-row select:focus,.env-row select:focus{outline:none; border-color:var(--blue);}
 .proj-kind{flex:none; width:72px; font-size:12.5px; color:#b9c6dd; font-weight:500;}
 /* 视频质量档位说明（选中档位的一句话说明，只讲快慢与质量，不提模型） */
 .proj-hint{margin:8px 22px 0; font-size:11.5px; line-height:1.6; color:#7f8ea8; min-height:14px;}
+/* 风格体系的问题提示（风格包文件坏了 / 核心键缺失 / 项目原来用的组合已不存在）——
+   这类问题以前全被静默吞掉，会让「项目设的是现代风格、实际出古风片」瞒着用户，必须显眼 */
+.proj-hint.warn{
+  margin-top:10px; padding:8px 11px; color:#e8b98a;
+  background:rgba(186,117,23,.10); border:1px solid rgba(186,117,23,.34);
+  border-radius:var(--r-sm);
+}
 .proj-note{
   margin:14px 22px 0; padding:9px 12px; font-size:11.5px; line-height:1.6;
   color:#8ea0bd; background:rgba(59,130,246,.06);
@@ -1105,6 +1272,20 @@ input[type=search]:focus{
 }
 /* 角色卡大预览（2026-09-27 二改，Dragon）：分辨率角标常驻显示于左下角（不再悬停才浮现） */
 .bigprev .dim-tag{top:auto; right:auto; bottom:6px; left:6px;}
+/* 出图耗时角标（2026-10-08，Dragon）：从下方出图行挪到图上、常驻右下角
+   （右下角原为空位：左上=名称/定位、左下=分辨率与库来源徽标）；
+   显示方式参考分辨率角标 .dim-tag（同款胶囊 + 等宽字号），配色沿用耗时自身的绿/蓝以便区分 */
+.gen-tag{
+  position:absolute; bottom:6px; right:6px; z-index:2;
+  padding:3px 9px; border-radius:99px;
+  font-size:11.5px; font-family:Consolas,monospace; font-weight:500;
+  color:#9fe0b4; background:rgba(10,14,22,.78);
+  border:1px solid rgba(34,197,94,.4);
+  backdrop-filter:blur(4px); pointer-events:none; white-space:nowrap;
+}
+.gen-tag.live{color:#bfdbfe; border-color:rgba(59,130,246,.5);}
+/* 库来源徽标与耗时角标同时出现在图上时收窄徽标，避免它伸到右侧压住耗时 */
+.bigprev:has(.gen-tag) .lib-badge{max-width:calc(100% - 104px);}
 
 /* ---------------------------------------------------------------
    逐条耗时：显示在「小模块」标题旁（角色卡 / 镜头卡 / 成片卡）
@@ -1186,19 +1367,6 @@ input[type=search]:focus{
 }
 
 /* ---------------------------------------------------------------
-   项目提示词编辑弹窗（<项目>/prompts/*.md）
-   --------------------------------------------------------------- */
-.prompt-dialog{width:min(760px, 86vw);}
-.prompt-dialog .md-body{display:block; padding:12px 16px 16px;}
-.prompt-editor{
-  width:100%; height:56vh; resize:vertical;
-  background:#0b1017; color:#d9e2f2;
-  border:1px solid #1e2735; border-radius:var(--r-sm);
-  padding:10px 12px; font-family:Consolas,'Courier New',monospace; font-size:12.5px; line-height:1.6;
-}
-.prompt-editor:focus{outline:none; border-color:#33456a;}
-
-/* ---------------------------------------------------------------
    分镜脚本：手动加镜头卡片（放在镜头列表末尾，无镜头时是唯一入口）
    --------------------------------------------------------------- */
 .scard.add-card{
@@ -1240,6 +1408,21 @@ input[type=search]:focus{
   background:rgba(153,27,27,.26); border:1px solid rgba(248,113,113,.5);
 }
 .sc-issue .sc-txt{font-size:11.5px; color:#fca5a5; font-weight:600;}
+/* 主体组缺主体卡黄标（只有视角变体卡、没有名字正好等于主体名的那张）：琥珀调，带一键补建 */
+.grp-warn{
+  display:flex; align-items:center; gap:7px; flex-wrap:wrap;
+  margin:0 0 2px; padding:5px 9px; border-radius:8px;
+  background:rgba(120,86,10,.22); border:1px solid rgba(245,158,11,.42);
+}
+.grp-warn .gw-txt{font-size:11.5px; color:#fcd34d; font-weight:600;}
+/* 视角变体卡的「共用档案」替代说明（档案区被隐藏，避免用户重复填多份一样的档案） */
+.vnote{
+  padding:8px 10px; border-radius:8px;
+  background:rgba(255,255,255,.03); border:1px dashed var(--line-soft);
+}
+.vnote .vnote-body{font-size:11.5px; line-height:1.6; color:var(--sub);}
+.vnote .vnote-body div + div{margin-top:4px;}
+.vnote .vnote-body b{color:var(--text); font-weight:600;}
 .btn.xs{padding:2px 8px; font-size:11px; border-radius:99px;}
 /* 只读卡的「切换变体」下拉 */
 .lib-switch select{padding:3px 8px; font-size:11.5px; border-radius:99px;}
@@ -1249,6 +1432,22 @@ input[type=search]:focus{
   background:#0f141d; border:1px solid var(--line-soft); color:#e6edf7;
 }
 .modal input[type=text]:focus{outline:none; border-color:#3f6fb5;}
+/* 弹窗内联报错（如新增库条目撞名）：就地提示、不关弹窗，输入框一眼看得出问题 */
+.modal-err{
+  margin-top:6px; padding:6px 9px; border-radius:8px; font-size:11.5px; color:#fca5a5;
+  background:rgba(153,27,27,.24); border:1px solid rgba(248,113,113,.45);
+}
+/* 派生视角卡弹窗（2026-10-08）：主体名前缀**固定不可改**（灰底胶囊），用户只填视角名 ——
+   改名冲突（V9X--正面 撞车）从源头消失，用户也不需要知道双横杠这件事 */
+.dname{display:flex; align-items:stretch; margin:10px 0 0;}
+.dname-fix{
+  display:flex; align-items:center; padding:0 10px; white-space:nowrap;
+  border-radius:8px 0 0 8px; font-size:13px; font-weight:600; color:#cbd5e1;
+  background:#182031; border:1px solid var(--line-soft); border-right:0;
+}
+.modal .dname input[type=text]{border-radius:0 8px 8px 0; margin:0;}
+.dname-prev{margin-top:8px; font-size:12px; color:var(--sub);}
+.dname-prev b{color:var(--text); font-weight:600;}
 /* 从库导入 / 批量入库：条目列表 */
 .import-list{max-height:46vh; overflow:auto; margin-bottom:14px; display:flex; flex-direction:column; gap:4px;}
 .import-row{
@@ -1268,47 +1467,31 @@ input[type=search]:focus{
 .sp-row .sp-act{font-size:12px; color:var(--sub); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .sp-row .sp-has{margin-left:auto; font-size:10.5px; color:#bfe9cf; flex-shrink:0;}
 
-/* ---- 库编辑区（第 6 块独立视图：左列表 + 右编辑，布局照搬「角色 & 场景」卡片） ---- */
-.lib-wrap{display:grid; grid-template-columns:250px minmax(0,1fr); gap:14px; align-items:start; padding:12px 14px 20px;}
-.lib-side{
-  border:1px solid var(--line); border-radius:var(--r-md); overflow:hidden;
-  background:linear-gradient(180deg,#161c28 0%,#131822 100%);
+/* ---- 项目角色场景库视图（第 6 块独立视图，2026-09-30 改版：
+       整页铺「角色 & 场景」同款卡片网格 —— 卡片本体复用 .ccard/.cleft/.cright，这里只补库专有的头部与徽标） ---- */
+.lib-head{
+  display:flex; align-items:center; gap:9px; flex-wrap:wrap;
+  padding:0 0 12px; margin-bottom:14px; border-bottom:1px solid var(--line);
 }
-.ls-head{padding:10px 12px 6px; display:flex; flex-direction:column; gap:2px;}
-.ls-head b{font-size:13px; color:#eef3fb;}
-.ls-hint{font-size:10.5px; color:var(--sub);}
-.ls-ops{display:flex; gap:7px; padding:0 12px 9px;}
-.ls-body{max-height:64vh; overflow:auto; padding-bottom:8px;}
-.ls-grp{
-  display:flex; align-items:center; gap:6px; padding:7px 12px 4px;
-  font-size:11px; font-weight:600; color:#9fb0c6; letter-spacing:.05em;
+.lib-head .lh-title{font-size:15px; font-weight:600; color:#eef3fb;}
+.lib-head .lh-sub{font-size:11.5px; color:var(--sub);}
+/* 库版本徽标已从库视图移除（2026-09-30）── 库版本号对使用者没有决策价值，只留「被引用 / 未引用」两类提示。
+   集内卡的 .lib-badge.ro/.ok（库更新提示）仍在用，基础类保留 */
+/* 被引用行：库条目专有（这个条目被哪些集/哪些镜在用）；无引用时由 .lib-stale 黄标条提示 */
+.lib-use{
+  display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;
+  padding:5px 9px; border-radius:8px; font-size:11.5px;
+  background:rgba(59,130,246,.1); border:1px solid rgba(96,165,250,.3);
 }
-.ls-grp .ls-cnt{margin-left:auto; font-size:10.5px; color:#7c8798;}
-.ls-row{display:flex; align-items:center; gap:8px; padding:6px 12px; cursor:pointer; border-left:2px solid transparent;}
-.ls-row:hover{background:rgba(255,255,255,.035);}
-.ls-row.active{background:rgba(59,130,246,.14); border-left-color:#3b82f6;}
-.ls-row .ls-name{font-size:12.5px; color:#e6edf7; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.ls-row .ls-n{margin-left:auto; font-size:10.5px; color:#7c8798; flex-shrink:0;}
-.lib-main{min-width:0;}
-.lib-card{
-  border:1px solid var(--line); border-radius:var(--r-md); padding:14px;
-  background:linear-gradient(180deg,#161c28 0%,#131822 100%);
+.lib-use .lu-t{color:#93c5fd; font-weight:600; flex-shrink:0;}
+.lib-use .lu-v{color:#dbeafe; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%;}
+.lib-use .lu-from{color:#7c8798; flex-shrink:0;}
+/* 从左侧树点条目进来 → 那张卡闪一下（定位反馈；整页铺卡后没有「当前选中」的概念了） */
+.ccard.lib-hit{animation:libHit 1.8s ease-out 1;}
+@keyframes libHit{
+  0%{box-shadow:0 0 0 2px rgba(96,165,250,.85), 0 10px 30px rgba(56,189,248,.35);}
+  100%{box-shadow:0 0 0 0 rgba(96,165,250,0);}
 }
-.lib-card.character{border-color:rgba(59,130,246,.3); background:linear-gradient(180deg,rgba(37,99,235,.14) 0%,#131822 64%);}
-.lib-card.scene{border-color:rgba(139,92,246,.34); background:linear-gradient(180deg,rgba(124,58,237,.16) 0%,#131822 64%);}
-.lc-head{display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:7px;}
-.lc-head .lc-name{font-size:15px; color:#eef3fb;}
-.lc-head .lc-role{font-size:11.5px; font-weight:600; padding:2px 9px; border-radius:99px; color:#c7d2fe; background:rgba(11,16,25,.6); border:1px solid rgba(129,140,248,.42);}
-.lc-head .lc-rev{font-size:10.5px; font-family:Consolas,monospace; color:#7c8798;}
-.lc-usage{font-size:12px; color:#9fb0c6; margin-bottom:11px; display:flex; gap:6px; flex-wrap:wrap; align-items:baseline;}
-.lc-usage .lu-v{color:#cfe0fa;}
-.lc-usage .lu-from{color:#7c8798;}
-.lc-body{display:grid; grid-template-columns:225px minmax(0,1fr); gap:13px; align-items:stretch;}
-.lc-left{display:flex; flex-direction:column; gap:8px; min-width:0;}
-.lc-left .bigprev{min-height:240px;}
-.lc-right{display:flex; flex-direction:column; gap:7px; min-width:0;}
-.lc-right .f label{font-size:10.5px; color:#7c8798; letter-spacing:.04em; display:block; margin-bottom:2px;}
-@media (max-width:1100px){ .lib-wrap{grid-template-columns:1fr;} .lc-body{grid-template-columns:1fr;} }
 
 /* 改编块的「素材名单覆盖」黄条（素材清单里的人 / 地点没落到改编稿时提醒；只提示不拦） */
 .cov-warn{
@@ -1318,3 +1501,93 @@ input[type=search]:focus{
 }
 .cov-warn b{font-size:11.5px; color:#fcd34d; font-weight:600;}
 .cov-warn span{font-size:11.5px; color:#e5d5b3;}
+
+/* ============================================================
+   提示词配置中心（2026-10-07）
+   四分区整页视图：成品提示词 / 通用规范 / 模型专属规范 / 风格轴。
+   左轨切分区，右侧「清单 + 编辑区」；改完即时落盘（规范是实时读盘的，不必等构建）。
+   ============================================================ */
+.pv-content{padding:0; overflow:hidden; display:flex; flex-direction:column;}
+.pv{flex:1; min-height:0; display:flex; flex-direction:column;}
+.pv-head{
+  display:flex; align-items:center; gap:10px; padding:14px 22px 12px;
+  border-bottom:1px solid var(--line-soft); flex-shrink:0;
+}
+.pv-title{font-size:15px; font-weight:600; color:#eef3fb;}
+.pv-sub{font-size:11.5px; color:var(--sub);}
+.pv-msg{font-size:11.5px; color:var(--ok);}
+.pv-body{flex:1; min-height:0; display:flex;}
+.pv-rail{
+  width:154px; flex-shrink:0; border-right:1px solid var(--line-soft);
+  padding:12px 10px; display:flex; flex-direction:column; gap:6px;
+}
+.pv-tab{
+  display:flex; flex-direction:column; gap:2px; text-align:left; cursor:pointer;
+  background:rgba(255,255,255,.02); border:1px solid var(--line-soft);
+  border-radius:var(--r-md); padding:9px 11px; color:var(--text); font:inherit;
+}
+.pv-tab b{font-size:12.5px; font-weight:600;}
+.pv-tab i{font-size:10.5px; font-style:normal; color:var(--sub-2);}
+.pv-tab:hover{background:rgba(255,255,255,.05);}
+.pv-tab.on{background:var(--grad-soft); border-color:rgba(59,130,246,.45);}
+.pv-tab.on i{color:var(--sub);}
+.pv-pane{flex:1; min-width:0; display:flex;}
+.pv-grid{flex:1; min-width:0; display:grid; grid-template-columns:250px minmax(0,1fr);}
+.pv-list{
+  border-right:1px solid var(--line-soft); overflow-y:auto; padding:12px 10px 20px;
+  display:flex; flex-direction:column; gap:2px;
+}
+.pv-list-h{font-size:10.5px; font-weight:600; color:var(--sub-2); letter-spacing:.08em; padding:8px 6px 5px;}
+.pv-list-note{
+  font-size:10.5px; color:var(--sub-2); line-height:1.7; padding:10px 6px 0;
+  border-top:1px solid var(--line-soft); margin-top:10px;
+}
+.pv-item{padding:7px 9px; border-radius:var(--r-sm); cursor:pointer; border:1px solid transparent;}
+.pv-item:hover{background:rgba(255,255,255,.04);}
+.pv-item.on{background:var(--grad-soft); border-color:rgba(59,130,246,.4);}
+.pv-item-t{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text);}
+.pv-item.on .pv-item-t{color:#fff;}
+.pv-item-d{font-size:10.5px; color:var(--sub-2); margin-top:2px; line-height:1.5;}
+.pv-badge{
+  font-size:9.5px; font-weight:600; letter-spacing:.04em; padding:1px 6px;
+  border-radius:99px; border:1px solid var(--line); color:var(--sub); white-space:nowrap;
+}
+.pv-badge.ok{color:var(--ok); border-color:rgba(74,222,128,.35);}
+.pv-badge.warn{color:var(--warn); border-color:rgba(251,191,36,.4);}
+.pv-main{min-width:0; display:flex; flex-direction:column; padding:12px 18px 16px; gap:8px;}
+.pv-bar{display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex-shrink:0;}
+.pv-bar b{font-size:13px; color:var(--text);}
+.pv-chain{font-size:10.5px; color:var(--sub-2); font-family:ui-monospace,Consolas,monospace;}
+.pv-ta{
+  flex:1; min-height:220px; width:100%; resize:none; padding:11px 13px;
+  background:rgba(0,0,0,.28); border:1px solid var(--line); border-radius:var(--r-md);
+  color:#c9d3e2; font-size:12px; line-height:1.7; outline:none;
+  font-family:ui-monospace,Consolas,monospace;
+}
+.pv-ta:focus{border-color:var(--blue);}
+.pv-ta.editing{background:rgba(59,130,246,.06); border-color:rgba(59,130,246,.5); color:#e8ecf4;}
+.pv-note{font-size:11px; color:var(--sub-2); line-height:1.7; flex-shrink:0;}
+.pv-note code{background:rgba(255,255,255,.06); padding:1px 4px; border-radius:4px; color:#c3cddd;}
+.pv-warn{
+  font-size:11.5px; color:var(--warn); line-height:1.7; flex-shrink:0;
+  background:rgba(251,191,36,.07); border:1px solid rgba(251,191,36,.25);
+  border-radius:var(--r-sm); padding:7px 10px;
+}
+.pv-warn code{background:rgba(255,255,255,.07); padding:1px 4px; border-radius:4px;}
+.pv-err{
+  font-size:11.5px; color:var(--danger); line-height:1.7; flex-shrink:0;
+  background:rgba(248,113,113,.08); border:1px solid rgba(248,113,113,.3);
+  border-radius:var(--r-sm); padding:7px 10px;
+}
+.pv-empty{flex:1; display:flex; align-items:center; justify-content:center; gap:8px; color:var(--sub-2); font-size:13px;}
+.pv-calc{display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex-shrink:0;}
+.pv-calc select{
+  background:rgba(0,0,0,.3); border:1px solid var(--line); color:var(--text);
+  border-radius:var(--r-sm); padding:5px 8px; font:inherit; font-size:11.5px;
+}
+.pv-calc-out{
+  flex-shrink:0; max-height:170px; overflow:auto; margin:0; padding:9px 11px;
+  background:rgba(0,0,0,.3); border:1px solid var(--line-soft); border-radius:var(--r-sm);
+  font-size:11px; line-height:1.65; color:var(--sub); white-space:pre-wrap;
+  font-family:ui-monospace,Consolas,monospace;
+}

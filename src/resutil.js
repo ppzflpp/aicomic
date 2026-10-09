@@ -1,7 +1,7 @@
 /** 分辨率/时长小工具（StageChars / StageVideos / StageShots 共用） */
 
 /** '宽x高' → [w, h]；非法回退默认 */
-export function parseRes(v, dw = 1216, dh = 832) {
+export function parseRes(v, dw = 1920, dh = 1080) {
   const m = /^(\d+)x(\d+)$/i.exec(String(v || ''))
   return m ? [+m[1], +m[2]] : [dw, dh]
 }

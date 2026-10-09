@@ -1,0 +1,78 @@
+{
+  "_note": "画风族「真人实拍」= 最接近真实照片的那一族：真实皮肤纹理、胶片颗粒、浅景深。它做两件事：① 声明本族的**纯画风词**（renderWho / renderMedium / 反画风词 / 器材剥除表 / 英文画风词）；② 声明**组合模板** —— 把「世界给的事实槽位 w_*」与「调性给的档次槽位 t_*」拼成规范要的 35 个键。模板里只允许引用 {{S.w_*}} 与 {{S.t_*}}，绝不写死任何题材词。于是：新增一个世界只要给齐自己那组 w_*（词序差异用模板表达，如 w_subjectStart），新增一个调性只要给齐 t_* —— 两边都**不用碰这个文件**；反过来给本族加新兄弟也只写自己的文件，不用碰任何世界 / 调性文件。",
+  "id": "live-action",
+  "label": "真人实拍",
+  "desc": "实拍摄影画风：真人演员、真实皮肤纹理与胶片颗粒、浅景深；最接近真实照片",
+  "order": 10,
+  "append": [],
+  "vars": {
+    "renderWho": "真人",
+    "renderActor": "真人演员",
+    "renderMedium": "摄影作品",
+    "renderMediumScene": "实景照片",
+    "realismPrefix": "极其逼真的",
+    "filmWord": "电影画面",
+    "enPhotoreal": "Photorealistic",
+    "enPhotorealLC": "photorealistic",
+    "renderEnWho": "live-action",
+
+    "antiRenderWords": "动漫，二次元，插画，绘画，3D，游戏CG，卡通，塑料感",
+    "antiRenderWordsCn": "动漫、二次元、插画、绘画、3D、游戏CG、卡通、塑料感",
+    "antiRenderWordsEn": "anime / animation / illustration / cel shading / cartoon / 3D render / game CG / manga",
+
+    "equipStrip": "相机,单反,单反相机,镜头,人像镜头,机位,三脚架,云台,闪光灯,灯架,摄影棚,片场设备,摄像机,摄影师,拍摄设备",
+
+    "exFabric": "{{S.w_exFabric}}",
+    "exProp": "{{S.w_exProp}}",
+    "exSign": "{{S.w_exSign}}",
+    "exText": "{{S.w_exText}}",
+    "exAnchor": "{{S.w_exAnchor}}",
+    "exPalette": "{{S.w_exPalette}}",
+    "exWardrobe": "{{S.w_exWardrobe}}",
+    "exState": "{{S.w_exState}}",
+    "exLeak": "{{S.w_exLeak}}",
+
+    "styleName": "{{S.w_styleHead}}{{S.renderWho}}实拍",
+    "dramaLabel": "{{S.w_full}}{{S.renderWho}}实拍剧",
+    "worldShort": "{{S.w_full}}",
+    "worldRule": "{{S.w_worldRule}}",
+    "charRefKind": "{{S.renderActor}}的{{S.w_full}}定妆照",
+    "sceneRefKind": "{{S.w_sceneRef}}",
+    "styleCore": "{{S.renderWho}}{{S.w_noun}}、8K超高清、{{S.t_core}}{{S.t_tex}}",
+    "styleCoreName": "{{S.renderWho}}{{S.w_noun}}剧质感",
+    "styleFeel": "{{S.renderWho}}{{S.w_noun}}{{S.t_feel}}",
+
+    "startChar": "{{S.realismPrefix}}{{S.w_subjectStart}}{{S.renderMedium}}，8K超高清，{{S.t_core}}{{S.t_tex}}",
+    "endChar": "{{S.w_subjectEnd}}剧照，照片级真实",
+    "endCharFilm": "{{S.w_subjectEnd}}剧照，{{S.filmWord}}，照片级真实",
+    "actorShot": "{{S.t_core}}{{S.t_tex}}的{{S.w_actorWorld}}男演员定妆照",
+
+    "costume": "{{S.w_costume}}",
+    "costumeNpc": "{{S.w_costumeNpc}}",
+
+    "startScene": "{{S.realismPrefix}}{{S.w_sceneStart}}，8K超高清，{{S.t_core}}{{S.t_tex}}",
+    "startSceneAlt": "{{S.realismPrefix}}{{S.w_sceneKind}}，{{S.t_core}}{{S.t_tex}}，真实材质纹理",
+    "endScene": "{{S.w_sceneEnd}}，照片级真实",
+    "endSceneFilm": "{{S.w_sceneEnd}}，{{S.filmWord}}，照片级真实",
+    "keeper": "{{S.w_keeper}}，画面内只有建筑、陈设与自然环境",
+
+    "materialSamples": "{{S.w_material}}",
+    "placeSamples": "{{S.w_place}}",
+    "lightSamples": "{{S.w_light}}",
+    "lightMain": "{{S.w_lightMain}}",
+
+    "antiStyleWords": "{{S.antiRenderWords}}{{S.w_antiWorld}}",
+    "antiStyleWordsCn": "{{S.antiRenderWordsCn}}{{S.w_antiWorldCn}}",
+    "extraExclude": "多余的{{S.w_excludeWorld}}物件",
+
+    "worldTerms": "{{S.w_terms}}",
+    "roleExamples": "{{S.w_roleExamples}}",
+    "lookTable": "{{S.w_lookTable}}",
+
+    "enShotSample": "[Shot 1] {{S.enPhotoreal}} {{S.renderEnWho}} {{S.w_enEra}} drama, 8K ultra-detailed, {{S.t_enLook}}, {{S.t_enGrade}}, a medium-wide shot frames ...",
+    "enStyleWords": "{{S.enPhotorealLC}}, {{S.renderEnWho}} {{S.w_enEra}} drama, real skin texture, film grain, shallow depth of field (bokeh), {{S.w_enLight}}, {{S.t_enGrade}}, 8K ultra-detailed",
+    "enStyleSentence": "{{S.enPhotoreal}} {{S.renderEnWho}} {{S.w_enEra}} drama, 8K ultra-detailed, real skin texture, natural light, shallow depth of field, {{S.t_enGrade}}",
+    "enLtxSample": "a {{S.enPhotorealLC}} {{S.renderEnWho}} {{S.w_enLtxScene}}",
+    "enStyleWordsShort": "{{S.enPhotorealLC}}, {{S.renderEnWho}}, real skin texture, film grain, shallow depth of field, {{S.t_enGrade}}"
+  }
+}

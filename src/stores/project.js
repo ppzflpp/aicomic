@@ -9,20 +9,45 @@ export const useProject = defineStore('project', {
     health: null,          // 推理服务健康 { llm, comfyui, ffmpeg, endpoints }
     current: null,        // 当前集数对象（全量工件）
     expanded: new Set(),  // 树展开的项目/文件夹 id
-    view: 'dash',         // dash | settings
+    view: 'dash',         // dash | settings | lib | prompts
     ask: null,            // 输入弹窗 {title, cb}
     askValue: '',         // 弹窗输入值
     confirmDel: null,     // 删除确认 {type:'project'|'folder'|'episode', id, name}
     resOptions: null,     // 分辨率档位 {img:[{value,label}],vid:[...],out:[...]}，按当前模型过滤
+    /** 当前生图 / 视频方案的能力声明 { image:{i2i}, video:{firstFrame,lastFrame,refImage,refVideo,audio} }
+     *  不支持的入口在界面上直接禁用/隐藏 —— 而不是等用户点了生成才发现。
+     *  拿不到时是空对象 → 各项按「未声明 = 不禁用」处理（宁可放过，不可误禁）。 */
+    caps: { image: {}, video: {} },
+    /** 当前方案声明的提示词规范文件 { image:{逻辑名:文件名}, video:{base,ref,…} }
+     *  视频链路的提示词按它分流：H3 声明 {base:'h3.md', ref:'h3ref.md'}、
+     *  LTX-2.5 声明 {base:'ltx.md'} —— 换视频模型连「用哪份提示词规范」也变成只改配置。
+     *  拿不到时是空对象 → 生成链路回落到内置的 h3.md / h3ref.md。 */
+    promptFiles: { image: {}, video: {} },
+    /** 当前方案声明的「模型专属规范」引用关系 { image:{通用规范名:[文件名]}, video:{…} }
+     *  提示词配置中心用它标注「这份 model-*.md 被哪个方案用着」。 */
+    promptExtraFiles: { image: {}, video: {} },
     /** 视频生成档位清单（主进程给，UI 只认档位名，不含任何模型信息）
      *  [{key:'fast'|'balanced'|'hq', label:'速度优先', desc:'…', default:true}] */
     tierOptions: [],
+    /** 风格体系四轴清单（主进程给）：{ render:[], world:[], genre:[], tone:[], presets:[], default, defaultTriple, labels }。
+     *  新建项目与项目配置里是**四组点选网格**（画面风格 / 世界设定 / 内容体裁 / 制作调性），
+     *  存库的值是拼出来的 `render:world:genre:tone`；presets 只是给四元组起过名字的组合（向后兼容老值）。 */
+    styleAxes: { render: [], world: [], genre: [], tone: [], presets: [], default: {}, defaultTriple: '', labels: {} },
+    /** 风格体系的结构性问题 {errors:[], warnings:[]}（主进程给）—— 界面黄条用。
+     *  🔴 以前 styles.errors() 是死代码：用户自建包写残了会被静默丢弃、项目悄悄变成古风，
+     *     而没有任何地方会告诉他。现在必须在界面上显示出来。 */
+    styleIssues: { errors: [], warnings: [] },
     /** 左侧树的项目媒体（按需懒加载）：{ [projectId]: {assets,shots,films,scripts,loading...} } */
     media: {},
     /** 项目角色场景库（跨集共享的角色/场景条目）：{ [projectId]: {rev, entries, busy} } */
     library: {},
     /** 库编辑区当前打开的目标（不属于任何一集）：{projectId, id} | null */
     libTarget: null,
+    /** 提示词配置中心当前打开的项目：{ projectId } | null（同样不属于任何一集）。
+     *  🔴 提示词页没有 st.current 可用 —— 读规范、取该项目风格、读写成品覆写都靠它定位项目。 */
+    promptTarget: null,
+    /** 库引用快照（一次扫全库）：{ projectId, map: { [entryId]: usage[] } }——库视图整页铺卡共用 */
+    libUsage: { projectId: '', map: {} },
     error: null           // 最近一次 IPC 错误（App 监听后 toast）
   }),
   actions: {
@@ -34,6 +59,9 @@ export const useProject = defineStore('project', {
         await this.refresh()
         this.models = await window.studio.checkModels()
         this.health = await window.studio.inferHealth()
+        await this.refreshCaps()
+        // 分辨率档位 / 视频档位清单也随模型方案走（方案声明自己的分辨率与档位表）
+        await this.loadResOptions()
       } catch (e) { this.fail(e) }
     },
     async refresh() {
@@ -44,6 +72,23 @@ export const useProject = defineStore('project', {
     async refreshEnv() {
       this.models = await window.studio.checkModels()
       this.health = await window.studio.inferHealth()
+      await this.refreshCaps()
+      // 换模型方案后，分辨率档位与视频档位清单都要重取（它们由方案声明）
+      await this.loadResOptions()
+    },
+    /** 当前生图 / 视频方案声明了哪些能力 + 用哪份提示词规范（换方案后 UI 与提示词一起跟着走） */
+    async refreshCaps() {
+      try {
+        const [a, b] = await Promise.all([
+          window.studio.profileList('image'),
+          window.studio.profileList('video')
+        ])
+        const ai = ((a && a.items) || []).find(o => o.active) || {}
+        const vi = ((b && b.items) || []).find(o => o.active) || {}
+        this.caps = { image: ai.capabilities || {}, video: vi.capabilities || {} }
+        this.promptFiles = { image: ai.promptFiles || {}, video: vi.promptFiles || {} }
+        this.promptExtraFiles = { image: ai.promptAppend || {}, video: vi.promptAppend || {} }
+      } catch (_) { /* 拿不到就不动 —— 保持「未声明 = 不禁用」 */ }
     },
     /** 轻量健康轮询（每 5s）：真实探测 llama/ComfyUI 端口，标题栏胶囊不再依赖手动刷新 */
     async refreshHealth() {
@@ -63,6 +108,11 @@ export const useProject = defineStore('project', {
     openLibEntry(projectId, id) {
       this.view = 'dash'
       this.libTarget = { projectId, id }
+    },
+    /** 打开提示词配置中心（整页视图，不属于任何一集） */
+    openPrompts(projectId) {
+      this.view = 'prompts'
+      this.promptTarget = { projectId }
     },
     /** 在项目树里按 id 找集数（含任意层级子文件夹）；找不到返回 null（例如已被删除） */
     findEpisode(id) {
@@ -268,10 +318,42 @@ export const useProject = defineStore('project', {
     await this.loadLibrary(projectId, true)
     return r
   },
+  /**
+   * 删除库条目。deleteFiles=false → 仅移出库（图片目录保留）；true → 连同图片目录一起删（不可恢复）。
+   * 返回 { id, name, kind, filesDeleted, delErr, images, usage }（usage = 删除前的引用快照）。
+   */
+  async removeLibrary(projectId, id, deleteFiles) {
+    const r = await window.studio.libraryRemove(this.workspace, projectId, id, { deleteFiles: !!deleteFiles })
+    await this.loadLibrary(projectId, true)
+    return r
+  },
   /** 某库条目被哪些集/哪些镜引用（现扫，不做索引） */
   async libraryUsage(projectId, id) {
     try { return (await window.studio.libraryUsage(this.workspace, projectId, id)) || [] }
     catch (e) { this.fail(e); return [] }
+  },
+  /**
+   * 全库引用快照（一次扫全库，库视图整页铺卡共用）：
+   * 逐条调 libraryUsage 会是「条目数 × 集数」次读盘，这里一次拿全部。
+   */
+  async loadLibUsage(projectId) {
+    if (!projectId) { this.libUsage = { projectId: '', map: {} }; return {} }
+    try {
+      const m = (await window.studio.libraryUsageAll(this.workspace, projectId)) || {}
+      this.libUsage = { projectId, map: m }
+      return m
+    } catch (e) { this.libUsage = { projectId, map: {} }; return {} }
+  },
+  /**
+   * 逐字段保存库条目（**不重拉整库**）：保存后服务端 libRev +1，
+   * 这里只把本地那条的 libRev/updatedAt 同步过来 —— 重拉会把本地还没提交的其它字段覆盖回服务端旧值。
+   */
+  async patchLibrary(projectId, payload) {
+    const r = await window.studio.librarySave(this.workspace, projectId, payload)
+    const s = this.library[projectId]
+    const e = s && (s.entries || []).find(x => x.id === (payload && payload.updateId))
+    if (e && r && r.entry) { e.libRev = r.entry.libRev; e.updatedAt = r.entry.updatedAt }
+    return r
   },
   /** 生成/导出后让左侧树对应节点失效，并**立即重拉**（不管节点是否展开）：
    *  展开着的时候用户马上能看到新产物；收起时也保证「N 个」的计数是新的 */
@@ -295,6 +377,79 @@ export const useProject = defineStore('project', {
     try { this.resOptions = await window.studio.resOptions() } catch (e) { this.fail(e) }
     // 档位清单跟随主进程注册表：新增档位 / 换模型库都不需要改前端
     try { this.tierOptions = (await window.studio.resTiers()) || [] } catch (_) { this.tierOptions = [] }
+    // 风格四轴与问题清单按**当前项目**取：风格覆盖已下沉到项目（同一个工作区下，
+    // 每个项目可以有自己的轴文件，也可能只有某个项目的包是坏的）。
+    // 🔴 promptTarget 优先于 current：提示词配置中心/项目配置弹窗是「用户此刻明确在看的那个项目」，
+    //    而 current（当前集）可能还停在别的项目上 —— 两者取错就会「改了 A 的轴，B 的界面在报错」。
+    // 两个都没有（纯新建弹窗场景）→ pid='' 只用内置。
+    const pid = (this.promptTarget && this.promptTarget.projectId) ||
+      (this.current && this.current.projectId) || ''
+    try { this.styleAxes = (await window.studio.styleAxes(this.workspace, pid)) || this.styleAxes } catch (_) { /* 保留上一次 */ }
+    // 风格体系的结构性问题（含「你选的这个组合已经不存在了」）—— 界面黄条
+    try { this.styleIssues = (await window.studio.styleErrors(this.workspace, pid)) || this.styleIssues } catch (_) { /* 保留上一次 */ }
+  },
+  /** 风格四轴默认值（新建项目时四组网格的预选值） */
+  defaultAxes() {
+    const d = this.styleAxes && this.styleAxes.default;
+    return (d && d.render)
+      ? { tone: 'cinematic', ...d }
+      : { render: 'live-action', world: 'guofeng', genre: 'story', tone: 'cinematic' };
+  },
+  /** 默认风格的字符串形式（`render:world:genre:tone`）—— 新建项目预选它 */
+  defaultStyle() {
+    return (this.styleAxes && this.styleAxes.defaultTriple) || 'live-action:guofeng:story:cinematic';
+  },
+  /** 某一轴的选项清单（render / world / genre / tone） */
+  axisOptions(axis) {
+    return (this.styleAxes && this.styleAxes[axis]) || [];
+  },
+  /** 某一轴的显示名（点选网格的标题用） */
+  axisLabel(axis) {
+    const L = (this.styleAxes && this.styleAxes.labels) || {};
+    return L[axis] || axis;
+  },
+  /** 四轴拼成存库用的 id（tone 为空时按 3 段拼，老值格式原样保留） */
+  tripleId(tri) {
+    if (!tri) return '';
+    const v = (x) => (x == null ? '' : String(x));
+    if (!v(tri.tone)) return [tri.render, tri.world, tri.genre].map(v).join(':');
+    return [tri.render, tri.world, tri.genre, tri.tone].map(v).join(':');
+  },
+  /** 把存库的风格值拆回四个值。支持三种写法：
+   *  `render:world:genre:tone`（新）、`render:world:genre`（tone 取默认，老项目不用迁移）
+   *  与预置名（老的 `guofeng-real` / `modern-real` —— 去 presets 里查它的四轴）。
+   *  🔴 认不出预置名就返回默认四轴是**危险**的（老项目存的 modern-real 会被读成古风），
+   *     所以这里必须查 presets 清单，不能只按 ":" 拆。 */
+  parseTriple(id) {
+    const key = String(id || '')
+    const parts = key.split(':').map(x => x.trim())
+    const def = this.defaultAxes()
+    if (parts.length === 4 && parts.every(Boolean)) {
+      return { render: parts[0], world: parts[1], genre: parts[2], tone: parts[3] }
+    }
+    if (parts.length === 3 && parts.every(Boolean)) {
+      return { render: parts[0], world: parts[1], genre: parts[2], tone: def.tone }
+    }
+    const hit = ((this.styleAxes && this.styleAxes.presets) || []).find(p => p.id === key)
+    if (hit && hit.render) {
+      return { render: hit.render, world: hit.world, genre: hit.genre, tone: hit.tone || def.tone }
+    }
+    return def
+  },
+  /** 这组四轴对应的预置名字（没有对应预置就返回 ''）—— 弹窗里显示「= 预置：…」 */
+  presetNameOf(tri) {
+    const id = this.tripleId(tri);
+    const ps = (this.styleAxes && this.styleAxes.presets) || [];
+    const hit = ps.find(p => this.tripleId(p) === id);
+    return (hit && hit.name) || '';
+  },
+  /** 这组四轴里哪些值在当前清单中不存在（= 项目存的风格已失效）—— 弹窗据此报警 */
+  missingAxes(tri) {
+    const out = [];
+    for (const ax of ['render', 'world', 'genre', 'tone']) {
+      if (!this.axisOptions(ax).some(x => x.id === tri[ax])) out.push(this.axisLabel(ax) + '「' + tri[ax] + '」');
+    }
+    return out;
   },
   /** 档位默认值（新建项目时预选「平衡」） */
   defaultTier() {
@@ -303,7 +458,18 @@ export const useProject = defineStore('project', {
   },
   /** 改项目分辨率：只影响之后新建的剧集（主进程不回写已有剧集） */
   async setProjectRes(projectId, res) {
-    return window.studio.setProjectRes(projectId, res)
+    const r = await window.studio.setProjectRes(projectId, res)
+    // 🔴 换风格后必须**就地**刷新风格 id 的两处来源：树 + 当前集。
+    //    styleIdOf() 优先读 st.current.style（打开集时快照下来的），树是它的后备 ——
+    //    不刷新的话，这一轮会话里后面读到的仍会是旧风格：用户明明把体裁切成了「广告」，
+    //    改编环节却还在用小说规范，而且**一点报错都没有**（实测踩到，是端到端测试抓出来的）。
+    try {
+      await this.refresh()
+      const p = (this.tree || []).find(x => x.id === Number(projectId))
+      const s = p && p.res && p.res.style
+      if (s && this.current && Number(this.current.projectId) === Number(projectId)) this.current.style = s
+    } catch (_) { /* 刷新失败不影响「已保存」这个事实 */ }
+    return r
   },
   /** 改当前集某一类分辨率（kind: img|vid|out），本集后续生成立即生效 */
   async setEpisodeRes(kind, value) {
