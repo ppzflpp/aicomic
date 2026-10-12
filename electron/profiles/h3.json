@@ -120,16 +120,13 @@
         { "match": "fl2v.*8step", "steps": 8, "shift": [12, 3] }
       ],
       "ref2v": [
-        { "match": "turbo_v4_step600", "steps": 6, "shift": null },
+        { "match": "turbo_v4_step600", "steps": 8, "shift": null },
         { "match": "ref2v", "steps": 4, "shift": null }
       ]
     },
     "hq": {
       "fl2v": [ { "match": null, "steps": 20, "shift": null } ],
-      "ref2v": [
-        { "match": "turbo_v4_step600", "steps": 8, "shift": null },
-        { "match": null, "steps": 20, "shift": null }
-      ]
+      "ref2v": [ { "match": null, "steps": 20, "shift": null } ]
     }
   },
 

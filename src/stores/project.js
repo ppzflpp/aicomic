@@ -1,5 +1,17 @@
 import { defineStore } from 'pinia'
 import { usePipeline } from './pipeline.js'
+import { unfoldProfileLine } from '../promptlib.js'
+
+/** 打开某一集时把档案里「模型偷懒写成的一整行」拆回多行（2026-10-12）：
+ *  磁盘上的旧数据（V9X-4 等）profile 是 0 换行的一坨，重生成才会修好 ——
+ *  但用户不重新生成也该看得懂，所以在**加载时**兜一次。
+ *  只用 unfoldProfileLine（只拆「字段串」单行），不用 normalizeProfile ——
+ *  后者会 trim / 删空行，不该在「用户没编辑」时改写他的数据。 */
+function unfoldLongProfiles(list) {
+  for (const o of list || []) {
+    if (o && typeof o.profile === 'string') o.profile = unfoldProfileLine(o.profile)
+  }
+}
 
 export const useProject = defineStore('project', {
   state: () => ({
@@ -98,6 +110,8 @@ export const useProject = defineStore('project', {
       try {
         const ep = await window.studio.getEpisode(this.workspace, id)
         if (!ep) return
+        unfoldLongProfiles(ep.chars)
+        unfoldLongProfiles(ep.scenes)
         this.libTarget = null   // 打开某一集 → 右侧回到 5 块工作区（离开库编辑区）
         this.current = ep
         this.view = 'dash'
@@ -288,7 +302,9 @@ export const useProject = defineStore('project', {
     this.library[projectId] = { rev: cur ? cur.rev : 1, entries: cur ? cur.entries : [], busy: true }
     try {
       const r = await window.studio.libraryList(this.workspace, projectId)
-      this.library[projectId] = { rev: (r && r.rev) || 1, entries: (r && r.entries) || [], busy: false }
+      const entries = (r && r.entries) || []
+      unfoldLongProfiles(entries)   // 库里同样显示档案 textarea → 与打开集数同一套兜底
+      this.library[projectId] = { rev: (r && r.rev) || 1, entries, busy: false }
     } catch (e) {
       this.fail(e)
       if (this.library[projectId]) this.library[projectId].busy = false

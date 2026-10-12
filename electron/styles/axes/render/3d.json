@@ -1,0 +1,78 @@
+{
+  "_note": "画风族「3D 渲染」= 三维建模 + 物理材质 + 体积光照的 CG 动画画风（游戏 CG / 3D 动画质感）。它做两件事：① 声明本族的**纯画风词**（renderWho / renderMedium / 反画风词 / 器材剥除表 / 英文画风词）；② 声明**组合模板** —— 把「世界给的事实槽位 w_*」与「调性给的档次槽位 t_*」拼成规范要的全部键。于是：新增一个世界只要给齐自己那组 w_*，新增一个调性只要给齐 t_* —— 两边都**不用碰这个文件**。🔴 与「真人实拍」的两处刻意差异：① **不引用 t_tex / t_feel / t_enLook** —— 这三个调性槽位在现有五个 tone 里都是实拍专属词（「实拍质感」「摄影质感」「cinematic live-action film look」）；② **不引用 w_sceneStart / w_sceneKind / w_sceneRef / w_sceneEnd** —— 这四个世界空间槽位现在写的是「古装剧实景照片 / 现代都市实景照片」这类实拍介质词，改用 {{S.w_full}}（世界的核心标识，如「现代都市」）+ 本族的 renderMediumScene（「3D场景」）自行组合。🔴 renderMedium 不能以 renderWho（3D）开头：world 的 w_subjectStart 里已经含 {{S.renderWho}}，写了会拼成「现代都市3D3D 渲染画面」。",
+  "id": "3d",
+  "label": "3D 渲染",
+  "desc": "3D 动画 / 游戏 CG 画风：三维建模、物理材质与体积光照，PBR 渲染质感",
+  "order": 30,
+  "append": [],
+  "vars": {
+    "renderWho": "3D",
+    "renderActor": "3D角色",
+    "renderMedium": "渲染画面",
+    "renderMediumScene": "3D场景",
+    "realismPrefix": "精细的",
+    "filmWord": "3D动画镜头",
+    "enPhotoreal": "3D rendered",
+    "enPhotorealLC": "3D rendered",
+    "renderEnWho": "3D animation",
+
+    "antiRenderWords": "真人，实拍，照片，摄影，手绘，2D，平面插画，赛璐璐",
+    "antiRenderWordsCn": "真人、实拍、照片、摄影、手绘、2D、平面插画、赛璐璐",
+    "antiRenderWordsEn": "live-action / real person / photography / photo / hand-drawn / 2D flat illustration / cel shading",
+
+    "equipStrip": "相机,单反,单反相机,镜头,人像镜头,机位,三脚架,云台,闪光灯,灯架,摄影棚,片场设备,摄像机,摄影师,拍摄设备",
+
+    "exFabric": "{{S.w_exFabric}}",
+    "exProp": "{{S.w_exProp}}",
+    "exSign": "{{S.w_exSign}}",
+    "exText": "{{S.w_exText}}",
+    "exAnchor": "{{S.w_exAnchor}}",
+    "exPalette": "{{S.w_exPalette}}",
+    "exWardrobe": "{{S.w_exWardrobe}}",
+    "exState": "{{S.w_exState}}",
+    "exLeak": "{{S.w_exLeak}}",
+
+    "styleName": "{{S.w_styleHead}}{{S.renderWho}}渲染",
+    "dramaLabel": "{{S.w_full}}{{S.renderWho}}动画剧",
+    "worldShort": "{{S.w_full}}",
+    "worldRule": "{{S.w_worldRule}}",
+    "charRefKind": "{{S.renderActor}}的{{S.w_full}}设定图",
+    "sceneRefKind": "{{S.w_full}}{{S.renderMediumScene}}",
+    "styleCore": "{{S.renderWho}}渲染的{{S.w_noun}}、8K超高清、体积光、{{S.t_core}}三维渲染质感",
+    "styleCoreName": "{{S.renderWho}}渲染{{S.w_noun}}剧质感",
+    "styleFeel": "{{S.renderWho}}渲染{{S.w_noun}}CG质感",
+
+    "startChar": "{{S.realismPrefix}}{{S.w_subjectStart}}{{S.renderMedium}}，8K超高清，物理材质，{{S.t_core}}三维渲染质感",
+    "endChar": "{{S.w_subjectEnd}}设定图，三维渲染质感",
+    "endCharFilm": "{{S.w_subjectEnd}}设定图，{{S.filmWord}}，三维渲染质感",
+    "actorShot": "{{S.t_core}}三维渲染质感的{{S.w_actorWorld}}{{S.renderActor}}设定图",
+
+    "costume": "{{S.w_costume}}",
+    "costumeNpc": "{{S.w_costumeNpc}}",
+
+    "startScene": "{{S.realismPrefix}}{{S.w_full}}{{S.renderMediumScene}}，8K超高清，物理材质，{{S.t_core}}三维渲染质感",
+    "startSceneAlt": "{{S.realismPrefix}}{{S.w_full}}场景CG，物理材质与全局光照，{{S.t_core}}三维渲染质感",
+    "endScene": "{{S.w_full}}{{S.renderMediumScene}}，三维渲染质感",
+    "endSceneFilm": "{{S.w_full}}{{S.renderMediumScene}}，{{S.filmWord}}，三维渲染质感",
+    "keeper": "{{S.w_keeper}}，画面内只有建筑、陈设与自然环境",
+
+    "materialSamples": "{{S.w_material}}",
+    "placeSamples": "{{S.w_place}}",
+    "lightSamples": "{{S.w_light}}",
+    "lightMain": "{{S.w_lightMain}}",
+
+    "antiStyleWords": "{{S.antiRenderWords}}{{S.w_antiWorld}}",
+    "antiStyleWordsCn": "{{S.antiRenderWordsCn}}{{S.w_antiWorldCn}}",
+    "extraExclude": "多余的{{S.w_excludeWorld}}物件",
+
+    "worldTerms": "{{S.w_terms}}",
+    "roleExamples": "{{S.w_roleExamples}}",
+    "lookTable": "{{S.w_lookTable}}",
+
+    "enShotSample": "[Shot 1] {{S.enPhotoreal}} {{S.renderEnWho}} {{S.w_enEra}} drama, volumetric lighting, subsurface scattering, physically based materials, {{S.t_enGrade}}, a medium-wide shot frames ...",
+    "enStyleWords": "{{S.enPhotorealLC}}, {{S.renderEnWho}} {{S.w_enEra}} drama, volumetric lighting, subsurface scattering, physically based materials (PBR), ray tracing, {{S.w_enLight}}, {{S.t_enGrade}}, 8K ultra-detailed",
+    "enStyleSentence": "{{S.enPhotoreal}} {{S.renderEnWho}} {{S.w_enEra}} drama, 8K ultra-detailed, volumetric lighting, physically based materials, soft global illumination, {{S.t_enGrade}}",
+    "enLtxSample": "a {{S.enPhotorealLC}} {{S.renderEnWho}} {{S.w_enLtxScene}}",
+    "enStyleWordsShort": "{{S.enPhotorealLC}}, {{S.renderEnWho}}, volumetric lighting, physically based materials, {{S.t_enGrade}}"
+  }
+}

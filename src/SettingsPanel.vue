@@ -57,8 +57,8 @@
     </div>
 
     <!-- 引擎与显存：页面上只留「按阶段自动启停」这一件事。
-         服务地址 / 健康状态灯 / 引擎启动参数 / ffmpeg 路径一律走默认值与自动探测
-         （引擎安装位置等要手动改的见下方「高级设置」）。 -->
+         服务地址 / 健康状态灯 / 引擎启动参数一律走默认值；llama.cpp 与 ffmpeg
+         随软件内置（软件目录下的 tools\），用户不需要指定任何路径。 -->
     <div class="set-card">
       <div class="set-head">
         <h3>引擎与显存</h3>
@@ -76,29 +76,6 @@
       </div>
     </div>
 
-    <!-- 高级设置（常显，不再折叠）：只给两种人用 —— 自动探测失败要手动指路的、想手动管引擎的。
-         服务地址与引擎启动参数一律走代码默认值，界面上不再暴露。 -->
-    <div class="set-card">
-      <div class="set-head">
-        <h3>高级设置</h3>
-      </div>
-
-      <div class="env-row">
-        <span class="env-name">llama.cpp 安装目录</span>
-        <span :class="eng.llama.exeOk?'model-ok':'model-no'">{{ eng.llama.exeOk?'已就位':'未找到' }}</span>
-        <input type="text" v-model="llamaDir" @change="saveDir()"
-               placeholder="例：D:\AIComic\runtime\llama（含 llama-server.exe）" style="flex:1" />
-        <button class="btn ghost sm" @click="browseDir()">浏览…</button>
-      </div>
-
-      <div class="env-row">
-        <span class="env-name">ffmpeg 路径</span>
-        <span :class="health.ffmpeg?'model-ok':'model-no'">{{ health.ffmpeg?'已就绪':'未找到' }}</span>
-        <input type="text" v-model="ffmpegPath" placeholder="留空则依次查找 workspace\tools 与 PATH" style="flex:1" />
-        <button class="btn ghost sm" @click="browseFfmpeg">浏览…</button>
-        <button class="btn ghost sm" @click="saveFfmpeg">保存</button>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -112,12 +89,6 @@ export default {
   components: { ModelManager },
   data() {
     return {
-      ffmpegPath: '',
-      eng: {
-        llama: { installDir: '', exe: '', exeOk: false, cuda: { backend: false, runtime: false, ok: false, hint: '' }, modelDir: '', modelFile: '', modelOk: false, endpoint: '' },
-        comfyui: { installDir: '', launcherOk: false, label: '', exe: '', endpoint: '' }
-      },
-      llamaDir: '',
       autoOrch: true,
       // 生成模型方案（profile）：下拉候选项 + 当前选中 + 读不进来的自定义配置
       imgOptions: [],
@@ -128,13 +99,10 @@ export default {
     }
   },
   computed: {
-    st() { return useProjectStore() },
-    health() { return this.st.health || { llm: false, comfyui: false, ffmpeg: false } }
+    st() { return useProjectStore() }
   },
   async mounted() {
-    this.ffmpegPath = (await window.studio.getSetting('ffmpeg.path')) || ''
     await this.st.refreshEnv()
-    await this.refreshEngine()
     await this.loadProfiles()
     try { this.autoOrch = await window.studio.getAutoOrchestrate() } catch (_) {}
   },
@@ -185,44 +153,8 @@ export default {
       this.$root.toast('已请求释放显存（停 llama + 卸载 ComfyUI 模型），详情见运行日志')
       await this.st.refreshEnv()
     },
-    /* ---- llama.cpp 安装位置（唯一的人工兜底入口）---- */
-    async refreshEngine() {
-      const info = await window.studio.engineInfo()
-      if (!info) return
-      this.eng = info
-      if (!this.llamaDir) this.llamaDir = info.llama.installDir || ''
-    },
-    async saveDir() {
-      const dir = (this.llamaDir || '').trim()
-      const info = await window.studio.setEngineDir('llama', dir || null)
-      if (info) { this.eng.llama = info; this.llamaDir = info.installDir || '' }
-      this.$root.toast('路径已保存')
-    },
-    async browseDir() {
-      const info = await window.studio.chooseEngineDir('llama')
-      if (!info) return
-      this.eng.llama = info; this.llamaDir = info.installDir || ''
-      this.$root.toast('路径已保存')
-    },
-    async recheck() { await this.st.refreshEnv(); await this.refreshEngine() },
-    /* ffmpeg 装在别处时：浏览选中 exe → 点「保存」落库 */
-    async browseFfmpeg() {
-      let p = null
-      try {
-        p = await window.studio.pickFile('ffmpeg.path', {
-          title: '选择 ffmpeg.exe',
-          filters: [{ name: 'ffmpeg', extensions: ['exe'] }]
-        })
-      } catch (e) { this.st.fail(e); return }
-      if (!p) return
-      this.ffmpegPath = p
-      this.$root.toast('已选择 ' + p + '，点「保存」生效')
-    },
-    async saveFfmpeg() {
-      await window.studio.setSetting('ffmpeg.path', this.ffmpegPath.trim())
-      await this.st.refreshEnv()
-      this.$root.toast('已保存并重新检测')
-    },
+    /* ---- 引擎状态：llama.cpp 与 ffmpeg 都随软件内置（tools\），这里只刷健康状态 ---- */
+    async recheck() { await this.st.refreshEnv() },
     async chooseWs() {
       const ws = await window.studio.chooseWorkspace()
       if (ws) { this.st.workspace = ws; await this.st.refresh(); await this.st.refreshEnv() }

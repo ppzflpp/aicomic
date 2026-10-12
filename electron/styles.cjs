@@ -279,6 +279,53 @@ function normFiles(o) {
       .filter(x => /^[A-Za-z0-9_-]+\.md$/.test(x));
     if (list.length) out[k] = list;
   }
+  return Object.keys(out).length ? out : null
+}
+
+/**
+ * 体裁可声明「下发前按行丢弃基座里的哪些内容」，形状 `prompt.drop`：
+ *
+ *   { "真实文件名.md": ["行片段", ...] }
+ *
+ * 用途：基座规范是所有体裁**共用**的同一份文件，可某一条规则只对某个体裁成立
+ * （典型：shots.md「核心规则」里「每 1000 字改编稿约 8-15 个镜头」是分集短剧的粒度，
+ * 对广告体裁是**反向指令** —— 广告的镜头量按段落数算，实测 V9X-4 因此出到 12 镜）。
+ * 为 A 体裁改基座必然伤到 B 体裁，所以把「删哪一行」写在体裁自己身上。
+ *
+ * 🔴 片段是**子串**匹配、按行丢弃（见 src/promptlib.js 的 dropLines）：删的是「包含该片段
+ *    的整行」。粒度比整节细，是因为同节里往往还有始终生效的硬规则。
+ * 🔴 安全同 normFiles：键必须是「无路径分隔符的 .md 文件名」（它只用于与读取到的文件名比对，
+ *    不入路径，但保持同一条白名单省得将来被误用）；值只收非空字符串，形状不合法的项丢掉。
+ */
+function normDrop(o) {
+  const src = o && o.prompt && o.prompt.drop;
+  if (!src || typeof src !== 'object') return null;
+  const out = Object.create(null);
+  for (const [k, v] of Object.entries(src)) {
+    if (!/^[A-Za-z0-9_]+\.md$/.test(k)) continue;
+    const list = (Array.isArray(v) ? v : [v])
+      .map(x => s(x).trim())
+      .filter(Boolean);
+    if (list.length) out[k] = Array.from(new Set(list));
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * 体裁可声明的「程序侧校验参数」`limits`（2026-10-09）：
+ *   shotsPerUnit —— 镜头数上限 = 叙事单元数 × 该系数（广告 = 1.5，见 shots-ad.md）
+ *   durTol       —— 总时长允许偏离「脚本各段秒数之和」的比例（广告 = 0.2）
+ * 只收有限正数并夹在合理区间（系数 ≤10、容差 ≤1），其它一律当没声明。
+ * 没声明的体裁（剧集）**不做这项校验** —— 剧集的镜头量按字数算，拿段落数去卡会刷假警报。
+ */
+function normLimits(o) {
+  const src = o && o.limits;
+  if (!src || typeof src !== 'object') return null;
+  const out = Object.create(null);
+  const per = Number(src.shotsPerUnit);
+  if (Number.isFinite(per) && per > 0 && per <= 10) out.shotsPerUnit = per;
+  const tol = Number(src.durTol);
+  if (Number.isFinite(tol) && tol > 0 && tol <= 1) out.durTol = tol;
   return Object.keys(out).length ? out : null;
 }
 
@@ -326,6 +373,7 @@ function loadAxisDir(dir, axis, source, into, errors) {
       phrases: (o.phrases && typeof o.phrases === 'object') ? o.phrases : null,
       append: Array.isArray(o.append) ? basenames(o.append) : null,
       files: normFiles(o),
+      drop: normDrop(o), limits: normLimits(o),
       text: readText(path.join(dir, id + '.md')),
       note: s(o._note), source, dir
     };
@@ -353,6 +401,7 @@ function loadPresetDir(dir, source, into, errors) {
       vars: (o.vars && typeof o.vars === 'object') ? { ...o.vars } : {},
       append: Array.isArray(o.append) ? basenames(o.append) : null,
       files: normFiles(o),
+      drop: normDrop(o), limits: normLimits(o),
       text: readText(path.join(dir, id + '.md')),
       source
     };
@@ -609,9 +658,20 @@ function compose(res, projectRoot) {
   /* 规范文件清单（逻辑名 → 实际读取的文件列表）。叠加顺序与 vars 完全一致：
      远的一层先写、近的一层覆盖 —— 预置链最后取，所以预置能改体裁定的基线。 */
   const files = Object.create(null);
+  /* 体裁裁剪（2026-10-09）：真实文件名 → 要去掉的行片段（下发前按行丢弃，见 promptlib.dropLines）。
+     叠加顺序与 files 一致；不同轴各删一条时**累加**（不是近覆盖远）—— 体裁在近处加的裁剪
+     不该把世界/调性那层声明的裁剪顶掉。 */
+  const drop = Object.create(null);
+  /* 程序侧校验参数（体裁声明，如广告的 shotsPerUnit / durTol）：近的一层覆盖远的一层
+     —— 与 vars 同语义（预置可以调体裁定的基线）。 */
+  const limits = Object.create(null);
 
   const claimFiles = (a) => {
     for (const [k, v] of Object.entries((a && a.files) || {})) files[k] = v.slice();
+    for (const [k, v] of Object.entries((a && a.drop) || {})) {
+      drop[k] = Array.from(new Set([...(drop[k] || []), ...v]));
+    }
+    Object.assign(limits, (a && a.limits) || {});
   };
 
   const applyAxis = (a) => {
@@ -700,6 +760,8 @@ function compose(res, projectRoot) {
     vars: out,
     append,
     files,
+    drop,
+    limits,
     text: texts.map(t => t.text).join('\n\n'),
     warnings,
     parts: texts.map(t => t.name),
@@ -794,6 +856,12 @@ function get(id, projectRoot) {
     // 本项目要读的规范文件清单（逻辑名 → 文件列表）。渲染层靠它把「改编规范」这类
     // 逻辑名换成该体裁真正要读的文件 —— 这是「按体裁分流规范」的唯一供给点。
     files: comp.files,
+    // 体裁裁剪（2026-10-09）：真实文件名 → 下发前要按行丢弃的片段（见 src/prompts.js 的
+    // composeSystem → promptlib.dropLines）。基座文件是所有体裁共用的，所以「删哪一行」
+    // 由体裁自己声明，基座一字不改。
+    drop: comp.drop,
+    // 程序侧校验参数（体裁声明）：广告的 shotsPerUnit / durTol —— 分镜自检用它判超限。
+    limits: comp.limits,
     text: comp.text,
     parts: comp.parts,
     warnings: comp.warnings,

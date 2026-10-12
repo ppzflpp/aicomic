@@ -31,8 +31,8 @@
       <span class="head-ms" title="改编稿字数">{{ adapted.trim().length }} 字</span>
     </Teleport>
 
-    <!-- 重新生成分镜前的确认（2026-10-07）：分镜是「从零重来」—— 新分镜里没提到的角色/场景
-         会被清除，这是破坏性操作，必须先把影响面说清楚再动手 -->
+    <!-- 重新生成分镜前的确认（2026-10-07；2026-10-09 收紧为「下游全部清空」）：分镜是「从零重来」，
+         下游的一切都会作废 —— 这是破坏性操作，必须先把影响面说清楚再动手 -->
     <div v-if="askRegen" class="mask" @click.self="askRegen = null">
       <div class="dialog" style="width:520px">
         <h3>重新生成分镜</h3>
@@ -41,12 +41,14 @@
             v-if="askRegen.imgs">、<b>{{ askRegen.imgs }}</b> 张已出的图</span>。
         </p>
         <p class="regen-note">
-          重新生成会<b>从零重来</b>：
+          重新生成会<b>从零重来 · 下游全部清空</b>：
         </p>
         <ul class="regen-list">
-          <li>新分镜里<b>没有出现</b>的角色 / 场景 → 档案与卡片一并清除，<b>图片移到 <code>_trash/</code>（不删除，可找回）</b>；</li>
-          <li>仍然出现（同名）的 → 保留档案与已出的图，只覆盖档案内容；</li>
-          <li>全部 {{ askRegen.shots }} 个镜头的提示词{{ askRegen.prompts ? '（已有 ' + askRegen.prompts + ' 条）' : '' }}与视频记录一并清空。</li>
+          <li>角色 / 场景档案<b>一律按本次结果重建</b>，旧档案与卡片不再保留；</li>
+          <li>旧卡片已出的图<b>全部移到 <code>_trash/</code>（不删除，可找回）</b>，角色图需重新出；</li>
+          <li>全部 {{ askRegen.shots }} 个镜头的提示词{{ askRegen.prompts ? '（已有 ' + askRegen.prompts + ' 条）' : '' }}与视频记录一并清空；</li>
+          <li>本集的<b>镜头视频、首帧图、已导出的成片</b>也移到 <code>_trash/</code>（不删除，可找回）—— 成片需重新导出；</li>
+          <li>手动新增的卡、从项目库导入的卡<b>不受影响</b>（它们不在分镜里）。</li>
         </ul>
         <div class="row">
           <button class="btn ghost" @click="askRegen = null">取消</button>

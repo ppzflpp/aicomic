@@ -1,7 +1,7 @@
 {
   "name": "ai-comic-studio",
   "version": "0.1.0",
-  "description": "AI 漫剧制作工具 — 小说转漫剧的本地生产流水线",
+  "description": "AI 视频导演台 — 本地把小说、故事变成漫剧 / 短剧视频",
   "main": "electron/main.cjs",
   "private": true,
   "scripts": {
@@ -29,14 +29,35 @@
   },
   "build": {
     "appId": "com.dragon.comicstudio",
-    "productName": "飞鱼AI短剧 Studio",
+    "productName": "飞鱼AI视频导演台",
+    "directories": {
+      "output": "release"
+    },
     "files": [
       "dist/**/*",
+      "!dist/win-unpacked/**",
+      "!dist/*.exe",
       "electron/**/*",
       "skills/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "tools",
+        "to": "tools",
+        "filter": [
+          "**/*",
+          "!ffmpeg/bin/ffplay.exe",
+          "!ffmpeg/doc/**",
+          "!ffmpeg/presets/**",
+          "!**/*.pdb",
+          "!crispasr",
+          "!crispasr/**"
+        ]
+      }
+    ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,

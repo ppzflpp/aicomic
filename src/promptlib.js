@@ -144,14 +144,43 @@ export function ensureSceneKeeper(prompt, keeper) {
 }
 
 /**
+ * 单行档案拆回多行（纯函数，2026-10-12）：
+ * profile.md 要求档案「每行一个字段」，但大模型偶尔偷懒，把整份档案写成
+ * `字段名：值；字段名：值；…` 的**一整行** → 卡片里挤成一坨没法读（实测 V9X-4 两条档案全是 0 换行）。
+ * 这里做一次兜底还原。**只在能确信它是「；分隔的字段串」时才拆**，判据三条：
+ *   ① 整段没有任何换行；② 第一段就必须是「短字段名：」（档案首行一定是字段名）；
+ *   ③ 至少有 2 段以「短字段名：」开头。
+ * 不满足就原样返回 —— 普通叙述文本（用「；」断句的长句）绝不会被误拆。
+ * 值内部的「；」并回上一段（例如「外观：A；B」里的 B 不是字段名，不能拆成新行）。
+ */
+export function unfoldProfileLine(s) {
+  const t = String(s == null ? '' : s)
+  if (!t || /\n/.test(t)) return t
+  if (t.length < 24) return t
+  const parts = t.split('；').map(x => x.trim()).filter(Boolean)
+  if (parts.length < 2) return t
+  // 字段名上限 10 字：「品牌标志与确切文字」是实际出现的最长字段名（9 字）
+  const looksField = x => /^[^：:]{1,10}[：:]/.test(x)
+  if (!looksField(parts[0])) return t
+  if (parts.filter(looksField).length < 2) return t
+  const out = []
+  for (const p of parts) {
+    if (looksField(p) || !out.length) out.push(p)
+    else out[out.length - 1] += '；' + p
+  }
+  return out.join('\n')
+}
+
+/**
  * 档案（角色 / 场景 profile）→ 行文本（纯函数，2026-09-22 档案层）：
  * 大模型可能给字符串（多行「字段名：值」），也可能给对象（{姓名:'李白', 身份:'士人'}）
  * 或数组；统一成每行一个字段、全角冒号分隔的文本，方便用户直接在卡片里编辑。
+ * 2026-10-12：字符串分支加 unfoldProfileLine 兜底 —— 模型把档案写成一整行时拆回多行。
  */
 export function normalizeProfile(v) {
   if (v == null) return ''
   if (typeof v === 'string') {
-    return v.split(/\r?\n/).map(x => x.trim()).filter(Boolean).join('\n')
+    return unfoldProfileLine(v.split(/\r?\n/).map(x => x.trim()).filter(Boolean).join('\n'))
   }
   if (Array.isArray(v)) {
     return v.map(x => normalizeProfile(x)).filter(Boolean).join('\n')
@@ -242,6 +271,32 @@ export function stripProgramSections(md) {
     const h = ln.match(/^##\s*(.+?)\s*$/)
     if (h) skip = NON_SEND_SECTIONS.test(h[1])
     if (!skip) out.push(ln)
+  }
+  return out.join('\n')
+}
+
+/**
+ * 按行丢弃（**体裁裁剪**，2026-10-09）：删掉所有**包含任一指定片段**的整行。
+ * 用途：某个体裁下，基座规范里有一条规则与本体裁**直接冲突**（例：shots.md「核心规则」
+ * 里「每 1000 字改编稿约 8-15 个镜头」是分集短剧的粒度，对广告体裁是反向指令）。
+ *
+ * 🔴 为什么按行删、不按小节删：冲突的往往只是某小节里的一条，整节删会把同节里仍然有效的
+ *    内容一起带走（「核心规则」里还有合并优先、对白带人名这些始终生效的硬规则）。
+ * 🔴 为什么不由基座文件自己改：基座是所有体裁**共用**的同一份文件（还带项目副本 + rev 播种），
+ *    为 A 体裁删一行必然伤到 B 体裁。所以片段写在**体裁声明**里
+ *    （electron/styles/axes/genre/<id>.json 的 `prompt.drop`，键 = 真实文件名）。
+ * 片段匹配是**子串匹配**（trim 后非空的项）；没配 drop 的文件原样返回。
+ * @param {string} text      规范正文（已去 frontmatter / 程序小节）
+ * @param {string[]} needles 行片段
+ * @returns {string}
+ */
+export function dropLines(text, needles) {
+  const ns = (Array.isArray(needles) ? needles : []).map(x => String(x == null ? '' : x).trim()).filter(Boolean)
+  if (!ns.length) return String(text == null ? '' : text)
+  const out = []
+  for (const ln of String(text).split(/\r?\n/)) {
+    if (ns.some(n => ln.indexOf(n) >= 0)) continue
+    out.push(ln)
   }
   return out.join('\n')
 }
@@ -948,6 +1003,156 @@ export function mergeShotPair(a, b) {
   return merged
 }
 
+/**
+ * 全量合并（纯函数，2026-10-09）：从左往右贪心合并所有「可与上一镜合并」的相邻镜头。
+ *
+ * 为什么需要：`mergeWarnings` 只能黄标，用户得逐镜点开弹窗确认 —— 实测 V9X-4 的 12 镜里
+ * 有 8 处可合并，等于要手点 8 次；而「开始整理」只做时长重算 + 拆镜（方向是让镜头变多）。
+ * 于是规范里写着「合并优先」，实际落到盘上却是 12 镜（上限 6 镜）。
+ *
+ * 判据与逐镜黄标**完全同源**（mergeWarnings + mergeShotPair）——「界面标了什么」与
+ * 「这个按钮会合掉什么」永远一致，不会出现「标了没合」或「没标却合了」。
+ * 合并后按内容重算时长（durFit：台词 / 发声 / 复合运镜所需秒数）；内容对时长没约束时
+ * 保留两镜之和（mergeWarnings 已保证合计 ≤ DUR_MAX）。
+ *
+ * 🔴 拆分段（`_split`）一律不参与合并：mergeShotPair 只搬运契约字段，`_split` 会丢，
+ *    合并等于悄悄让「撤回拆分」失效。
+ * 🔴 本函数**不写 `_rev`**：`_rev` 是「本行的提示词/视频已过期」的标记，属于调用方的落库语义；
+ *    由调用方按返回的 `merged` 列表去打（见 StageShots.mergeShotsAll）。
+ * @param {Array} list 镜头数组
+ * @returns {{shots: Array, count: number, map: number[][], merged: number[]}}
+ *   map[旧下标] = [新下标]（合并时两项映射到同一新下标）；merged = 由合并产生的那些新下标
+ */
+export function mergeAllShots(list) {
+  const arr = Array.isArray(list) ? list : []
+  const out = []
+  const map = []
+  const merged = []
+  let count = 0
+  for (const s of arr) {
+    const cur = s || {}
+    const last = out[out.length - 1]
+    if (last && !last._split && !cur._split && mergeWarnings([last, cur])[1]) {
+      const m = mergeShotPair(last, cur)
+      const fit = durFit(m)
+      m.dur = Math.min(DUR_MAX, Math.max(4, fit > 0 ? fit : (Number(m.dur) || 0)))
+      out[out.length - 1] = m
+      map.push([out.length - 1])
+      merged.push(out.length - 1)
+      count++
+      continue
+    }
+    out.push({ ...cur })
+    map.push([out.length - 1])
+  }
+  return { shots: out, count, map, merged }
+}
+
+/**
+ * 把镜头时长分布到「脚本各段秒数之和」上（纯函数，2026-10-09）。
+ *
+ * 为什么需要：合并与 durFit 都只管**单镜**，管不住**全片总长**。单镜 dur 是模型按
+ * 「5~8 秒好看」填的节奏值，12 镜 × 4s 的硬下限就有 48 秒；实测 V9X-4 脚本 28 秒、
+ * 成片 53 秒（1.9 倍），而规范（shots-ad.md「镜头量」）要求总时长落在脚本各段合计的 ±20%。
+ *
+ * 规则：
+ *   · 下限 = **内容所需**（durFit：台词 / 发声表演 / 复合运镜；没有内容约束时取 4s 硬下限），
+ *     上限 15s —— 「台词念得完」永远优先于「凑够总时长」，所以贴回脚本不会把声音挤掉；
+ *   · `keep(s, i)` 为真 = 该镜时长**不动**（用户手改过的），它的时长先从目标里扣掉；
+ *   · 余量按轮转逐个 +1 平均分配，加满到上限 15s 即止（余量小于镜头数时，靠前的先分到）。
+ * 目标为 0（改编稿没写段落时长 —— 剧集体裁就是）→ 原样返回，一个字节都不动。
+ * @param {Array} list     镜头数组
+ * @param {number} totalSec 脚本各段秒数之和
+ * @param {Function} [keep] keep(s, i) → true 表示这一镜的时长不参与重算
+ * @returns {{shots: Array, changed: number, total: number}}
+ */
+export function fitDurs(list, totalSec, keep) {
+  const arr = (Array.isArray(list) ? list : []).map(s => ({ ...(s || {}) }))
+  const t = Math.round(Number(totalSec) || 0)
+  const sum = (a) => a.reduce((x, s) => x + (Number(s.dur) || 0), 0)
+  if (!arr.length || !t) return { shots: arr, changed: 0, total: sum(arr) }
+  const isKeep = typeof keep === 'function' ? keep : () => false
+  const cl = (v) => Math.min(DUR_MAX, Math.max(4, v))
+  const floor = arr.map((s, i) => {
+    if (isKeep(s, i)) return cl(Number(s.dur) || 4)
+    const need = durFit(s)
+    return cl(need > 0 ? need : 4)
+  })
+  const out = arr.map((s, i) => ({ ...s, dur: floor[i] }))
+  const free = arr.map((s, i) => i).filter(i => !isKeep(arr[i], i))
+  let rest = t - sum(out)
+  let guard = 0
+  while (rest > 0 && guard++ < 4000) {
+    let bumped = 0
+    for (const i of free) {
+      if (rest <= 0) break
+      if (out[i].dur >= DUR_MAX) continue
+      out[i].dur++
+      rest--
+      bumped++
+    }
+    if (!bumped) break     // 自由镜头全部顶到 15s，余量无处可放
+  }
+  const changed = out.reduce((a, s, i) => a + (s.dur !== (Number(arr[i].dur) || 0) ? 1 : 0), 0)
+  return { shots: out, changed, total: sum(out) }
+}
+
+/**
+ * 改编稿的「叙事单元」结构（纯函数，2026-10-09；分镜自检用）。
+ *   广告体裁的改编稿写成 `段落 N：地点·内外` + `时长：N 秒`；
+ *   剧集体裁写成 `场次 N：地点·内外`（没有时长行）。
+ * 数出：单元数 / 单元名 / 各单元秒数之和（没有时长行 → totalSec=0、hasSec=false，调用方据此跳过时长校验）。
+ * 🔴 只认**行首**的 `段落 N：` / `场次 N：`（可带前置空白）；正文里叙述性的「第二段落」不算单元。
+ * @returns {{count: number, heads: Array<{n:number,name:string}>, totalSec: number, hasSec: boolean}}
+ */
+export function storyUnits(md) {
+  const heads = []
+  let totalSec = 0, hasSec = false
+  for (const raw of String(md == null ? '' : md).split(/\r?\n/)) {
+    const ln = raw.trim()
+    let m = ln.match(/^(?:段落|场次)\s*(\d+)\s*[：:]\s*(.+)$/)
+    if (m) { heads.push({ n: Number(m[1]), name: m[2].trim() }); continue }
+    m = ln.match(/^(?:时长|本段时长|段落时长)\s*[：:]\s*(\d+(?:\.\d+)?)\s*秒/)
+    if (m) { totalSec += Number(m[1]); hasSec = true }
+  }
+  return { count: heads.length, heads, totalSec: hasSec ? Math.round(totalSec) : 0, hasSec }
+}
+
+/**
+ * 分镜自检（纯函数，2026-10-09）：把「生成出来多少镜 / 多长」与「改编稿里有几个叙事单元」对一遍。
+ *
+ * 为什么需要：广告体裁的镜头量上限（段落数 × 1.5）与总时长（脚本各段合计 ±20%）写在
+ * shots-ad.md 里，但**规范是给模型看的，程序此前零校验** —— V9X-4 出 12 镜
+ * （4 段落 / 脚本 30 秒，上限 6 镜、时长上限 36 秒）时界面一声不响，用户只能自己去数。
+ * 对照：场景名有 sceneCardIssues 黄标 + 缺档案自动兜底，镜头量这里此前什么都没有。
+ *
+ * limits 由**体裁声明**（genre json 的 `limits: {shotsPerUnit, durTol}`）——
+ * 剧集体裁的镜头量不是按段落数算的（基座是「每 1000 字 8-15 镜」），声明缺席就不判，
+ * 免得给剧集项目刷假警报。
+ * @returns {{units:number, shots:number, total:number, cap:{units:number,durLo:number,durHi:number}, issues:Array<{kind:string,text:string}>}}
+ */
+export function shotCheck({ shots = [], adapted = '', limits = {} } = {}) {
+  const list = Array.isArray(shots) ? shots : []
+  const u = storyUnits(adapted)
+  const n = list.length
+  const total = list.reduce((a, s) => a + (Number((s || {}).dur) || 0), 0)
+  const perUnit = Number(limits && limits.shotsPerUnit) || 0
+  const durTol = Number(limits && limits.durTol) || 0
+  const cap = { units: (u.count && perUnit) ? Math.ceil(u.count * perUnit) : 0, durLo: 0, durHi: 0 }
+  const issues = []
+  if (cap.units && n > cap.units) {
+    issues.push({ kind: 'units', text: '镜头数 ' + n + ' 个，超过上限 ' + cap.units + ' 个（脚本 ' + u.count + ' 个段落 × ' + perUnit + '）' })
+  }
+  if (u.hasSec && durTol) {
+    cap.durLo = Math.floor(u.totalSec * (1 - durTol))
+    cap.durHi = Math.ceil(u.totalSec * (1 + durTol))
+    if (total < cap.durLo || total > cap.durHi) {
+      issues.push({ kind: 'dur', text: '总时长 ' + total + 's，超出脚本 ' + u.totalSec + 's 的 ±' + Math.round(durTol * 100) + '% 区间（' + cap.durLo + '-' + cap.durHi + 's）' })
+    }
+  }
+  return { units: u.count, shots: n, total, cap, issues }
+}
+
 // ---------------------------------------------------------------
 // 场景档案 ↔ 镜头场景 一致性护栏（2026-09-24）
 //   背景（实测三个项目，中两个）：模型在「分镜」这一批输出里会
@@ -1077,6 +1282,106 @@ export function sceneCardIssues(shots, scenes) {
     }
   }
   return { used, byName: out, advice, ok: Object.keys(out).length === 0 }
+}
+
+// ---------------------------------------------------------------
+// 场景「声明 ↔ 落地 ↔ 引用」三方一致性（2026-10-10）
+//   背景（实测三次同类事故，全是程序绿灯、用户先发现）：
+//     ① V9X-4 一轮：改编稿 §三 声明了「座舱·内」，scenes.json 只落地 5 条 ·外
+//        → 车内画面只能挂车外空镜（那份档案 prompt 写着「室外」「都市实景空镜」）；
+//     ② V9X-4 二轮：§三 名与 §五 段落头错位一位 →「溪畔新绿·外」成了孤儿档案；
+//     ③ H10：§三 声明 5 条（四季各一条），§五 4 段段落头却全写同一个名字
+//        → scenes.json 只落地 1 条，四季共用一张春天参考图（用户原话「场景区分不出来」）。
+//   🔴 为什么现有护栏全都查不出：sceneAlign / sceneCardIssues 都是「**分镜 → 档案**」单向
+//      ——只查「镜头引用了不存在的档案」。而上面的病根在**更上游**：
+//      「改编稿第三部分声明了什么」这条信息从未参与任何比对。
+//   本函数补上：声明（§三，逐字解析）→ 落地（scenes.json）→ 引用（shots[].scene）。
+//   解析不到 §三 声明（例如剧本体裁走 adapt.md，结构不同）→ declared 为空、恒 ok，绝不误报。
+// ---------------------------------------------------------------
+export function sceneDeclIssues(adapted, scenes, shots) {
+  const md = String(adapted == null ? '' : adapted)
+  const lines = md.split(/\r?\n/)
+  // 先定位「第 X 部分：空间…」区块（标题写法兼容「二、…」「### 三、空间与光线连续性」），找不到就整篇扫
+  let start = 0
+  let end = lines.length
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim().replace(/^#+\s*/, '')
+    if (/^[一二三四五六七八九十]+\s*[、.．]\s*.*空间/.test(t)) { start = i + 1; end = lines.length; continue }
+    if (start > 0 && /^[一二三四五六七八九十]+\s*[、.．]\s*\S/.test(t) && i > start) { end = i; break }
+  }
+  // 档案名 = 一个独立成段的短行，且**它的下一个非空行以「空间结构」开头**
+  // 🔴 2026-10-12 修：剥行首的写法变体必须三样一起剥 ——
+  //    `### 名字`（标题符）/ `1. 名字` `2、名字`（有序列表序号）/ `- 名字`（列表符），
+  //    再剥名字两侧的 `**` 加粗。**改前只剥了「列表符 + 整行加粗」**，遇到改编稿实际在用的
+  //    「`1. **混沌虚空·外**`」（序号 + 加粗同时出现）就剥不干净 → declared 变成「1. **混沌虚空·外」，
+  //    与 landed 的「混沌虚空·外」逐条对不上 → V9X-4 六条档案全被判「没落地 / 不在声明里 / 没声明」，
+  //    三条全是误报（用户在「生成镜头」时看到的那条就是它）。剥序号必须在剥加粗**之前**。
+  const declared = []
+  for (let i = start; i < end; i++) {
+    const t = lines[i].trim()
+      .replace(/^#+\s*/, '')
+      // 🔴 列表符（`- `）后面必须跟空白 —— 否则 `**甲·外**` 的第一个 `*` 会被当成列表符吃掉，
+      //    剩 `*甲·外` 与落地的 `甲·外` 又不相等（同一个坑，换个写法再摔一次）。
+      .replace(/^\s*(?:[-*+]\s+|\d+\s*[.、．)）]\s*)/, '')
+      .replace(/^\*\*|\*\*$/g, '')
+      .trim()
+    if (!t || /^[#>|]/.test(t)) continue
+    if (t.length > 40) continue            // 档案名不会这么长（护栏：避免把说明段当名字）
+    let j = i + 1
+    while (j < end && !lines[j].trim()) j++
+    if (j >= end || !/^空间结构\s*[:：]/.test(lines[j].trim())) continue
+    if (declared.indexOf(t) < 0) declared.push(t)
+  }
+  const uniq = (a) => a.filter((v, i) => a.indexOf(v) === i)
+  const landed = uniq((Array.isArray(scenes) ? scenes : [])
+    .filter(o => o && String(o.name || '').trim()).map(o => String(o.name).trim()))
+  const used = shotSceneNames(shots)
+  // 🔴 解析不到 §三 声明 → 一律不判（剧集体裁改编稿走 adapt.md，结构不同）：
+  //    这条护栏必须在前，否则「落地档案不在声明里」会对剧集全量误报。
+  if (!declared.length) {
+    return { declared, landed, used, missing: [], extra: [], orphans: [], usedNotDeclared: [], collapsed: false, issues: [], ok: true }
+  }
+
+  const missing = declared.filter(n => landed.indexOf(n) < 0)
+  const extra = landed.filter(n => declared.indexOf(n) < 0)
+  const orphans = landed.filter(n => used.indexOf(n) < 0)
+  const usedNotDeclared = used.filter(n => declared.indexOf(n) < 0)
+  // 塌缩（H10 的形态）：只落地一条，且**声明里有 ≥2 条与该条同「基名」**（同一条路的四季被并成一条）。
+  // 🔴 两个细节都必须对：
+  //   ① 基名 = 先剥掉括号限定词（`（春）` / `（全片共用）`）再取 sceneKey —— 直接用 sceneKey
+  //      会把「花海公路·外（春）」算成「花海公路外春」，与「花海公路·外」永不相等，判据恒不触发；
+  //   ② 必须带「≥2 条同基名」——否则「声明 2 条只落地 1 条」的普通情况
+  //      （§三 声明了公路 + 座舱·内，而座舱·内 丢了）会被误判成塌缩，两个故事完全不同。
+  const sceneBase = (n) => sceneKey(String(n == null ? '' : n).replace(/[（(][^）)]*[）)]/g, ''))
+  const base0 = landed.length === 1 ? sceneBase(landed[0]) : ''
+  const sameBaseCount = base0 ? declared.filter(n => sceneBase(n) === base0).length : 0
+  const collapsed = declared.length >= 2 && landed.length === 1 && sameBaseCount >= 2
+
+  const issues = []
+  if (collapsed) {
+    issues.push({
+      kind: 'collapsed',
+      text: '改编稿第三部分声明了 ' + declared.length + ' 条空间档案，实际只落地 1 条（' + landed[0] +
+        '）——多条声明被合并成一条，下游只会出一张参考图'
+    })
+  } else if (missing.length) {
+    issues.push({
+      kind: 'missing',
+      text: '改编稿第三部分声明的空间档案没有落地：' + missing.join('、') + '（这些段落会退化成通用空镜）'
+    })
+  }
+  if (collapsed && extra.length) {
+    // 塌缩时不必再单列 extra（同一条故事的另一个说法）
+  } else if (extra.length) {
+    issues.push({ kind: 'extra', text: '落地档案不在第三部分声明里：' + extra.join('、') + '（手工加的档案可忽略）' })
+  }
+  if (orphans.length) {
+    issues.push({ kind: 'orphan', text: '有档案没有任何镜头在用：' + orphans.join('、') + '（补镜头或删卡）' })
+  }
+  if (usedNotDeclared.length) {
+    issues.push({ kind: 'undeclared', text: '镜头用了第三部分没声明的场景名：' + usedNotDeclared.join('、') })
+  }
+  return { declared, landed, used, missing, extra, orphans, usedNotDeclared, collapsed, issues, ok: issues.length === 0 }
 }
 
 // ---------------------------------------------------------------

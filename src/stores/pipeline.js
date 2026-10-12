@@ -117,6 +117,29 @@ export const usePipeline = defineStore('pipeline', {
       this.startAt[i] = Date.now()
       this.persist(this.epId)
     },
+    /**
+     * 「重新生成分镜」时清空 i 及之后各阶段的状态（2026-10-09）。
+     *
+     * 为什么必须清：done 是「本阶段已完成」的标志 —— 分镜重生后，下游的「角色&场景已确认 /
+     * 提示词已确认 / 视频已采用」全都不成立了。不清的后果很具体：`done[4]` 还是 true，
+     * 用户确认角色&场景后进入提示词阶段时，StageShots 的 `if (v === 4 && !this.pl.done[4])`
+     * 守卫不成立 → **自动生成提示词不再触发**（看起来像「点了没反应」）。
+     *
+     * 🔴 与 unlockFrom 的区别：**不动 active**。active 是「此刻哪一块在跑」，
+     *    分镜正在生成时它必须留在 2，否则块样式（running/done）会跳到别的块上；
+     *    也**不动 genStartAt**——正在跑的那一块靠它显示「生成中 已用 X」。
+     */
+    wipeFrom(i, episodeId) {
+      if (episodeId) this.epId = episodeId
+      for (let j = i; j < 7; j++) {
+        this.done[j] = false
+        delete this.times[j]
+        this.genMs[j] = 0
+        this.lastMs[j] = 0
+      }
+      // startAt 同样不动：它是「本阶段从何时开始计时」的依据，正常情况下刚被 confirm(1) 置过
+      this.persist(this.epId)
+    },
     resetAll(episodeId) {
       if (episodeId) this.epId = episodeId
       this.done = [false, false, false, false, false, false, false]

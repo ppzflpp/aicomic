@@ -73,7 +73,7 @@
       </button>
     </Teleport>
     <div class="ops-bar">
-      <span class="hint">拼接全部已选中镜头 → 统一 {{ outRes.replace('x', '×') }} → 按勾选烧录对白字幕 → 导出 MP4；每次导出的成片都保存在 项目/成片/集名/（本块只显示最新一版）</span>
+      <span class="hint">拼接全部已选中镜头 → 统一 {{ outRes.replace('x', '×') }} → 按勾选烧录对白字幕 → 导出 MP4；每次导出都各自留档在 项目/成片/（文件名带集名前缀；本块只显示最新一版，历史版本点右侧「打开所在文件夹」看）</span>
       <span style="flex:1"></span>
       <button class="btn sec" v-if="films.length" @click="reveal">打开所在文件夹</button>
     </div>
@@ -150,7 +150,21 @@ export default {
     // 进块 → 补齐镜头格 base64 预览（组装已改手动：不再自动开始导出）
     'pl.active'(v) { if (v === 6) this.syncCells() },
     // 已选中镜头的路径集合变化（在上一块点选了别的版本）→ 补齐 base64 预览
-    'cellPaths'() { this.syncCells() }
+    'cellPaths'() { this.syncCells() },
+    /**
+     * 🔴 重新生成分镜（2026-10-09）：本集的镜头视频与成片文件已被归档搬到 _trash/，
+     * 分镜块置 mediaSyncAt 通知本块 —— 必须重扫目录并丢掉旧 base64。
+     * 不这么做的话 `films` 还是上一次扫盘的结果，成片格会继续挂着**已被搬走的**旧成片
+     * （与当前分镜早已不对应，用户看到的就是「点完生成分镜，成片还在」）。
+     */
+    'st.current.mediaSyncAt'() {
+      if (!this.ep) return
+      this.exportFile = null
+      this.films = []
+      this.srcMap = {}; this.loadingSrc = {}
+      this.loadList()
+      this.syncCells()
+    }
   },
   created() {
     if (this.ep) { this.exportFile = this.ep.exportFile || null; this.outRes = (this.ep.res && this.ep.res.out) || '1920x1080'; this.loadList() }
@@ -176,17 +190,20 @@ export default {
         const films = await window.studio.listMedia(dir, pre)
         if (this.ep && this.ep.filmDir !== dir) return   // 异步期间可能已切到别的集
         this.films = films
-        // 与镜头模块一致：视频直接带播放控件展示（成片只显示最新一版，但列表仍全部读回元信息）
-        films.forEach(it => { if (!this.srcMap[it.path]) this.loadVideo(it) })
+        // 与镜头模块一致：视频直接带播放控件展示。
+        // 🔴 成片多次导出各自留档（2026-10-09）→ 只有**最新一版**需要预读 base64：
+        //    历史成片不预加载，否则每多导一次就多几十 MB base64 常驻内存。
+        if (films.length) this.loadVideo(films[0])
       } catch (e) { this.st.fail(e) }
     },
     /** 给「已选中镜头」的视频补读 base64（进模块即后台加载，加载完格子直接显示播放控件） */
     syncCells() {
       for (const c of this.cells) if (c.path) this.loadVideo({ path: c.path })
     },
-    /** 清掉不再被成片格/镜头格引用的 base64 缓存（旧成片被替换后调用，防内存与误播旧片） */
+    /** 清掉不再被成片格/镜头格引用的 base64 缓存（成片留档后只保留最新一版 + 当前镜头视频） */
     pruneSrc() {
-      const keep = new Set(this.films.map(f => f.path))
+      const keep = new Set()
+      if (this.films.length) keep.add(this.films[0].path)   // 成片格只显示最新一版
       for (const c of this.cells) if (c.path) keep.add(c.path)
       Object.keys(this.srcMap).forEach(p => { if (!keep.has(p)) delete this.srcMap[p] })
     },
@@ -241,7 +258,7 @@ export default {
         // 否则 done[6]=true → inert 生效 → 成片不能播放、按钮全部变灰。
         this.$root.toast('成片已导出：' + this.exportFile)
         await this.loadList()   // 导出完立刻刷新（最新一版进成片格）
-        this.pruneSrc()         // 旧成片已被替换（主进程删除）→ 同步清掉对应 base64 缓存
+        this.pruneSrc()         // 成片留档：只保留最新一版的 base64，早先几版及时释放
       } catch (e) { this.st.fail(e) } finally { this.busy = false; this.pl.endGen(6) }
     },
     reveal() {

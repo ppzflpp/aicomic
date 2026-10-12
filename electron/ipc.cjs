@@ -170,6 +170,16 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     return projects.archiveEpisodeAssets(db, workspace, { name: ep.name, project_id: ep.projectId }, items);
   });
 
+  // 「重新生成分镜」的一键清空（2026-10-09，Dragon）：角色/场景图 + 镜头视频 + 首帧图 + 成片
+  //   全部归档到**同一个** _trash/<时间戳>/（不删除，可找回）。
+  //   items = 本集旧卡片里需要归档的角色/场景名（手动卡与库只读卡由渲染层排除）。
+  //   与上面那条同样的 DTO 陷阱：必须显式映射 project_id。
+  ipcMain.handle('assets:archiveEpisodeOutputs', (e, workspace, episodeId, items) => {
+    const ep = projects.getEpisode(db, workspace, episodeId);
+    if (!ep) return { moved: [], failed: [], trashDir: null };
+    return projects.archiveEpisodeOutputs(db, workspace, { name: ep.name, project_id: ep.projectId }, items);
+  });
+
   /* ---- 项目级提示词规范文件（<项目>/prompts/*.md）：五个模块的风格规范，用户可编辑；
           文件缺失 / 还是旧版结构时，主进程自动从内置 skills/prompts/ 补齐或重播 ---- */
   ipcMain.handle('prompt:list', (e, workspace, projectId) => {
@@ -258,6 +268,9 @@ function registerIpc(db, getWin, fallbackWorkspace) {
       id: p.id, name: p.name, desc: p.desc, tags: p.tags, rev: p.rev,
       append: p.append, vars: p.vars, text: p.text,
       files: p.files,
+      // 体裁裁剪（2026-10-09）：真实文件名 → 下发前按行丢弃的片段；
+      // limits = 该体裁声明的程序侧校验参数（分镜自检用）。两项都从风格包原样透给渲染层。
+      drop: p.drop, limits: p.limits,
       render: p.render, world: p.world, genre: p.genre, tone: p.tone,
       warnings: p.warnings, resolved: p.resolved
     };
@@ -454,12 +467,39 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     const r = await inference.comfyGenerate({ templateKey, dir, baseName, params });
     return r;
   });
+  // 强制停止生成（2026-10-09）：中断 ComfyUI 正在跑的任务 + 清排队 + 释放显存。
+  // 必须是独立通道——点「停止生成」时 comfy:generate 那次 invoke 还挂着（要等它返回），
+  // 没有这条路就插不进去任何指令。中断是 ComfyUI 全局级的（它没有"只中断某个 prompt"的接口）。
+  ipcMain.handle('comfy:cancel', async () => {
+    logger.setTag('停止生成');
+    return inference.cancelComfy();
+  });
   ipcMain.handle('export:video', async (e, { outDir, outName, videos, subtitles, width, height, scope }) => {
     logger.setTag('阶段7 组装成片');
     await orchestrator.ensure(6);
     return inference.exportVideo(outDir, outName, videos, { subtitles, width, height, scope });
   });
   ipcMain.handle('ffmpeg:find', () => inference.findFfmpeg());
+  // 取「上一镜末帧」→ 图片（首帧接力，2026-10-09）：
+  // 相邻镜头要画面接得上，唯一可靠的办法是把上一镜真实最后一帧当本镜首帧，
+  // 而不是让 H3 各自从零开始猜（逐镜独立生成，接缝靠猜 = 漂移最大来源）。
+  ipcMain.handle('video:lastFrame', async (e, { video, out, offset }) => {
+    logger.setTag('首帧接力');
+    const r = await inference.extractLastFrame(video, out, offset);
+    if (r.ok) logger.info('已取上一镜末帧 → ' + path.basename(r.out));
+    else if (r.error !== 'NOPATH') logger.warn('取末帧失败：' + r.error);
+    return r;
+  });
+  // 文件签名（是否存在 / 大小 / mtime）：判断「首帧所依据的上一镜视频是否已被重新生成」
+  // 上一镜出片后本镜首帧就过期了 —— 这个提示靠它，别指望用户自己记得。
+  ipcMain.handle('file:stat', (e, abs) => {
+    try {
+      const st = fs.statSync(abs);
+      return { exists: true, size: st.size, mtime: st.mtimeMs };
+    } catch (_) {
+      return { exists: false };
+    }
+  });
   // 组装成片模块：列出某目录全部视频（含生成时间/大小/分辨率，探测结果缓存）
   // prefix：只要文件名以该前缀开头的（扁平化后一个项目共用「成片/」目录，必须按集过滤）
   ipcMain.handle('media:list', async (e, dir, prefix) => {

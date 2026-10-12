@@ -936,8 +936,8 @@ export default {
         prompt: '', negative: DEFAULT_NEG,
         promptMs: 0, promptAt: 0, candidates: [], cur: -1, res: defRes, genMs: 0,
         _imgRev: 1, libId: '', libRevAt: 0, libReadonly: false, _libAck: 0, _libRevNow: 0,
-        // 🔴 手动新增标记（2026-10-07）：重新生成分镜时，mergeArchive 会丢弃「新分镜里没提到」的
-        //    历史角色 —— 但手工加的卡本来就不在分镜里（用户加完要自己「写入镜头」），
+        // 🔴 手动新增标记（2026-10-07）：重新生成分镜时档案一律按本次结果重建（buildArchive），
+        //    历史角色不再保留 —— 但手工加的卡本来就不在分镜里（用户加完要自己「写入镜头」），
         //    不豁免的话等于把用户的手工活一起清了。
         _manual: true
       })
@@ -951,7 +951,7 @@ export default {
      * - 🔴 图片**绝不复制**主体卡的图：复制出来的就是同一张图重复占位（白占 MAX_REF_IMG=9 的一格，
      *   V9X-2 里 `V9X.jpg` 与 `V9X--正面.jpg` md5 完全相同就是这么来的）。要用户自己导这一视角的图。
      * - 🔴 `_manual: true` 不是可选项：视角卡的名字**永远不会出现在分镜里**（分镜只写主体名），
-     *   重新生成分镜时 `mergeArchive(..., {dropOrphans:true})` 会把它当孤儿卡静默清掉。
+     *   重新生成分镜时 `buildArchive` 只认本次结果 + 豁免卡，它会像手动卡一样被静默清掉。
      */
     async doDerive() {
       const a = this.askDerive

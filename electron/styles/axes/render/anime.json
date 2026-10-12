@@ -1,0 +1,78 @@
+{
+  "_note": "画风族「动漫二次元」= 赛璐璐上色 / 干净线稿 / 鲜明色彩的二次元画风。它做两件事：① 声明本族的**纯画风词**（renderWho / renderMedium / 反画风词 / 器材剥除表 / 英文画风词）；② 声明**组合模板** —— 把「世界给的事实槽位 w_*」与「调性给的档次槽位 t_*」拼成规范要的全部键。于是：新增一个世界只要给齐自己那组 w_*，新增一个调性只要给齐 t_* —— 两边都**不用碰这个文件**。🔴 与「真人实拍」的两处刻意差异（都是为了不让实拍词污染动漫出图）：① **不引用 t_tex / t_feel / t_enLook** —— 这三个调性槽位在现有五个 tone 里都是实拍专属词（「实拍质感」「摄影质感」「cinematic live-action film look」）；② **不引用 w_sceneStart / w_sceneKind / w_sceneRef / w_sceneEnd** —— 这四个世界空间槽位现在写的是「古装剧实景照片 / 现代都市实景照片」这类实拍介质词，改用 {{S.w_full}}（世界的核心标识，如「古装」）+ 本族的 renderMediumScene（「动画场景」）自行组合。质感词一律自带（赛璐璐上色 / 二次元插画质感），只引用通用槽位 t_core 与 t_enGrade。角色图叫「设定图」而不是「定妆照」。",
+  "id": "anime",
+  "label": "动漫二次元",
+  "desc": "动漫 / 番剧画风：赛璐璐上色、干净线稿与鲜明色彩、二次元插画质感",
+  "order": 20,
+  "append": [],
+  "vars": {
+    "renderWho": "动漫",
+    "renderActor": "动漫角色",
+    "renderMedium": "动画画面",
+    "renderMediumScene": "动画场景",
+    "realismPrefix": "精致细腻的",
+    "filmWord": "动画电影画面",
+    "enPhotoreal": "Anime style",
+    "enPhotorealLC": "anime style",
+    "renderEnWho": "anime",
+
+    "antiRenderWords": "真人，实拍，照片，摄影，写实，3D渲染，游戏CG，塑料感",
+    "antiRenderWordsCn": "真人、实拍、照片、摄影、写实、3D渲染、游戏CG、塑料感",
+    "antiRenderWordsEn": "live-action / photorealistic / real person / photography / photo / realistic skin texture / film grain",
+
+    "equipStrip": "相机,单反,单反相机,镜头,人像镜头,机位,三脚架,云台,闪光灯,灯架,摄影棚,片场设备,摄像机,摄影师,拍摄设备",
+
+    "exFabric": "{{S.w_exFabric}}",
+    "exProp": "{{S.w_exProp}}",
+    "exSign": "{{S.w_exSign}}",
+    "exText": "{{S.w_exText}}",
+    "exAnchor": "{{S.w_exAnchor}}",
+    "exPalette": "{{S.w_exPalette}}",
+    "exWardrobe": "{{S.w_exWardrobe}}",
+    "exState": "{{S.w_exState}}",
+    "exLeak": "{{S.w_exLeak}}",
+
+    "styleName": "{{S.w_styleHead}}{{S.renderWho}}画风",
+    "dramaLabel": "{{S.w_full}}{{S.renderWho}}剧",
+    "worldShort": "{{S.w_full}}",
+    "worldRule": "{{S.w_worldRule}}",
+    "charRefKind": "{{S.renderActor}}的{{S.w_full}}设定图",
+    "sceneRefKind": "{{S.w_full}}{{S.renderMediumScene}}",
+    "styleCore": "{{S.renderWho}}{{S.w_noun}}、高清画质、赛璐璐上色、{{S.t_core}}{{S.renderWho}}质感",
+    "styleCoreName": "{{S.renderWho}}{{S.w_noun}}剧质感",
+    "styleFeel": "{{S.renderWho}}{{S.w_noun}}插画质感",
+
+    "startChar": "{{S.realismPrefix}}{{S.w_subjectStart}}{{S.renderMedium}}，高清画质，干净线稿，{{S.t_core}}{{S.renderWho}}质感",
+    "endChar": "{{S.w_subjectEnd}}设定图，二次元插画质感",
+    "endCharFilm": "{{S.w_subjectEnd}}设定图，{{S.filmWord}}，二次元插画质感",
+    "actorShot": "{{S.t_core}}{{S.renderWho}}质感的{{S.w_actorWorld}}{{S.renderActor}}设定图",
+
+    "costume": "{{S.w_costume}}",
+    "costumeNpc": "{{S.w_costumeNpc}}",
+
+    "startScene": "{{S.realismPrefix}}{{S.w_full}}{{S.renderMediumScene}}，高清画质，干净线稿，{{S.t_core}}{{S.renderWho}}质感",
+    "startSceneAlt": "{{S.realismPrefix}}{{S.w_full}}场景插画，手绘线条与赛璐璐色块，{{S.t_core}}{{S.renderWho}}质感",
+    "endScene": "{{S.w_full}}{{S.renderMediumScene}}，二次元插画质感",
+    "endSceneFilm": "{{S.w_full}}{{S.renderMediumScene}}，{{S.filmWord}}，二次元插画质感",
+    "keeper": "{{S.w_keeper}}，画面内只有建筑、陈设与自然环境",
+
+    "materialSamples": "{{S.w_material}}",
+    "placeSamples": "{{S.w_place}}",
+    "lightSamples": "{{S.w_light}}",
+    "lightMain": "{{S.w_lightMain}}",
+
+    "antiStyleWords": "{{S.antiRenderWords}}{{S.w_antiWorld}}",
+    "antiStyleWordsCn": "{{S.antiRenderWordsCn}}{{S.w_antiWorldCn}}",
+    "extraExclude": "多余的{{S.w_excludeWorld}}物件",
+
+    "worldTerms": "{{S.w_terms}}",
+    "roleExamples": "{{S.w_roleExamples}}",
+    "lookTable": "{{S.w_lookTable}}",
+
+    "enShotSample": "[Shot 1] {{S.enPhotoreal}} {{S.renderEnWho}} {{S.w_enEra}} drama, anime key visual, cel shading, clean line art, {{S.t_enGrade}}, a medium-wide shot frames ...",
+    "enStyleWords": "{{S.enPhotorealLC}}, {{S.renderEnWho}} {{S.w_enEra}} drama, cel shading, clean line art, vibrant colors, flat 2D illustration look, {{S.w_enLight}}, {{S.t_enGrade}}, ultra-detailed",
+    "enStyleSentence": "{{S.enPhotoreal}} {{S.renderEnWho}} {{S.w_enEra}} drama, ultra-detailed, cel shading, clean line art, vibrant colors, {{S.t_enGrade}}",
+    "enLtxSample": "a {{S.enPhotorealLC}} {{S.renderEnWho}} {{S.w_enLtxScene}}",
+    "enStyleWordsShort": "{{S.enPhotorealLC}}, {{S.renderEnWho}}, cel shading, clean line art, vibrant colors, {{S.t_enGrade}}"
+  }
+}

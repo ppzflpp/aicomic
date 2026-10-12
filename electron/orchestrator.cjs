@@ -33,7 +33,7 @@ const AUTO_KEY = 'engine.autoOrchestrate';
 /** 阶段表：序号与界面上的 1-7 块一一对应 */
 const PHASES = [
   { key: 'chapter', name: '阶段1 章节输入', engines: [] },
-  { key: 'adapt', name: '阶段2 漫剧改编', engines: ['llm'] },
+  { key: 'adapt', name: '阶段2 剧本改编', engines: ['llm'] },
   { key: 'shots', name: '阶段3 分镜脚本', engines: ['llm'] },
   { key: 'chars', name: '阶段4 角色出图', engines: ['comfy'] },
   { key: 'prompts', name: '阶段5 H3提示词', engines: ['llm'] },
@@ -142,8 +142,8 @@ async function _ensureComfy(label) {
     }
     if (!r.ready && !r.already) {
       // startComfy 内部已等 150s，这里再兜底 120s（Desktop 偶发更慢）
-      const ok = await launcher.waitHealth('comfyui', 120000, { label: 'ComfyUI', stepMs: 15000 });
-      if (!ok) {
+      const hw = await launcher.waitHealth('comfyui', 120000, { label: 'ComfyUI', stepMs: 15000 });
+      if (hw !== 'ok') {
         const m = 'ComfyUI 启动超时（共约 270 秒）。请检查 ComfyUI 窗口是否有报错；也可以手动打开 ComfyUI，等它完全启动后再回来重试。';
         logger.error(m);
         throw new Error(m);

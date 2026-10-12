@@ -39,6 +39,9 @@ contextBridge.exposeInMainWorld('studio', {
   importImage: (dir, baseName, src) => ipcRenderer.invoke('assets:importImage', dir, baseName, src),
   // 归档「重新生成分镜后不再出现的角色/场景」的图（移到 _trash/<时间戳>/，不删）
   archiveOrphans: (ws, episodeId, items) => ipcRenderer.invoke('assets:archiveOrphans', ws, episodeId, items),
+  // 「重新生成分镜」的一键清空：角色/场景图 + 镜头视频 + 首帧图 + 成片，全部归档到同一个 _trash/
+  archiveEpisodeOutputs: (ws, episodeId, items) =>
+    ipcRenderer.invoke('assets:archiveEpisodeOutputs', ws, episodeId, items),
 
   // 项目级提示词文件（<项目>/prompts/*.md）：四个模块的提示词，可编辑；缺失自动补内置版
   promptsList: (ws, projectId) => ipcRenderer.invoke('prompt:list', ws, projectId),
@@ -142,8 +145,12 @@ contextBridge.exposeInMainWorld('studio', {
   inferHealth: () => ipcRenderer.invoke('infer:health'),
   llmChat: (messages, opts) => ipcRenderer.invoke('infer:llm', messages, opts),
   comfyGenerate: (args) => ipcRenderer.invoke('comfy:generate', args),
+  // 强制停止生成（2026-10-09）：中断当前任务 + 清排队 + 释放显存
+  comfyCancel: () => ipcRenderer.invoke('comfy:cancel'),
   exportVideo: (args) => ipcRenderer.invoke('export:video', args),
   findFfmpeg: () => ipcRenderer.invoke('ffmpeg:find'),
+  videoLastFrame: (payload) => ipcRenderer.invoke('video:lastFrame', payload),
+  fileStat: (abs) => ipcRenderer.invoke('file:stat', abs),
   listMedia: (dir, prefix) => ipcRenderer.invoke('media:list', dir, prefix),
   readFileBase64: (abs) => ipcRenderer.invoke('file:readBase64', abs),
   deleteFile: (abs) => ipcRenderer.invoke('file:delete', abs),

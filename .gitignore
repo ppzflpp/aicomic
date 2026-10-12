@@ -3,3 +3,5 @@ dist/
 vite.config.mjs.timestamp-*.mjs
 *.log
 logs/
+tools/
+release/

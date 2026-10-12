@@ -1,5 +1,5 @@
 import { useProject } from './stores/project.js'
-import { stripHeader, joinSystem, parseFallbacks, pickFallback, section, sectionRaw, fillTemplate, stripProgramSections, equipmentWords, applyStyle, styleKeys, normalizeQuotes, normalizeQuotesDeep } from './promptlib.js'
+import { stripHeader, joinSystem, parseFallbacks, pickFallback, section, sectionRaw, fillTemplate, stripProgramSections, dropLines, equipmentWords, applyStyle, styleKeys, normalizeQuotes, normalizeQuotesDeep } from './promptlib.js'
 
 export { stripHeader, parseSections, section, sectionRaw, parseFallbacks, pickFallback, ensureSceneKeeper, normalizeProfile, profileDirty, profileBrief, joinSystem, fillTemplate, stripProgramSections, equipmentWords, stripEquipmentWords, applyStyle, styleKeys, normalizeQuotes, normalizeQuotesDeep, listCoverage, charAlign, charKey } from './promptlib.js'
 
@@ -29,7 +29,7 @@ export { stripHeader, parseSections, section, sectionRaw, parseFallbacks, pickFa
  *        H3 = {base:h3.md, ref:h3ref.md}、LTX-2.5 = {base:ltx.md}。
  * ------------------------------------------------------------------ */
 export const TASKS = [
-  { id: 'adapt', label: '漫剧改编', desc: '章节原文 → 剧本稿', kind: '', specs: ['adapt.md'], mustHave: ['## 输出格式'] },
+  { id: 'adapt', label: '剧本改编', desc: '章节原文 → 剧本稿', kind: '', specs: ['adapt.md'], mustHave: ['## 输出格式'] },
   { id: 'shots', label: '分镜脚本', desc: '剧本稿 → 分镜 + 角色 / 场景档案', kind: 'image', specs: ['shots.md', 'profile.md', 'chars.md', 'scenes.md'], mustHave: ['"shots"', '"characters"', '"scenes"'] },
   { id: 'char', label: '角色提示词', desc: '角色档案 → 生图提示词', kind: 'image', specs: ['promptgen.md', 'profile.md', 'chars.md'], mustHave: ['"prompt"', '"negative"'] },
   { id: 'scene', label: '场景提示词', desc: '场景档案 → 生图提示词', kind: 'image', specs: ['promptgen.md', 'profile.md', 'scenes.md'], mustHave: ['"prompt"', '"negative"'] },
@@ -247,6 +247,17 @@ export function clearStylePack() {
   _styleWarned = new Set()
 }
 
+/**
+ * 当前体裁声明的**程序侧校验参数**（2026-10-09）：{ shotsPerUnit, durTol }。
+ * 广告体裁用它把「镜头数 ≤ 段落数 × 1.5」「总时长 = 脚本各段合计 ±20%」这两条写进规范
+ * 的规则变成程序真的会判的自检（见 promptlib.shotCheck）。没声明的体裁（剧集）返回 {}，
+ * 自检就不判 —— 剧集的镜头量按字数算，拿段落数去卡只会刷假警报。
+ */
+export async function currentStyleLimits(projectId) {
+  const p = await currentStylePack(projectId)
+  return (p && p.limits) || {}
+}
+
 /** 风格包清单（新建项目 / 项目配置的下拉用） */
 export async function styleList() {
   try { return (await window.studio.styleList()) || [] } catch (_) { return [] }
@@ -364,6 +375,10 @@ export async function composeSystem({ specs = [], mustHave = [], kind = '', task
   const pack = await currentStylePack(pid)
   // 当前体裁声明的「逻辑规范名 → 实际读取清单」（没声明就是空表 = 一切照旧）
   const alias = (pack && pack.files) || {}
+  // 当前体裁声明的「真实文件名 → 下发前要按行丢弃的片段」（见 promptlib.dropLines）：
+  // 基座文件是所有体裁共用的，冲突规则只能删在体裁这一层（例：广告要删掉 shots.md 里
+  // 「每 1000 字 8-15 个镜头」那条 —— 它对广告是反向指令）。没声明就是空表。
+  const drop = (pack && pack.drop) || {}
   const bodies = []
   for (const name of specs) {
     // 🔴 换的只是「读哪个文件」，不换身份：下面的模型专属规范与风格说明仍按**逻辑名**挂载，
@@ -371,16 +386,18 @@ export async function composeSystem({ specs = [], mustHave = [], kind = '', task
     const real = (Array.isArray(alias[name]) && alias[name].length) ? alias[name] : [name]
     let got = 0
     for (const rn of real) {
-      // 去掉 frontmatter 与「程序用途小节」（兜底默认 / 素材格式），其余整篇下发。
+      // 去掉 frontmatter 与「程序用途小节」（兜底默认 / 素材格式 / 维护说明），其余整篇下发。
       // readPrompt 已经做过风格替换 —— 这里拿到的正文对当前风格就是「成品」。
-      const body = stripProgramSections(stripHeader(await readPrompt(rn, pid))).trim()
+      // 再按体裁裁剪表删掉与本体裁冲突的行（dropLines 对没配的文件原样返回）。
+      const body = dropLines(stripProgramSections(stripHeader(await readPrompt(rn, pid))).trim(), drop[rn]).trim()
       if (body) { bodies.push(body); got++ }
     }
     // 映射指向的文件一份都读不到 → 当场报错。静默跳过等于「用户明明选了广告体裁，
     // 改编环节却收到一篇空规范」，那比报错难查得多。
     if (!got && alias[name]) {
       throw new Error('「' + name + '」在本项目体裁下要读 ' + real.join(' / ') +
-        '，但它们都读不到内容 —— 请到「提示词配置中心 → 通用规范」确认这些文件是否存在')
+        '，但它们都读不到内容 —— 请到「提示词配置中心 → 通用规范」确认这些文件是否存在' +
+        '（若这些文件被本体裁的裁剪规则整篇删空，请查风格包里的 prompt.drop）')
     }
     // 紧跟在同名通用规范之后，追加该模型方案声明的专属规范
     for (const text of (extras[name] || [])) {

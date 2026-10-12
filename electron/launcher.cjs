@@ -2,8 +2,9 @@
 /**
  * 本地服务启动器：一键启动 llama-server 与 ComfyUI，并提供显存编排原语。
  *
- * - llama.cpp：用户指定安装目录（含 llama-server.exe），软件自动补上模型路径与端口，
- *   **静默启动**（无控制台窗口），输出落盘到 软件目录\logs\llama-server.log。
+ * - llama.cpp：**软件自带**（tools\llama\**\llama-server.exe，随包分发，用户无需安装），
+ *   软件自动补上模型路径与端口，**静默启动**（无控制台窗口），
+ *   输出落盘到 软件目录\logs\llama-server.log。
  * - ComfyUI：用户指定安装目录，自动识别三种形态：
  *     ComfyUI Desktop（Comfy Desktop.exe） / 便携包（run_nvidia_gpu.bat） / 源码（main.py）
  *   同样静默启动，输出落盘到 软件目录\logs\comfyui.log。
@@ -20,6 +21,7 @@ const os = require('os');
 const { spawn, spawnSync, execFile } = require('child_process');
 const models = require('./models.cjs');
 const inference = require('./inference.cjs');
+const tools = require('./tools.cjs');
 const logger = require('./logger.cjs');
 
 let db = null;
@@ -107,7 +109,17 @@ function detectLlamaDir() {
   return '';
 }
 
+/**
+ * llama-server 所在目录。顺序：
+ *   ① 软件自带 tools\llama\**（随包分发，开箱即用；CUDA 运行时与 exe 同级才搜得到）
+ *   ② 老配置里的自定义目录
+ *   ③ 自动探测（缓存 + 落库）
+ * ⚠️ 顺序不能反过来：老用户机器上可能残留着指向旧 runtime\llama 的配置，
+ *    内置必须稳压它一头，否则分发出去仍然要用户自己装引擎。
+ */
 function llamaDir() {
+  const builtin = tools.llamaDir();
+  if (builtin) return builtin;
   return resolveInstDir(LLAMA_DIR_KEY, LLAMA_AUTO_KEY, detectLlamaDir, _llamaCache);
 }
 
@@ -298,7 +310,8 @@ async function startLlama() {
   if (!info.exeOk) {
     return {
       ok: false,
-      message: '没找到 llama-server.exe。请把 llama.cpp（cuda-13.4 双包解压到同一个文件夹）放到 '
+      message: '没找到 llama-server.exe。软件自带的 tools\\llama 目录（含 llama-bXXXXX-bin-win-cuda-*）'
+        + '似乎缺失，请重新安装；自定义位置：'
         + (info.installDir || (projectRoot() ? path.join(projectRoot(), 'runtime', 'llama') : 'runtime\\llama'))
         + '，或在上面的「安装目录」里指定它所在目录。'
     };
@@ -315,38 +328,50 @@ async function startLlama() {
   // 顺手更新一份 bat（只在用户手动双击排错时用；软件自身走静默启动，不弹窗）
   writeLlamaBat(info.exe, info.modelPath, port, info.args);
 
+  // 记下发起的阶段标签：健康检查可能等满 60s，期间用户切块会改掉全局标签，
+  // 延迟日志若不带 originTag 就会挂到别的阶段名下（2026-10-12 实测：阶段3 起的
+  // llama，超时警报被打在了「阶段7 组装成片」头上）。
+  const originTag = logger.tag();
+  const gen = ++_llamaGen;
+
   const args = ['-m', info.modelPath, '--host', '127.0.0.1', '--port', String(port)].concat(splitArgs(info.args));
   const sp = spawnSilent(info.exe, args, { cwd: path.dirname(info.exe), logName: 'llama-server' });
   if (sp.error || !sp.pid) {
     const m = '无法启动 llama-server：' + (sp.error || '进程创建失败')
       + (sp.logFile ? '（日志：' + sp.logFile + '）' : '');
-    logger.error(m);
+    logger.error(m, originTag);
     return { ok: false, message: m };
   }
-  logger.info('llama-server 已静默启动（PID ' + sp.pid + '，无窗口；日志 ' + (sp.logFile || '—') + '）');
+  logger.info('llama-server 已静默启动（PID ' + sp.pid + '，无窗口；日志 ' + (sp.logFile || '—') + '）', originTag);
 
   const t0 = Date.now();
-  const ok = await waitHealth('llm', 60000);
+  const w = await waitHealth('llm', 60000, { shouldAbort: () => gen !== _llamaGen });
   const ms = Date.now() - t0;
   const cudaOk = !!(info.cuda && info.cuda.ok);
-  if (ok) logger.ok('llama-server 已启动（' + info.modelFile + '，' + (ms / 1000).toFixed(1) + 's 就绪）');
-  else {
-    logger.warn('llama-server 已拉起但健康检查还没通过（首次加载大模型可能要 30-60 秒）');
+  if (w === 'ok') logger.ok('llama-server 已启动（' + info.modelFile + '，' + (ms / 1000).toFixed(1) + 's 就绪）', originTag);
+  else if (w === 'aborted') {
+    // 进程已被下一块的显存编排回收 → 这次启动不再是当前意图，静默收工，不打警报
+    logger.info('llama-server 启动检查已作废（进程已被回收，' + (ms / 1000).toFixed(1) + 's）', originTag);
+  } else {
+    logger.warn('llama-server 已拉起但健康检查还没通过（首次加载大模型可能要 30-60 秒）', originTag);
     const tail = tailFile(sp.logFile, 6);
     if (tail.length) {
-      logger.warn('llama-server 日志尾部（完整日志：' + sp.logFile + '）：');
-      for (const l of tail) logger.warn('  ' + String(l).slice(0, 240));
+      logger.warn('llama-server 日志尾部（完整日志：' + sp.logFile + '）：', originTag);
+      for (const l of tail) logger.warn('  ' + String(l).slice(0, 240), originTag);
     }
   }
-  if (!cudaOk) logger.warn('CUDA 未就绪 → llama 将用 CPU 推理：' + (info.cuda ? info.cuda.hint : ''));
+  if (!cudaOk) logger.warn('CUDA 未就绪 → llama 将用 CPU 推理：' + (info.cuda ? info.cuda.hint : ''), originTag);
 
   const cpuWarn = cudaOk ? '' : '  ⚠ 但检测到 CUDA 未就绪（' + (info.cuda ? info.cuda.hint : '') + '）→ 将用 CPU 推理，速度约慢 6 倍。';
   return {
     ok: true, pid: sp.pid, log: sp.logFile,
     cudaOk,
-    message: (ok
+    aborted: w === 'aborted',
+    message: (w === 'ok'
       ? 'LLM 服务已启动：' + info.endpoint + '（模型 ' + info.modelFile + '，' + (ms / 1000).toFixed(1) + 's）'
-      : '已静默启动 llama-server，模型正在加载（大模型首次加载需 30–60 秒）。稍后点「重新检测」查看状态。')
+      : w === 'aborted'
+        ? '本次 llama-server 启动检查已作废（进程被显存编排回收，通常是你直接进了下一块）。'
+        : '已静默启动 llama-server，模型正在加载（大模型首次加载需 30–60 秒）。稍后点「重新检测」查看状态。')
       + '　日志：' + (sp.logFile || '—') + cpuWarn
   };
 }
@@ -471,9 +496,11 @@ async function _startComfy() {
   logger.info('正在启动 ' + info.label + '…（静默启动，无控制台窗口；日志 ' + (sp.logFile || '—') + '）');
   const t0 = Date.now();
   // Desktop 冷启动要等界面出来才起 8188，实测可超 60s → 给足 150s，期间每 15s 打一条进度
-  const ok = await waitHealth('comfyui', 150000, { label: 'ComfyUI', stepMs: 15000 });
+  const w = await waitHealth('comfyui', 150000, { label: 'ComfyUI', stepMs: 15000 });
+  const ok = w === 'ok';
   const ms = Date.now() - t0;
   if (ok) logger.ok('ComfyUI 已就绪（' + (ms / 1000).toFixed(1) + 's）');
+  else if (w === 'aborted') logger.info('ComfyUI 启动检查已作废（进程已被回收）');
   else logger.warn('ComfyUI 还没起来（已等 ' + (ms / 1000).toFixed(0) + 's）');
   return {
     ok: true, pid, kind: info.kind, ready: ok, log: sp.logFile,
@@ -487,24 +514,41 @@ async function _startComfy() {
 
 /* ------------------------------------------------------------------ */
 
-/** 轮询健康检查，最多等 timeoutMs；opts.label/opts.stepMs 用于周期性打进度日志 */
+/**
+ * 轮询健康检查，最多等 timeoutMs。
+ *
+ * 返回值是**原因字符串**，不是布尔 —— 调用方一律用 === 比较，别写 if (res)：
+ *   'ok'      服务自报就绪
+ *   'aborted' 调用方主动放弃（opts.shouldAbort 命中，例：进程被显存编排停掉）
+ *   'timeout' 熬满 timeoutMs 仍不就绪
+ *
+ * 为什么要 shouldAbort：启动是「起进程 → 等就绪」两段，中间用户可能直接点下一块，
+ * 触发显存编排把刚起的服务杀掉。以前的裸轮询不知道这事，会傻等满 60s 再打一条
+ * 「已拉起但健康检查还没通过」——那是条**假警报**，描述的是早已不存在的进程
+ * （2026-10-12 实测：10:58:36 起、10:58:42 被杀，10:59:37 还在报「模型加载中」）。
+ *
+ * opts.label / opts.stepMs 用于周期性打进度日志。
+ */
 async function waitHealth(key, timeoutMs, opts = {}) {
   const label = opts.label || '';
   const stepMs = opts.stepMs || 0;
+  const shouldAbort = typeof opts.shouldAbort === 'function' ? opts.shouldAbort : null;
   const t0 = Date.now();
   let lastLog = 0;
   while (Date.now() - t0 < timeoutMs) {
+    // 先查作废再看服务：进程已被回收时不该白等一个 1.5s 轮询周期
+    if (shouldAbort && shouldAbort()) return 'aborted';
     await new Promise(r => setTimeout(r, 1500));
     try {
       const h = await inference.health();
-      if (h[key]) return true;
+      if (h[key]) return 'ok';
     } catch (_) { /* 继续等 */ }
     if (label && stepMs && Date.now() - lastLog >= stepMs) {
       lastLog = Date.now();
       logger.info('仍在等待 ' + label + ' 就绪…（已等 ' + ((Date.now() - t0) / 1000).toFixed(0) + 's，服务起来后会自动确认）');
     }
   }
-  return false;
+  return 'timeout';
 }
 
 function setDir(key, dir) {
@@ -582,8 +626,18 @@ async function llamaRunning() {
   return r.stdout.includes('llama-server');
 }
 
+/**
+ * llama-server「启动代次」。
+ * startLlama 每次真起进程时 +1；stopLlama 无条件 +1（哪怕进程本来就不在跑）。
+ * 在飞的 waitHealth 用 shouldAbort 比对自己抓到的那一代，一旦不等就立刻收工 ——
+ * 这样「刚拉起就被下一块停掉」不再产出 60 秒后的假警报。
+ */
+let _llamaGen = 0;
+function llamaGen() { return _llamaGen; }
+
 /** 停止 llama-server，释放它常驻的约 10.6GB 显存 */
 async function stopLlama() {
+  _llamaGen++;   // 先作废在飞的健康检查：这一代启动已被我们主动终止
   if (!(await llamaRunning())) return { ok: true, already: true, message: 'llama-server 未在运行' };
   const r = await runCmd('taskkill', ['/IM', 'llama-server.exe', '/F'], 15000);
   return {
@@ -680,8 +734,8 @@ function serviceLogs() {
 }
 
 module.exports = {
-  init, llamaInfo, comfyInfo, startLlama, startComfy, comfyStartElapsedMs, setDir,
+  init, llamaDir, llamaInfo, comfyInfo, startLlama, startComfy, comfyStartElapsedMs, setDir,
   getLlamaArgs, setLlamaArgs, findFile, DEFAULT_LLAMA_ARGS,
   vramUsed, waitVramBelow, stopLlama, stopLlamaSync, llamaRunning, unloadComfyModels, freeVramForComfy,
-  waitHealth, spawnSilent, serviceLogPath, serviceLogs, tailFile, splitArgs, runCmd
+  waitHealth, llamaGen, spawnSilent, serviceLogPath, serviceLogs, tailFile, splitArgs, runCmd
 };

@@ -87,11 +87,13 @@ function episodeKindDir(db, workspace, ep, kind) {
 }
 
 /**
- * 归档「不再出现的角色 / 场景」的图片目录（2026-10-07）。
+ * 归档「本集旧的角色 / 场景」的图片目录（2026-10-07；2026-10-09 起调用方传全量清单）。
  *
- * 重新生成分镜的语义是**从零开始**：新分镜里没提到的角色/场景，档案与卡片都不该留。
- * 但那些图是花显卡时间出的，不能一声不吭删掉 → **移动**到
+ * 重新生成分镜的语义是**从零开始**：旧档案与卡片一律不留（同名也重建 → 图片一并归档，
+ * 见 StageShots 的 buildArchive / orphanAssets）。但那些图是花显卡时间出的，不能一声不吭删掉
+ * → **移动**到
  *   <集私有素材根>/_trash/<时间戳>/{characters,scenes}/<名字>/
+ *     （镜头视频 / 首帧 / 成片走 archiveEpisodeMedia，落同一个 _trash/<时间戳>/{分镜,成片}/）
  * UI 上干干净净，想找回时去 _trash 里按时间戳翻。
  *
  * 🔴 只处理**集私有**素材（card.libReadonly !== true 的那批）。库条目的图是跨集共享的，
@@ -99,15 +101,17 @@ function episodeKindDir(db, workspace, ep, kind) {
  * 🔴 禁用 fs.cpSync（中文路径段错误）→ renameSync 优先，失败退回 copyDir 手写拷贝 + 删源。
  *
  * @param {Array<{kind:'character'|'scene', name:string}>} items 要归档的名字
+ * @param {string} [trashDirIn] 指定归档落点（archiveEpisodeOutputs 用：与媒体归档共用同一个
+ *        时间戳目录，一次「重新生成分镜」= 一个文件夹，用户翻起来不用对时间戳）
  * @returns {{moved:string[], failed:string[], trashDir:string|null}}
  */
-function archiveEpisodeAssets(db, workspace, ep, items) {
+function archiveEpisodeAssets(db, workspace, ep, items, trashDirIn) {
   const out = { moved: [], failed: [], trashDir: null };
   const list = (Array.isArray(items) ? items : []).filter(x => x && x.name);
   if (!list.length || !ep) return out;
   const root = episodeAssetsRoot(db, workspace, ep);
   if (!root) return out;
-  const trashDir = path.join(root, '_trash', String(Date.now()));
+  const trashDir = trashDirIn || path.join(root, '_trash', String(Date.now()));
   for (const it of list) {
     const kind = it.kind === 'scene' ? 'scene' : 'character';
     const from = path.join(episodeKindDir(db, workspace, ep, kind), sanitize(it.name));
@@ -127,6 +131,95 @@ function archiveEpisodeAssets(db, workspace, ep, items) {
       out.failed.push(it.name + '（' + ((err && err.message) || err) + '）');
     }
   }
+  out.trashDir = out.moved.length ? trashDir : null;
+  return out;
+}
+
+/**
+ * 归档「本集的镜头视频 / 首帧图 / 成片」（2026-10-09，Dragon）。
+ *
+ * 「重新生成分镜」= 从零重来：分镜换了，提示词与视频记录也清了，但**磁盘上的文件**还留着
+ *   <项目>/分镜/<集名>_shot_N.mp4（多版本 _02/_03）、<集名>_shot_N_first.png、
+ *   <项目>/成片/<集名>_<时间戳>.mp4
+ * 它们与当前分镜早已不对应，界面（左侧树「分镜」「成片」、成片格）却照样列出来 ——
+ * 用户看到的就是「点完生成分镜，旧东西还在」。
+ *
+ * 处理与角色图同一套路：**移动到** <集私有素材根>/_trash/<时间戳>/{分镜,成片}/，不删除。
+ *
+ * 🔴 分镜/成片目录是**全项目共用**的（靠文件名前缀=集名归集）→ 只动文件名以「<集名>_」开头的，
+ *    别的集的文件一个都不能碰。
+ * 🔴 隐藏封面 .<文件名>.poster.jpg 去掉前导点后同样以集名前缀开头 → 一并搬走。
+ * 🔴 .meta.json（分辨率/耗时缓存）是**目录级**的（只此一份，装着所有集的键）→ 不能整体搬，
+ *    只清掉本集那几个键，否则别的集的缓存会被连坐。
+ *
+ * @param {string} [trashDirIn] 指定归档落点（见 archiveEpisodeOutputs）
+ * @returns {{moved:string[], failed:string[], trashDir:string|null}}
+ */
+function archiveEpisodeMedia(db, workspace, ep, trashDirIn) {
+  const out = { moved: [], failed: [], trashDir: null };
+  if (!ep) return out;
+  const root = episodeAssetsRoot(db, workspace, ep);
+  if (!root) return out;
+  const trashDir = trashDirIn || path.join(root, '_trash', String(Date.now()));
+  const re = new RegExp('^' + escRe(epPrefix(ep)) + '_');
+  const jobs = [
+    { sub: '分镜', dir: shotDir(db, workspace, ep) },
+    { sub: '成片', dir: filmDir(db, workspace, ep) }
+  ];
+  for (const j of jobs) {
+    if (!j.dir || !fs.existsSync(j.dir)) continue;
+    let files = [];
+    try { files = fs.readdirSync(j.dir); } catch (_) { continue; }
+    for (const f of files) {
+      if (f === '.meta.json') { pruneMeta(j.dir, re, f); continue; }
+      const bare = f[0] === '.' ? f.slice(1) : f;   // 隐藏封面：去掉前导点再按同一前缀判定
+      if (!re.test(bare)) continue;
+      const from = path.join(j.dir, f);
+      const to = path.join(trashDir, j.sub, f);
+      try {
+        fs.mkdirSync(path.dirname(to), { recursive: true });
+        try {
+          fs.renameSync(from, to);                   // 同盘：瞬间完成
+        } catch (_) {
+          const st = fs.statSync(from);
+          if (st.isDirectory()) {
+            if (!copyDirTree(from, to)) throw new Error('拷贝失败');
+          } else {
+            fs.copyFileSync(from, to);
+          }
+          fs.rmSync(from, { recursive: true, force: true });
+        }
+        out.moved.push(j.sub + '/' + f);
+      } catch (err) {
+        out.failed.push(j.sub + '/' + f + '（' + ((err && err.message) || err) + '）');
+      }
+    }
+  }
+  out.trashDir = out.moved.length ? trashDir : null;
+  return out;
+}
+
+/**
+ * 「重新生成分镜」的一键清空（2026-10-09，Dragon）：角色/场景图 + 镜头视频 + 首帧图 + 成片
+ * 全部归档到**同一个** _trash/<时间戳>/ 下。
+ *
+ * 单独包一层的原因就是「同一个时间戳目录」：分两次调用会各自建一个时间戳文件夹，
+ * 用户想找回「上次那批」时得对时间戳翻两次。
+ *
+ * @param {Array<{kind:'character'|'scene', name:string}>} items 要归档的角色/场景名
+ *        （调用方已排除 _manual 手动卡与库只读卡）
+ * @returns {{moved:string[], failed:string[], trashDir:string|null}}
+ */
+function archiveEpisodeOutputs(db, workspace, ep, items) {
+  const out = { moved: [], failed: [], trashDir: null };
+  if (!ep) return out;
+  const root = episodeAssetsRoot(db, workspace, ep);
+  if (!root) return out;
+  const trashDir = path.join(root, '_trash', String(Date.now()));
+  const a = archiveEpisodeAssets(db, workspace, ep, items, trashDir);
+  const m = archiveEpisodeMedia(db, workspace, ep, trashDir);
+  out.moved = a.moved.concat(m.moved);
+  out.failed = a.failed.concat(m.failed);
   out.trashDir = out.moved.length ? trashDir : null;
   return out;
 }
@@ -577,6 +670,8 @@ function getEpisodeFull(db, workspace, episodeId) {
     prompts: readJson(dir, pre + '.prompts.json', []),
     videoState: readJson(dir, pre + '.videos.json', {}),
     videoFiles,
+    // 成片文件名 = <集名>_<13 位时间戳>.mp4 → sort 后取最后一个 = 最新一版
+    // （2026-10-09 起多次导出各自留档，目录里会有多版；这里只回答「最近一次导出的那个」）
     exportFile: exportFiles.length ? exportFiles[exportFiles.length - 1] : null,
     done: JSON.parse(ep.stage_done), activeStage: ep.active_stage,
     stageMeta: parseMeta(ep)
@@ -610,7 +705,8 @@ module.exports = {
   // 项目级目录（资产 / 分镜 / 成片）
   projectRoot, assetsRoot, characterDir, sceneDir, shotDir, filmDir, ensureProjectDirs, listProjectEpisodes,
   // 集私有素材（本集自己的角色/场景图）：与库共享素材分开，跨集互不污染
-  episodeAssetsRoot, episodeKindDir, migrateEpisodePrivateAssets, archiveEpisodeAssets,
+  episodeAssetsRoot, episodeKindDir, migrateEpisodePrivateAssets,
+  archiveEpisodeAssets, archiveEpisodeMedia, archiveEpisodeOutputs,
   // 左侧树「剧本」节点：按集列举剧本工件
   listProjectScripts, SCRIPT_KINDS
 };

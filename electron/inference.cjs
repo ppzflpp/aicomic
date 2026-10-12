@@ -3,13 +3,14 @@
  * 真实推理网关：LLM(llama.cpp server) / ComfyUI / ffmpeg
  * - LLM：OpenAI 兼容 API（llama-server），端点可在设置中配置
  * - ComfyUI：/prompt 提交工作流 JSON + 轮询 /history + /view 拉取产物
- * - ffmpeg：workspace/tools/ffmpeg.exe 或 PATH 或设置中自定义路径
+ * - ffmpeg：软件自带的 tools/ffmpeg/bin/ffmpeg.exe（见 tools.cjs），PATH 仅作最后兜底
  * 全部为真实调用；服务不可达时抛出带指引的错误。
  */
 const fs = require('fs');
 const path = require('path');
 const { spawn, spawnSync, execFile } = require('child_process');
 const { writeUnique, sanitize } = require('./assetStore.cjs');
+const tools = require('./tools.cjs');
 const models = require('./models.cjs');
 const videoTiers = require('./videoTiers.cjs');
 const profiles = require('./profiles.cjs');
@@ -27,7 +28,8 @@ let ffmpegWarming = false;
 function init(dbRef) {
   db = dbRef;
   profiles.init(dbRef);   // 模型方案就位后，工作流路径 / 节点锚点 / 帧参数才有得读
-  warmFfmpeg();   // 异步预热：'where ffmpeg' 在某些机器上要 5s，绝不能卡在同步路径上
+  // 内置 ffmpeg 命中时这一步直接空转；只有内置缺失才真去查 PATH（那一步慢，必须异步）
+  warmFfmpeg();
 }
 
 function ws() {
@@ -35,10 +37,10 @@ function ws() {
   return workspace;
 }
 
-/** 换工作区时必须清掉缓存，否则模板/ffmpeg 路径会继续认旧工作区 */
+/** 换工作区时必须清掉缓存，否则工作流模板会继续认旧工作区 */
 function forgetWorkspace() {
   workspace = null;
-  ffmpegCache = undefined;   // tools/ffmpeg.exe 也跟着工作区走
+  ffmpegCache = undefined;   // 内置 ffmpeg 与工作区无关，这里只清 PATH 兜底的缓存
 }
 
 function endpoint(key) {
@@ -104,8 +106,8 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
   // 先快速探活（1.5s），避免连接挂起时用户干等
   let alive = false;
   try { alive = (await fetchJson(endpoint('llm') + '/v1/models', {}, 1500)).ok; } catch (_) {}
-  if (!alive) throw new Error('LLM 服务不可达（' + endpoint('llm') + '）。软件会自动拉起 llama-server；'
-    + '若反复起不来，看右下角「运行日志」，或到 设置 → 高级设置 检查 llama.cpp 安装目录。');
+  if (!alive) throw new Error('LLM 服务不可达（' + endpoint('llm') + '）。软件会自动拉起 llama-server'
+    + '（引擎随软件内置，无需安装）；若反复起不来，看右下角「运行日志」里的服务日志。');
 
   const body = {
     model: 'local',
@@ -205,19 +207,24 @@ function pickArray(v) {
 
 /**
  * 定位 ffmpeg。
- * 性能要点（2026-09-18 修）：`where ffmpeg` 在本机稳定耗时 5.1s，
- * 而前端每 5s 轮询一次健康检查 —— 同步调用会把主进程堵死，整个 UI 每步操作都要等 5s。
- * 所以这里改成：启动时异步预热 + 结果缓存，健康检查永远不阻塞。
- *   - 自定义路径 / 工作区 tools/ 命中 → 立刻返回，且不受缓存影响（改了设置马上生效）
+ *
+ * 首选**软件自带**的 tools/ffmpeg/bin/ffmpeg.exe（随包分发，用户零安装，见 tools.cjs）——
+ * 这条路径只是几次 fs.existsSync，毫秒级，永远不阻塞。
+ *
+ * 性能要点（2026-09-18 修）：`where ffmpeg` 在本机稳定耗时 5.1s，而前端每 5s 轮询一次
+ * 健康检查 —— 同步 spawn 会把主进程堵死（UI 卡成 PPT）。所以「PATH 兜底」这一支
+ * 仍然走「启动时异步预热 + 结果缓存」：
+ *   - 内置命中 / 旧的自定义路径命中 → 立刻返回，不受缓存影响
  *   - 缓存已解析 → 直接返回
  *   - 预热中 → 返回 null（这一轮健康检查先算「没找到」，下一轮就准了）
  *   - forceSync → 真的同步查一次（导出这种一次性长任务用，保证准确性）
  */
 function findFfmpeg(opts) {
-  const custom = db.getSetting('ffmpeg.path');
+  const builtin = tools.ffmpeg();          // 软件自带，开箱即用
+  if (builtin) return builtin;
+  // 兼容极老配置（设置页已移除该项）：只在内置缺失时生效
+  const custom = db && db.getSetting('ffmpeg.path');
   if (custom && fs.existsSync(custom)) return custom;
-  const wsTool = path.join(ws() || '', 'tools', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
-  if (fs.existsSync(wsTool)) return wsTool;
   if (opts && opts.forceSync) return resolveFfmpegSync();
   if (ffmpegCache !== undefined) return ffmpegCache;
   if (ffmpegWarming) return null;
@@ -238,6 +245,7 @@ function resolveFfmpegSync() {
 
 /** 启动时异步解析 ffmpeg（非阻塞），之后所有查询走缓存 */
 function warmFfmpeg() {
+  if (tools.ffmpeg()) return;   // 软件自带已命中，PATH 兜底永远用不上，不必去 spawn
   if (ffmpegWarming || ffmpegCache !== undefined) return;
   ffmpegWarming = true;
   const bin = process.platform === 'win32' ? 'where' : 'which';
@@ -248,6 +256,47 @@ function warmFfmpeg() {
       ffmpegWarming = false;
     });
   } catch (_) { ffmpegCache = null; ffmpegWarming = false; }
+}
+
+/**
+ * 抽取视频末帧 → 图片（首帧接力用，2026-10-09）。
+ *
+ * 「上一镜的最后一帧 = 本镜首帧」是唯一能让相邻镜头画面真正接上的做法：
+ * H3 逐镜独立生成，不给它一个真实的起始画面，接缝处只能靠模型自己猜（漂移最大来源）。
+ *
+ * 实现要点：
+ *   - `-sseof -<offset>` 从「距结尾 offset 秒」处 seek：对 mp4 走 moov 索引，快且稳（实测 ~130ms）；
+ *     不用 `-ss <dur-offset>` 是因为那要先额外 ffprobe 一次拿时长，多一次进程开销。
+ *   - offset 默认 0.1s：直接取绝对最后一帧有时会碰到淡出黑场 / 编码尾包，
+ *     可调大（帧率 24fps 时 0.1s ≈ 倒数第 3 帧）。
+ *   - `-q:v 2` 是 mjpeg 质量档（这里配 .png 输出时 ffmpeg 会忽略，保留无害）。
+ *
+ * 返回 { ok:true, out } 或 { ok:false, error }；ffmpeg 缺失时 error === 'NOPATH'，
+ * 交给调用方给出「软件自带的 ffmpeg 没找到」的具体指引，而不是一句看不懂的报错。
+ */
+function extractLastFrame(video, out, offsetSec) {
+  return new Promise((resolve) => {
+    if (!video) return resolve({ ok: false, error: '没有指定源视频' });
+    if (!fs.existsSync(video)) return resolve({ ok: false, error: '上一镜的视频文件不存在：' + video });
+    const ff = findFfmpeg({ forceSync: true });
+    if (!ff) return resolve({ ok: false, error: 'NOPATH' });
+    const off = Number(offsetSec) > 0 ? Number(offsetSec) : 0.1;
+    try { fs.mkdirSync(path.dirname(out), { recursive: true }); } catch (_) { /* 已存在 */ }
+    const args = ['-y', '-hide_banner', '-loglevel', 'error',
+      '-sseof', '-' + off, '-i', video, '-frames:v', '1', out];
+    try {
+      execFile(ff, args, { timeout: 60000, windowsHide: true, maxBuffer: 1 << 22 }, (err, _stdout, stderr) => {
+        if (err) {
+          const msg = String((stderr || '') || err.message || '').trim().split(/\r?\n/).slice(-3).join(' / ');
+          return resolve({ ok: false, error: msg.slice(0, 300) || 'ffmpeg 执行失败' });
+        }
+        if (!fs.existsSync(out)) return resolve({ ok: false, error: 'ffmpeg 执行完成但没有产出图片' });
+        resolve({ ok: true, out });
+      });
+    } catch (e) {
+      resolve({ ok: false, error: String((e && e.message) || e) });
+    }
+  });
 }
 
 /* ---------------- ComfyUI 工作流执行 ---------------- */
@@ -663,6 +712,14 @@ const VRAM_FREE_IDLE_MS = 5000;
 let vramFreeTimer = null;
 let vramFreeGen = 0;   // 代际计数：防「timer 恰好到点 vs 新任务恰好提交」竞态把新任务的模型卸掉
 
+// 🔴 强制停止生成（2026-10-09）：登记「当前活动任务」与「被请求中断的任务」。
+// 为什么要：H3 一个 20 步高分辨率任务能跑 30 分钟以上，App 原来只能干等——用户既停不了、
+// 也不能改配置重跑，只能重启 ComfyUI。现在 UI 上「停止生成」按钮走 cancelComfy()，
+// 靠这两个变量让正在轮询的 comfyGenerateInner 立刻退出，而不是等它自然结束。
+// 串行使用（渲染层 vBusy 保证同一时刻只有一个生成在跑），所以一对模块级变量就够。
+let _activePid = null;   // 正在等待结果的 prompt_id（没有任务时为 null）
+let _cancelPid = null;   // 被用户请求中断的 prompt_id：轮询循环见到即立刻退出
+
 function disarmVramFree() {
   if (vramFreeTimer) { clearTimeout(vramFreeTimer); vramFreeTimer = null; }
   vramFreeGen++;   // 新任务跟上 → 已触发、还在路上的释放请求全部作废
@@ -693,6 +750,88 @@ async function freeComfyVram(gen) {
   } catch (_) { /* 不可达就算了，下个任务自己会重试 */ }
 }
 
+/** 用户主动停止生成（不是失败）：调用方据此走「已停止」而不是「生成失败」的提示路径 */
+class CancelledError extends Error {
+  constructor(pid) {
+    super('用户已停止生成（prompt_id=' + pid + '）');
+    this.name = 'CancelledError';
+    this.code = 'CANCELLED';
+  }
+}
+
+/**
+ * 强制停止生成（2026-10-09）：立刻中断 ComfyUI 正在执行的任务 + 清掉还在排队的本任务 + 释放显存。
+ *
+ * 顺序有讲究，不能颠倒：
+ *   ① /interrupt  —— 把正在跑的那个任务断掉（这一步才是"停"的关键）
+ *   ② /queue delete —— 清掉还没轮到执行的排队任务（批量场景下可能已排了好几个）
+ *   ③ 等队列真正空下来 —— ComfyUI 收到 interrupt 后要过一会儿才回到 idle
+ *   ④ /free —— 卸载模型、释放显存
+ * 为什么不先 /free：任务还在跑的时候卸载模型会把它直接搞崩，必须等它停下来。
+ *
+ * 注意 /interrupt 是 ComfyUI 的**全局**中断（它没有"只中断某个 prompt"的接口）。
+ * 本软件串行生成，所以只会中断我们自己的任务。
+ */
+async function cancelComfy() {
+  const ep = endpoint('comfyui');
+  const out = { ok: false, pid: _activePid, interrupted: false, cleared: 0, freed: false, stillRunning: false, errors: [] };
+  // 先打取消标记：正在轮询的 comfyGenerateInner 见到就立刻退出，不等这些 HTTP 请求的结果
+  if (_activePid) _cancelPid = _activePid;
+
+  const post = (p, body, ms) => fetchJson(ep + p, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {})
+  }, ms || 8000);
+
+  // ① 中断正在执行的任务
+  try {
+    await post('/interrupt', {}, 8000);
+    out.interrupted = true;
+  } catch (e) {
+    out.errors.push('中断当前任务失败：' + e.message);
+  }
+
+  // ② 清掉还在排队的任务（已经开跑的那个靠 ①）
+  try {
+    const q = await fetchJson(ep + '/queue', {}, 5000);
+    const pend = (q.ok && q.json && Array.isArray(q.json.queue_pending)) ? q.json.queue_pending : [];
+    const ids = pend.map(it => (Array.isArray(it) ? it[1] : (it && it.prompt_id))).filter(Boolean);
+    if (ids.length) {
+      await post('/queue', { delete: ids }, 8000);
+      out.cleared = ids.length;
+    }
+  } catch (e) {
+    out.errors.push('清理排队任务失败：' + e.message);
+  }
+
+  // ③ 等 ComfyUI 真正回到空闲（最多约 7.5s），否则下一步会把还在用的模型卸掉
+  let idle = false;
+  for (let i = 0; i < 25; i++) {
+    try {
+      const q = await fetchJson(ep + '/queue', {}, 4000);
+      if (q.ok && q.json && !(q.json.queue_running || []).length) { idle = true; break; }
+    } catch (_) { break; }   // 查不通就别硬等，直接试最后一步
+    await new Promise(r => setTimeout(r, 300));
+  }
+  out.stillRunning = !idle;
+
+  // ④ 释放显存（下次生成会重新加载权重，H3 约十几秒）
+  try {
+    await post('/free', { unload_models: true, free_memory: true }, 8000);
+    out.freed = true;
+  } catch (e) {
+    out.errors.push('释放显存失败：' + e.message);
+  }
+
+  out.ok = out.interrupted || out.cleared > 0 || out.freed;
+  logger.info('停止生成：' + (out.interrupted ? '已中断当前任务' : '未中断到执行中的任务')
+    + (out.cleared ? '，已清掉 ' + out.cleared + ' 个排队任务' : '')
+    + (out.freed ? '，已释放显存' : '，显存释放失败')
+    + (out.errors.length ? '（' + out.errors.join('；') + '）' : ''));
+  return out;
+}
+
 /** 对外入口：进来取消挂起的释放（新任务跟上）；出去（成功/失败都算任务结束）开始空闲倒计时 */
 async function comfyGenerate(args) {
   disarmVramFree();
@@ -700,6 +839,9 @@ async function comfyGenerate(args) {
     return await comfyGenerateInner(args);
   } finally {
     armVramFree();
+    // 任务彻底结束（成功 / 失败 / 被停止都一样）→ 注销活动任务，别让「停止生成」打到已结束的任务上
+    _activePid = null;
+    _cancelPid = null;
   }
 }
 
@@ -929,41 +1071,93 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   }
   const pid = submit.json.prompt_id;
   logger.detail('prompt_id=' + pid + (realParams.seed !== undefined ? '，seed=' + realParams.seed : ''));
+  // 登记为「当前活动任务」：用户点「停止生成」时靠它定位要中断谁（见 cancelComfy）。
+  // 新任务一开始就把上一轮可能残留的取消标记清掉，否则会一上来就被误判成"已取消"。
+  _activePid = pid;
+  _cancelPid = null;
 
   // 轮询直到完成。
   // ⚠️ 三种"end"都要立刻跳出，不能只等 completed：任务报错时 completed 永远是 false，
   //    以前只判断 completed → 报错也傻等到超时（1800s），界面看着像卡死。
   //    这里：①完成 ②出错 ③任务从队列里消失（连续 3 次看不到）→ 立即结束。
+  // 🔴 2026-10-09「稳妥超时」：timeoutMs 由「硬上限」改成「软上限」——
+  //    到点后不再一律放弃，先看 /queue：只要这条任务仍在 queue_running / queue_pending，
+  //    就说明它是在正常跑、只是慢（例如 20 步 + 高分辨率 + 多参考图，实测 1344×768 约需
+  //    1900～2200s，越过 1800s 仅百余秒），于是继续等下去，不误杀慢任务。
+  //    真卡死时（ComfyUI 崩溃 / 被重启 / 任务被人为中断）队列里查不到它 → 仍走 ③ 立刻报错。
+  //    hardMs 是兜底硬上限，防止任务因故永远挂在队列里导致无限等待。
   const t0 = Date.now();
+  const softMs = timeoutMs;                                     // 软上限：默认 1800s（30 分钟）
+  const hardMs = Math.max(timeoutMs * 3, timeoutMs + 3600000);  // 硬上限：默认 5400s（90 分钟）
   let lastTick = t0;
   let history = null;
   let vanished = 0;
-  while (Date.now() - t0 < timeoutMs) {
+  let renewed = 0;                                              // 因「仍在队列中」而跨过软上限继续等
+  let unreachable = 0;                                          // ComfyUI 连续无响应次数
+  while (Date.now() - t0 < hardMs) {
+    // 用户点了「停止生成」→ 立刻退出，不再等 ComfyUI（interrupt 已由 cancelComfy 发出）
+    if (_cancelPid === pid) throw new CancelledError(pid);
     await new Promise(r => setTimeout(r, 1200));
     if (Date.now() - lastTick >= 30000) {
       lastTick = Date.now();
       logger.detail('执行中…已等待 ' + Math.round((Date.now() - t0) / 1000) + 's（' + baseName + '）');
     }
     let h;
-    try { h = await fetchJson(endpoint('comfyui') + '/history/' + pid, {}, 8000); } catch (_) { continue; }
+    try {
+      h = await fetchJson(endpoint('comfyui') + '/history/' + pid, {}, 8000);
+      unreachable = 0;
+    } catch (_) {
+      // ComfyUI 整个不可达（进程退出 / 端口断了）：连续拿不到响应就报错。
+      // 双条件（次数 + 至少 2 分钟）避免 ComfyUI 重启中的短暂断连被误判；
+      // 没有这道门的话，进程挂掉会一路等到硬上限（默认 90 分钟）才给用户反馈。
+      if (++unreachable >= 30 && Date.now() - t0 > 120000) {
+        throw new Error('ComfyUI 连续 ' + unreachable + ' 次无响应（prompt_id=' + pid
+          + '）：ComfyUI 可能已退出或端口不通，请检查 ComfyUI 状态后重试。');
+      }
+      continue;
+    }
     if (h.ok && h.json && h.json[pid]) {
       history = h.json[pid];
       const st = history.status || {};
       if (st.completed) break;
       if (st.status_str === 'error') break;      // ② 出错：立刻跳出，下面统一报错
     } else if (Date.now() - t0 > 15000) {
-      // ③ 既不在 history、也不在队列里 → 任务被中断/ComfyUI 重启过
+      // ③ 既不在 history、也不在队列里 → 任务被中断 / ComfyUI 重启过
       let q = null;
       try { q = await fetchJson(endpoint('comfyui') + '/queue', {}, 8000); } catch (_) { q = null; }
       if (q && q.ok && q.json) {
         const inQueue = ['queue_running', 'queue_pending'].some(k =>
           Array.isArray(q.json[k]) && q.json[k].some(it => (Array.isArray(it) ? it[1] : it && it.prompt_id) === pid));
-        vanished = inQueue ? 0 : vanished + 1;
-        if (vanished >= 3) throw new Error('任务已从 ComfyUI 队列消失（prompt_id=' + pid + '）：ComfyUI 可能被重启或任务被中断，请重试。');
+        if (inQueue) {
+          vanished = 0;
+          // 软超时已过但任务确实还在队列里跑 → 续期继续等（只在跨过软上限的第一次记一条日志）
+          if (Date.now() - t0 > softMs && renewed === 0) {
+            logger.info('任务已超过 ' + Math.round(softMs / 60000) + ' 分钟等待上限，但它在 ComfyUI 队列中仍在运行，继续等待：'
+              + baseName + '（prompt_id=' + pid + '）');
+          }
+          if (Date.now() - t0 > softMs) renewed++;
+        } else {
+          vanished++;
+          if (vanished >= 3) throw new Error('任务已从 ComfyUI 队列消失（prompt_id=' + pid + '）：ComfyUI 可能被重启或任务被中断，请重试。');
+        }
       }
     }
   }
-  if (!history) throw new Error('ComfyUI 任务超时未完成（prompt_id=' + pid + '）');
+  // 到达硬上限退出前再确认一次：任务可能刚好在这一刻完成（避免差一两秒误报超时）
+  if (!history) {
+    try {
+      const h2 = await fetchJson(endpoint('comfyui') + '/history/' + pid, {}, 8000);
+      if (h2.ok && h2.json && h2.json[pid]) history = h2.json[pid];
+    } catch (_) { /* 查不到就按超时处理 */ }
+  }
+  if (!history) {
+    const waited = Math.round((Date.now() - t0) / 1000);
+    throw new Error('ComfyUI 任务超时未完成（prompt_id=' + pid + '，已等待 ' + waited + 's）'
+      + (renewed > 0
+        ? '：该任务一直在 ComfyUI 队列里运行（属慢任务），但已超过最长等待上限。'
+          + '可稍后到 ComfyUI 界面确认它是否已完成（产物会留在 ComfyUI 的 output 目录）。'
+        : '：ComfyUI 长时间没有返回结果，请到 ComfyUI 界面确认任务状态后重试。'));
+  }
   if (history.status && history.status.status_str === 'error') {
     const errMsg = (history.status.messages || []).filter(m => m[0] === 'execution_error')[0];
     const e0 = errMsg ? errMsg[1] : null;
@@ -1009,12 +1203,256 @@ function firstCkpt() {
 
 /* ---------------- ffmpeg 导出 ---------------- */
 
+/**
+ * 秒 → SRT 时间戳 HH:MM:SS,mmm。
+ * ⚠️ 必须先整体 round 到毫秒再拆分：旧写法对「秒的小数部分」单独 round，
+ *    遇到 1.9996 这类会算出 1000 → "00:00:01,1000"（非法 SRT，libass 直接报错）。
+ */
 function srtTime(sec) {
-  const h = String(Math.floor(sec / 3600)).padStart(2, '0');
-  const m = String(Math.floor(sec % 3600 / 60)).padStart(2, '0');
-  const s = String(Math.floor(sec % 60)).padStart(2, '0');
-  const ms = String(Math.round((sec % 1) * 1000)).padStart(3, '0');
-  return `${h}:${m}:${s},${ms}`;
+  let ms = Math.max(0, Math.round((Number(sec) || 0) * 1000));
+  const h = Math.floor(ms / 3600000); ms -= h * 3600000;
+  const m = Math.floor(ms / 60000); ms -= m * 60000;
+  const s = Math.floor(ms / 1000); ms -= s * 1000;
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + ',' + String(ms).padStart(3, '0');
+}
+
+/* -------- 字幕时间轴（Dragon 2026-10-12：文本忠于分镜脚本，只把时间轴做实） --------
+ *
+ * 旧实现的时间轴 = 「分镜计划时长」累加。但视频是 H3 按 17k+5 帧网格生成的，
+ * 实际时长必然对不上（H10 四镜整体漂 1.75s）→ 字幕越往后越不贴画面。
+ *
+ * 现在分两层修正，全程不需要任何 AI 模型：
+ *   A. 逐镜实测时长：对每个分镜跑一次 ebur128（`-vn` 只解音频，很快），
+ *      同一次进程里既拿到 Duration 又拿到响度曲线 → 时间轴以真实时长为准；
+ *      再用母片的实际总时长按比例校正一次，消除累加误差。
+ *   B. 镜内人声定位：H3 的音频是「人声 + 背景音乐」混音，几乎没有真正的静音，
+ *      silencedetect 切不出说话段（H10 实测四镜全部 0 段，字幕退化成整镜铺满）。
+ *      改用响度窗：人声段能量显著高于纯音乐段 → 按台词朗读时长估一个窗口长度，
+ *      在响度曲线里滑窗取「平均响度最高」的区间放字幕，边缘再按响度修剪。
+ * 逐级降级（无 ffmpeg / 无音轨 / 曲线解析不到）一路退到「计划时长 + 整镜均分」，
+ * 保证导出永远能出片。
+ */
+
+/** 中文旁白/对白的朗读速度估算（字/秒）。只用来定字幕该占多长，误差由「响度窗」吸收 */
+const SPEECH_CPS = 4.2;
+/** 说话段 / 字幕条的最小时长，低于此值视为噪声碎片丢弃 */
+const MIN_CUE_SEC = 0.3;
+/** 相邻字幕之间留的间隙，避免两条紧贴显示 */
+const CUE_GAP_SEC = 0.05;
+/** ebur128 对纯静音输出 -120.7 LUFS，参与均值前压到这个地板，避免一条静音把均值拖成负无穷 */
+const LEVEL_FLOOR = -60;
+/** 窗口边缘修剪：边缘响度低于「窗内均值 - 此值」就往里收（估计时长偏长时贴回人声边界） */
+const TRIM_MARGIN_DB = 9;
+
+/** 并发跑异步任务（逐镜探测要起进程，限并发，避免一次轰出几十个） */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const n = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(new Array(n).fill(0).map(async () => {
+    for (;;) {
+      const k = next++;
+      if (k >= items.length) return;
+      out[k] = await fn(items[k], k);
+    }
+  }));
+  return out;
+}
+
+/** 从 ffmpeg stderr 解析 "Duration: 00:00:12.34" → 秒（拿不到返回 0） */
+function parseDurationLine(txt) {
+  const m = String(txt || '').match(/Duration:\s*(\d+):(\d{2}):(\d{2}\.\d+)/);
+  if (!m) return 0;
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+}
+
+/**
+ * 解析 ebur128 输出的瞬时响度曲线（每 100ms 一点）→ [{t, db}]。
+ * H3 生成的是「人声 + 背景音乐」混音，几乎没有真正的静音，silencedetect 切不出来；
+ * 但人声段能量显著高于纯音乐段，所以用响度曲线找「最响的窗口」定位人声。
+ */
+function parseLevelCurve(txt) {
+  const out = [];
+  const re = /t:\s*([\d.]+)\s+TARGET:[^\n]*?M:\s*(-?[\d.]+)/g;
+  let m;
+  while ((m = re.exec(String(txt || '')))) {
+    const t = parseFloat(m[1]), db = parseFloat(m[2]);
+    if (Number.isFinite(t) && Number.isFinite(db)) out.push({ t, db: Math.max(db, LEVEL_FLOOR) });
+  }
+  return out;
+}
+
+/**
+ * 在响度曲线里找长度 estSec、平均响度最高的连续窗口（人声最集中的区间）。
+ * 纯函数：level 已按时间升序；span 限制搜索范围；找不到（曲线为空/窗口装不下）返回 span。
+ */
+function bestSpeechSpan(level, estSec, span) {
+  const pts = (level || []).filter(p => Number.isFinite(p.t) && p.t >= span.t0 - 0.1 && p.t <= span.t1 + 0.1);
+  const est = Math.max(0.3, estSec);
+  if (pts.length < 3 || est >= span.t1 - span.t0 - 0.2) return { t0: span.t0, t1: span.t1 };
+  const step = pts.length > 1 ? Math.max(0.05, (pts[pts.length - 1].t - pts[0].t) / (pts.length - 1)) : 0.1;
+  const k = Math.max(1, Math.round(est / step));
+  let best = null;
+  for (let i = 0; i + k <= pts.length; i++) {
+    let sum = 0;
+    for (let j = i; j < i + k; j++) sum += pts[j].db;
+    const mean = sum / k;
+    if (!best || mean > best.mean + 1e-9) best = { i, mean };
+  }
+  if (!best) return { t0: span.t0, t1: span.t1 };
+  return { t0: Math.max(span.t0, pts[best.i].t - step / 2), t1: Math.min(span.t1, pts[best.i].t - step / 2 + est) };
+}
+
+/** 窗口边缘修剪：首/尾响度明显低于窗内均值时往里收，贴回真实人声边界（估计时长偏长时用） */
+function trimSpeechSpan(level, win) {
+  let pts = (level || []).filter(p => p.t >= win.t0 - 0.1 && p.t <= win.t1 + 0.1);
+  if (pts.length < 3) return win;
+  const mean = pts.reduce((a, b) => a + b.db, 0) / pts.length;
+  const cut = mean - TRIM_MARGIN_DB;
+  let i = 0, j = pts.length - 1;
+  while (i < j && pts[i].db < cut) i++;
+  while (j > i && pts[j].db < cut) j--;
+  if (j - i < 1) return win;
+  return { t0: Math.max(win.t0, pts[i].t), t1: Math.min(win.t1, pts[j].t) };
+}
+
+/** 成对引号表：字幕连包裹引号一起剥掉（'「A」和「B」' 这种两段的不是一对，不动） */
+const CUE_QUOTE_PAIRS = { '“': '”', '「': '」', '『': '』', '‘': '’', '"': '"', "'": "'" };
+
+/** 剥掉整体包裹的引号（最多两层，容「“…”」这种双层套写） */
+function stripCueQuotes(s) {
+  let t = String(s || '').trim();
+  for (let i = 0; i < 2; i++) {
+    const a = t.charAt(0), b = t.charAt(t.length - 1);
+    if (t.length < 2 || CUE_QUOTE_PAIRS[a] !== b) break;
+    const body = t.slice(1, -1).trim();
+    if (body.includes(b)) break;   // 中间还有同类引号 → 是两段并列，不是整体包裹
+    t = body;
+  }
+  return t;
+}
+
+/**
+ * 字幕正文：剥掉行首的「说话人：」前缀，再剥掉整体包裹的引号。
+ * 分镜台词写成「林澈：「那就进去看看。」」，但影视字幕惯例既不带说话人、也不带引号。
+ * 只认 1~8 字的短前缀，长句子里的冒号（「这是一句很长的旁白文字：内容」）原样保留。
+ */
+function cueText(line) {
+  const s = String(line || '').trim().replace(/^[^：:]{1,8}[：:]\s*/, '');
+  return stripCueQuotes(s);
+}
+
+/** 台词权重：去「说话人：」前缀后的可见字符数（决定多句各占多长时间） */
+function cueWeight(line) {
+  return Math.max(1, cueText(line).replace(/\s/g, '').length);
+}
+
+/** 多句但说话段数与行数不等时：按字数权重把台词铺满 [t0,t1]（近似，不跨镜）；ws 为调用方已算好的权重 */
+function spreadByWeight(lines, t0, t1, ws) {
+  ws = ws || lines.map(cueWeight);
+  const sum = ws.reduce((a, b) => a + b, 0) || 1;
+  const span = Math.max(0, t1 - t0);
+  const cues = [];
+  let acc = 0;
+  lines.forEach((text, i) => {
+    const a = t0 + span * (acc / sum);
+    acc += ws[i];
+    const b = t0 + span * (acc / sum);
+    let end = b;
+    if (i < lines.length - 1 && b - a > MIN_CUE_SEC + CUE_GAP_SEC) end = b - CUE_GAP_SEC;
+    cues.push({ t0: a, t1: Math.max(end, a + 0.1), text });
+  });
+  return cues;
+}
+
+/**
+ * 单镜台词 → 字幕条（**镜内坐标**：span 以 0 起算，调用方负责平移到全片时间轴）。
+ * @param lines 该镜台词行（已 trim、去空行）；行首「说话人：」前缀在此统一剥掉
+ * @param level 该镜的 ebur128 响度曲线 [{t,db}]（镜内坐标），可为空
+ * @param span  该镜区间 {t0,t1}，响度曲线缺失时兜底
+ */
+function buildCues(lines, level, span) {
+  // 字幕只烧正文：剥完前缀为空的行走不进候选（否则它会白占一段时长，把后面的句子挤错位）
+  const ls = (lines || []).map(cueText).filter(Boolean);
+  const n = ls.length;
+  if (!n) return [];
+  const usable = span.t1 - span.t0;
+  if (!(usable > 0)) return [];
+  const ws = ls.map(s => Math.max(1, s.replace(/\s/g, '').length));
+  // 每句朗读时长 ≈ 正文字数 / SPEECH_CPS（下限 1.2s，一句话总得闪一瞬）
+  const estTotal = ws.reduce((a, w) => a + Math.max(1.2, w / SPEECH_CPS), 0) + (n - 1) * CUE_GAP_SEC;
+  // 曲线缺失（无音轨 / 解析失败），或台词本来就要念满整镜 → 退回整镜按字数铺开
+  const lv = (level || []).filter(p => Number.isFinite(p.t) && Number.isFinite(p.db));
+  if (lv.length < 3 || estTotal >= usable - 0.2) {
+    return spreadByWeight(ls, span.t0, span.t1, ws);
+  }
+  // 人声最响的窗口放字幕；估长了再按边缘响度贴回人声边界
+  const win = trimSpeechSpan(lv, bestSpeechSpan(lv, estTotal, span));
+  return spreadByWeight(ls, win.t0, win.t1, ws);
+}
+
+/** 全片字幕条：按实测时长逐镜定位边界；镜内用响度窗把台词放到人声最集中的区间 */
+function buildFilmCues(videos, durs, levels) {
+  const cues = [];
+  let t = 0;
+  videos.forEach((v, i) => {
+    const d = Number(durs[i]) || 0;
+    const S = t, E = t + d; t = E;
+    const lines = String(v.dialogue || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (!lines.length) return;
+    const local = buildCues(lines, (levels || [])[i] || [], { t0: 0, t1: d });
+    local.forEach(c => { c.t0 += S; c.t1 += S; cues.push(c); });
+  });
+  return cues;
+}
+
+/** 字幕条 → SRT 文本（带 BOM：libass 读中文必需；无字幕时返回空串） */
+function cuesToSrt(cues) {
+  const blocks = (cues || [])
+    .filter(c => c && c.text && c.t1 > c.t0)
+    .map((c, i) => (i + 1) + '\n' + srtTime(c.t0) + ' --> ' + srtTime(c.t1) + '\n' + c.text);
+  return blocks.length ? '\ufeff' + blocks.join('\n\n') + '\n' : '';
+}
+
+/** 逐镜分析：一次 ffmpeg 进程同时拿到实测时长与镜内响度曲线（ebur128 每 100ms 一点，-vn 只解音频，很快） */
+function analyzeShot(ffmpeg, file) {
+  return new Promise(resolve => {
+    // ⚠️ 不能加 -nostats：ebur128 的响度行会跟着一起被吞掉
+    const args = ['-hide_banner', '-loglevel', 'info', '-i', file, '-vn',
+      '-af', 'ebur128=peak=none', '-f', 'null', '-'];
+    try {
+      execFile(ffmpeg, args, { windowsHide: true, timeout: 180000, maxBuffer: 1 << 24 }, (err, _stdout, stderr) => {
+        const txt = String(stderr || '');
+        resolve({ dur: parseDurationLine(txt), level: parseLevelCurve(txt) });
+      });
+    } catch (_) { resolve({ dur: 0, level: [] }); }
+  });
+}
+
+/** ffprobe 读单个文件的时长（母片真实总时长，用来校正按镜累加的误差） */
+function probeDuration(ffmpeg, file) {
+  return new Promise(resolve => {
+    const ffprobe = path.join(path.dirname(ffmpeg), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+    if (!fs.existsSync(ffprobe)) return resolve(0);
+    const args = ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', file];
+    try {
+      execFile(ffprobe, args, { windowsHide: true, timeout: 30000, maxBuffer: 1 << 20 }, (err, stdout) => {
+        const d = parseFloat(String(stdout || '').trim());
+        resolve(!err && Number.isFinite(d) && d > 0 ? d : 0);
+      });
+    } catch (_) { resolve(0); }
+  });
+}
+
+/** 跑一次 ffmpeg，收集 stderr（失败时给上层拼错误信息） */
+function runFfmpeg(ffmpeg, args, cwd) {
+  return new Promise(resolve => {
+    const p = spawn(ffmpeg, args, { windowsHide: true, cwd });
+    let err = '';
+    p.stderr.on('data', d => { err += d; if (err.length > 8000) err = err.slice(-4000); });
+    p.on('close', code => resolve({ code, err }));
+    p.on('error', e => resolve({ code: -1, err: String(e) }));
+  });
 }
 
 /**
@@ -1025,7 +1463,8 @@ function srtTime(sec) {
 async function exportVideo(outDir, outName, videos, { subtitles = true, width = 1920, height = 1080, scope = '' } = {}) {
   // 导出是一次性长任务：这里同步确认一次 ffmpeg（避免「预热没跑完」被误判成没装）
   const ffmpeg = findFfmpeg({ forceSync: true });
-  if (!ffmpeg) throw new Error('未找到 ffmpeg。请将 ffmpeg.exe 放到 workspace/tools/，或到 设置 → 高级设置 指定路径。');
+  if (!ffmpeg) throw new Error('未找到 ffmpeg。软件自带的 tools/ffmpeg/bin/ffmpeg.exe 不见了，'
+    + '请重新安装，或把 ffmpeg 放进系统 PATH。');
   fs.mkdirSync(outDir, { recursive: true });
   if (!videos.length) throw new Error('没有可拼接的视频片段');
   const W = Math.max(16, Math.round(Number(width) || 1920));
@@ -1036,35 +1475,13 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
   const tmp = path.join(outDir, '_tmp_' + Date.now());
   fs.mkdirSync(tmp, { recursive: true });
   try {
-    // 字幕
-    let subArg = [];
     const vfBase = 'scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2';
-    if (subtitles) {
-      let t = 0; const lines = [];
-      videos.forEach((v, i) => {
-        const dur = Number(v.dur) || 5;
-        if (v.dialogue) lines.push(i + 1 + '\n' + srtTime(t) + ' --> ' + srtTime(t + Math.max(dur - 0.2, 1)) + '\n' + v.dialogue + '\n');
-        t += dur;
-      });
-      if (lines.length) {
-        // srt 必须 UTF-8 with BOM 才能被 ffmpeg libass 正确读中文。
-        // ⚠️ subtitles 滤镜参数不要带绝对路径：Windows 盘符冒号要过「滤镜图解析→选项解析」
-        // 两层转义，少一层就把路径后半段当成 original_size 选项（报 Invalid argument）。
-        // 解法：spawn 的 cwd 设为临时目录，滤镜里只写裸文件名 subs.srt，无冒号无空格。
-        fs.writeFileSync(path.join(tmp, 'subs.srt'), '\ufeff' + lines.join('\n'), 'utf-8');
-        subArg = ['-vf', vfBase + ',subtitles=subs.srt'];
-      }
-    }
-    if (!subArg.length) {
-      subArg = ['-vf', vfBase];
-    }
 
     // concat 列表（先统一转码为相同规格，避免拼接黑屏）
     const listFile = path.join(tmp, 'list.txt');
     fs.writeFileSync(listFile, videos.map(v => 'file \'' + v.file.replace(/\\/g, '/').replace(/'/g, "'\\''") + '\'').join('\n'), 'utf-8');
 
     const outBase = sanitize(outName);
-    const outFile = path.join(outDir, outBase + '.mp4');
     // 走 assetStore 永不覆盖
     const finalName = (() => {
       let name = outBase + '.mp4', i = 2;
@@ -1072,21 +1489,49 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
       return name;
     })();
     const finalPath = path.join(outDir, finalName);
+    const concatArgs = ['-y', '-f', 'concat', '-safe', '0', '-i', listFile];
 
-    const args = ['-y', '-f', 'concat', '-safe', '0', '-i', listFile,
-      ...subArg, '-c:v', 'libx264', '-preset', 'medium', '-crf', '20',
-      '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', finalPath];
+    if (!subtitles) {
+      const res = await runFfmpeg(ffmpeg, [...concatArgs, '-vf', vfBase, '-c:v', 'libx264', '-preset', 'medium',
+        '-crf', '20', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', finalPath], tmp);
+      if (res.code !== 0 || !fs.existsSync(finalPath)) throw new Error('ffmpeg 导出失败：' + res.err.slice(-500));
+    } else {
+      // ---- pass1：先拼出无字幕母片（CRF 16，中间产物尽量少掉一代画质）----
+      const mutePath = path.join(tmp, 'mute.mp4');
+      const r1 = await runFfmpeg(ffmpeg, [...concatArgs, '-vf', vfBase, '-c:v', 'libx264', '-preset', 'veryfast',
+        '-crf', '16', '-c:a', 'aac', '-b:a', '160k', mutePath], tmp);
+      if (r1.code !== 0 || !fs.existsSync(mutePath)) throw new Error('ffmpeg 拼接母片失败：' + r1.err.slice(-500));
 
-    const res = await new Promise((resolve) => {
-      // cwd=tmp：让 subtitles=subs.srt（相对路径）解析到临时目录，避开盘符冒号转义问题
-      const p = spawn(ffmpeg, args, { windowsHide: true, cwd: tmp });
-      let err = '';
-      p.stderr.on('data', d => { err += d; if (err.length > 8000) err = err.slice(-4000); });
-      p.on('close', code => resolve({ code, err }));
-      p.on('error', e => resolve({ code: -1, err: String(e) }));
-    });
-    if (res.code !== 0 || !fs.existsSync(finalPath)) {
-      throw new Error('ffmpeg 导出失败：' + res.err.slice(-500));
+      // ---- A + B：逐镜实测时长（A）+ 镜内响度窗定位人声（B）----
+      const shots = await mapLimit(videos, 4, v => analyzeShot(ffmpeg, v.file));
+      const dursRaw = shots.map((s, i) => s.dur || Number(videos[i].dur) || 5);
+      const sumRaw = dursRaw.reduce((a, b) => a + b, 0) || 1;
+      // 母片真实总时长 ÷ 按镜累加 → 校正系数（concat 帧对齐会有毫秒级出入）
+      const realTotal = await probeDuration(ffmpeg, mutePath);
+      const k = realTotal > 0 ? realTotal / sumRaw : 1;
+      const durs = dursRaw.map(d => d * k);
+      // 响度曲线是「镜内坐标」，时间轴同样按 k 缩放后交给 buildFilmCues
+      const levels = shots.map(s => (s.level || []).map(p => ({ t: p.t * k, db: p.db })));
+      const cues = buildFilmCues(videos, durs, levels);
+      const srt = cuesToSrt(cues);
+
+      if (srt) {
+        // srt 必须 UTF-8 with BOM 才能被 ffmpeg libass 正确读中文。
+        // ⚠️ subtitles 滤镜参数不要带绝对路径：Windows 盘符冒号要过「滤镜图解析→选项解析」
+        // 两层转义，少一层就把路径后半段当成 original_size 选项（报 Invalid argument）。
+        // 解法：spawn 的 cwd 设为临时目录，滤镜里只写裸文件名 subs.srt，无冒号无空格。
+        fs.writeFileSync(path.join(tmp, 'subs.srt'), srt, 'utf-8');
+        // ---- pass2：把字幕烧到母片上（母片已是目标分辨率，不再 scale/pad）----
+        const r2 = await runFfmpeg(ffmpeg, ['-y', '-i', 'mute.mp4', '-vf', 'subtitles=subs.srt',
+          '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-c:a', 'copy',
+          '-movflags', '+faststart', finalPath], tmp);
+        if (r2.code !== 0 || !fs.existsSync(finalPath)) throw new Error('ffmpeg 烧录字幕失败：' + r2.err.slice(-500));
+        logger.info('字幕 ' + cues.length + ' 条 / ' + videos.length + ' 镜（实测时长 + 响度窗定位）');
+      } else {
+        // 没有台词 → 母片就是成品，直接搬，省一遍转码
+        fs.copyFileSync(mutePath, finalPath);
+        logger.info('本片没有需要烧录的台词，直接输出母片');
+      }
     }
     const elapsedMs = Date.now() - tExport;
     logger.done('成片已导出：' + finalName, elapsedMs);
@@ -1098,21 +1543,12 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
       try { if (fs.existsSync(cachePath)) cache = JSON.parse(fs.readFileSync(cachePath, 'utf-8')) || {}; } catch (_) { cache = {}; }
       const st = fs.statSync(finalPath);
       cache[finalName] = { ...(cache[finalName] || {}), mtimeMs: st.mtimeMs, elapsedMs };
-      // 🔴 需求（Dragon 2026-09-22）：重复点击「组装成片」→ 旧成片被**替换**掉，不留历史版本。
-      // 删除本次导出之外的其它成片 mp4，连同各自封面（.xxx.mp4.poster.jpg）与 meta 记录一并清理。
-      // （成片是可随时重新组装的派生产物，不是原始素材；组装失败不会走到这里，旧成片仍保留。）
-      // 🔴 2026-09-24 扁平化后「成片/」是全项目共用的目录：**只能删本集（scope 前缀）的旧成片**，
-      //    否则导出第 2 集会顺手删掉第 1 集的成片。scope 为空（老调用/测试）时才按「删目录内全部」的旧行为。
-      const scopePre = scope ? String(scope) + '_' : '';
-      for (const f of fs.readdirSync(outDir)) {
-        if (f === finalName) continue;
-        if (scopePre && !f.startsWith(scopePre)) continue;
-        if (/\.mp4$/i.test(f) || /\.webm$/i.test(f) || /\.mov$/i.test(f)) {
-          try { fs.rmSync(path.join(outDir, f), { force: true }); } catch (_) {}
-          try { fs.rmSync(path.join(outDir, '.' + f + '.poster.jpg'), { force: true }); } catch (_) {}
-          delete cache[f];
-        }
-      }
+      // 🔴 需求（Dragon 2026-10-09，**反转** 2026-09-22 的旧需求「重复导出 = 替换旧成片」）：
+      //    多次导出**各自留档**，旧成片一律保留。成片格只显示最新一版（渲染层按 mtime 倒序取
+      //    films[0]），历史版本留在 成片/ 里随时可翻、可对比。
+      //    ⚠️ 不要再按 scope 前缀删「本集的旧成片 mp4 + 封面 .xxx.mp4.poster.jpg + meta 记录」——
+      //    那等于把前几次导出直接覆盖掉（就是这次要修的 bug）。
+      //    scope 参数保留：调用方仍按集传前缀（目前只作语义标识，不参与删文件）。
       try { fs.writeFileSync(cachePath, JSON.stringify(cache), 'utf-8'); } catch (_) { /* 元信息写失败不影响导出结果 */ }
     } catch (_) { /* 元信息写失败不影响导出结果 */ }
     return finalPath;
@@ -1218,10 +1654,14 @@ async function probeVideo(abs) {
 
 module.exports = {
   init, health, llmChat, extractJson, pickArray, endpoint, setEndpoint,
-  comfyGenerate, workflowPath, ensureDefaultTemplates, findFfmpeg, exportVideo,
+  comfyGenerate, cancelComfy, workflowPath, ensureDefaultTemplates, findFfmpeg, exportVideo,
+  extractLastFrame,
   applyParams, findPlaceholders, h3Params, forgetWorkspace, listVideosWithMeta,
   // 模型方案驱动的部分（换模型只改配置，下面是代码侧入口）
   injectMedia, phTips, optionalPlaceholders,
+  // 字幕时间轴纯函数（离线自测用，不需要显卡/ffmpeg/Electron）
+  srtTime, parseDurationLine, parseLevelCurve, bestSpeechSpan, trimSpeechSpan, cueText, cueWeight, spreadByWeight, buildCues, buildFilmCues, cuesToSrt,
+  analyzeShot, probeDuration,
   // 导出仅为离线自测（test/h3-inject-check.cjs 直接验证连线，不需要显卡/ComfyUI）
   injectH3Media
 };

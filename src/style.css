@@ -201,10 +201,8 @@ body{
 /* 视频分辨率挪到本区底部（「生成视频」按钮左边）：去掉上外边距、与按钮同排对齐 */
 .shot-row .zone-2 .zone-foot .card-res{flex:0 0 auto; margin:0;}
 .shot-row .zone-2 .zone-foot .card-res select{max-width:126px;}
-/* 提示词区上方的镜头摘要：强制单行 —— 长对白若换行会把整行撑高，行高就不固定了 */
-.shot-row .zone-2 .vmeta .hint{
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%;
-}
+/* 2026-10-10（Dragon）：提示词区上方的「角色 · 时长 · 对白摘要」整块已移除（标题行只留耗时胶囊），
+   原先只为它兜行高的单行截断规则一并删掉 */
 /* 分镜行内的输入框禁止手动拖拽（行高固定，内容多了在框内滚动） */
 .shot-row textarea{resize:none;}
 .shot-row .zone-3{display:flex; flex-direction:column; gap:7px; height:100%; min-height:0;}
@@ -468,6 +466,30 @@ input[type=search]:focus{
 /* 镜头合并黄标（可点击 → 打开合并确认弹窗；复用 .dur-warn 配色，加指针与 hover） */
 .shot-row .dur-warn.mrg{cursor:pointer;}
 .shot-row .dur-warn.mrg:hover{color:#ffd98a; border-color:rgba(245,198,109,.55); background:rgba(245,198,109,.14);}
+/* 分镜自检横幅（2026-10-09）：镜头数 / 总时长超出当前体裁的上限时常驻显示，右侧给「一键合并」。
+   只在本块（阶段3）出现 —— 类名带 .shot-check 前缀，避免与别块同名字符串撞车（CSS 无作用域）。 */
+.shot-check{
+  display:flex; align-items:center; gap:8px; margin-bottom:8px;
+  font-size:11.5px; line-height:1.7; color:#f5c66d;
+  background:rgba(245,198,109,.08); border:1px solid rgba(245,198,109,.26);
+  border-radius:7px; padding:6px 9px;
+}
+.shot-check .sc-ico{flex-shrink:0; font-size:13px;}
+.shot-check .sc-txt{flex:1; min-width:0;}
+.shot-check .sc-txt b{color:#ffd98a; font-weight:600;}
+.shot-check .sc-btn{flex-shrink:0;}
+/* 场景三方一致性横幅（2026-10-10）：改编稿 §三 声明 ↔ scenes.json 落地 ↔ 镜头引用。
+   与 .shot-check 同为列表顶部横幅，但色调走红系——它报的是「档案结构对不上」，
+   比「镜头多了几个」更硬（H10 四季塌缩就是这一条抓出来的，此前程序零告警）。 */
+.scene-check{
+  display:flex; align-items:center; gap:8px; margin-bottom:8px;
+  font-size:11.5px; line-height:1.7; color:#fca5a5;
+  background:rgba(248,113,113,.08); border:1px solid rgba(248,113,113,.26);
+  border-radius:7px; padding:6px 9px;
+}
+.scene-check .sc-ico{flex-shrink:0; font-size:13px;}
+.scene-check .sc-txt{flex:1; min-width:0;}
+.scene-check .sc-txt b{color:#fda4af; font-weight:600;}
 /* 拆镜黄标（第 2 批）：本镜由程序按台词边界拆开而来。用冷色区分于琥珀系的时长/合并提示，
    右侧同行的两个小按钮（AI 重写 / 撤回）比 .btn.sm 再小一档，不撑高提示行 */
 .shot-row .dur-warn.spl{color:#93c5fd; background:rgba(147,197,253,.10); border-color:rgba(147,197,253,.32);}
@@ -794,6 +816,11 @@ input[type=search]:focus{
   font-size:10px; padding:1px 6px; border-radius:99px;
   background:rgba(10,14,20,.8); border:1px solid var(--line); color:#9fb0c6;
 }
+/* 每一版视频各自的生成耗时（2026-10-10）：悬浮在播放框右上角（版本号在左上角，二者错开）。
+   胶囊观感沿用 .gen-ms，这里只覆盖定位与间距 */
+.video-box .vid-ms{
+  position:absolute; right:6px; top:6px; z-index:2; margin-left:0;
+}
 .video-box .ph{color:#4b5568; font-size:13px; text-align:center; line-height:1.8;}
 .vmeta{font-size:12px; color:var(--sub);}
 .prompt-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(420px,1fr)); gap:14px;}
@@ -1042,6 +1069,10 @@ input[type=search]:focus{
   display:flex; align-items:flex-start; gap:7px; flex-wrap:nowrap;
   overflow-x:auto; overflow-y:hidden; height:98px; flex-shrink:0;
 }
+/* 🔴 2026-10-10（Dragon）：素材缩略图右上角的 ✕ 原来用 top/right:-5px 外凸，而 .ref-row 是
+   横向滚动容器（overflow-y:hidden）→ 溢出的那 5px 正好被裁掉，✕ 显示不全。
+   本行高度锁死 98px（分镜行高按它算），所以不改成加 padding/加高，直接把 ✕ 收进框内 1px。 */
+.ref-row .img-x{top:1px; right:1px;}
 /* 参考图 / 首尾帧：3:4 竖框 64×85；参考视频：4:3 横框 113×85（与图片等高 85），
    内容按原比例完整显示 */
 .ref-thumb{
@@ -1071,6 +1102,43 @@ input[type=search]:focus{
 .ref-add:hover{border-color:rgba(34,197,94,.6); color:#dcfce7; background:rgba(34,197,94,.13);}
 /* 「+视频」添加按钮跟随视频框形状：4:3 横框 113×85，与参考视频缩略框同形 */
 .ref-add.wide{width:113px; aspect-ratio:4/3;}
+/* ================= 首帧接力（2026-10-09） ================= */
+/* 「首帧」格：外框仍是 64×85，内部上下两半 —— 上半「首帧」手动选图（绿），
+   下半「取上镜尾帧」拿上一镜视频的最后一帧（青）。两半共用外框、中间不画分隔线，
+   视觉上保持一整格（横向比原来并排两个入口少占一格）。 */
+.ref-add.stack{
+  flex-direction:column; align-items:stretch; justify-content:flex-start;
+  padding:0; gap:0; overflow:hidden;
+  border-style:solid; border-color:rgba(56,189,248,.45); background:rgba(56,189,248,.05);
+}
+.ref-add.stack .rs-main,
+.ref-add.stack .rs-chain{
+  border:0; background:none; font-family:inherit; font-size:11px; cursor:pointer; width:100%;
+  display:flex; align-items:center; justify-content:center; text-align:center; line-height:1.25;
+  transition:background .14s, color .14s;
+}
+/* 上半：手动选图（沿用改造前「首帧」按钮的绿色反馈） */
+.ref-add.stack .rs-main{flex:1 1 auto; padding:2px; color:#a7e7c6;}
+.ref-add.stack .rs-main:hover{background:rgba(34,197,94,.16); color:#dcfce7;}
+/* 下半：取上一镜末帧 —— 6 个字比原来宽，字号压到 10px 才塞得进 64px 的格子 */
+.ref-add.stack .rs-chain{
+  flex:0 0 36px; height:36px; padding:0 1px;
+  font-size:10px; letter-spacing:-.1px;
+  color:#a5d8f3; background:rgba(56,189,248,.1);
+}
+.ref-add.stack .rs-chain:hover{background:rgba(56,189,248,.24); color:#e0f2fe;}
+/* 上一镜还没出片 / 第 1 个镜头 → 下半置灰不可点（hover 提示里说清了为什么） */
+.ref-add.stack .rs-chain:disabled{cursor:not-allowed; opacity:.45;}
+.ref-add.stack .rs-chain.dim{color:#6b7788; background:rgba(255,255,255,.04);}
+/* 上一镜还没出片 → 置灰不可点（hover 提示里说清了为什么） */
+.ref-add:disabled{cursor:not-allowed; opacity:.42;}
+.ref-add:disabled:hover{border-color:var(--line); color:#9fb0c6; background:rgba(255,255,255,.04);}
+/* 首帧来源是「上一镜末帧」且已过期（上一镜重新出片了）→ 缩略图描橙边 + 左上角标红 */
+.ref-thumb.framestale{border-color:rgba(251,191,36,.85); box-shadow:0 0 0 1px rgba(251,191,36,.35);}
+.ref-thumb.framestale .rtag{color:#fde68a; border-color:rgba(251,191,36,.5); background:rgba(60,40,6,.8);}
+.ref-thumb.framestale .rtag::after{content:" ⚠";}
+/* 2026-10-10（Dragon）：首帧缩略图上的「重取」按钮已移除（点 ✕ 清掉再重选即可），
+   原先给它的 .ref-thumb .img-re 规则一并删除 —— 别再按老需求加回来。 */
 /* 参考视频：与「视频生成」区一致，直接显示播放控件（默认不静音）；
    视频框是 4:3 横框，宽 = 85 × 4/3 ≈ 113，与图片框等高 85 */
 .ref-thumb.vid{width:113px; aspect-ratio:4/3; background:rgba(56,189,248,.1); border-color:rgba(56,189,248,.35);}
@@ -1167,13 +1235,22 @@ input[type=search]:focus{
 }
 .proj-head-txt h3{font-size:15.5px; margin:0 0 2px; color:#eef3fc;}
 .proj-sub{margin:0; font-size:11.5px; color:#8ea0bd;}
-.proj-name{
+/* 🔴 选择器必须带 .proj-dialog 提到 (0,2,0)：全局表单规则 `input[type=text]{width:100%}`
+   是 (0,1,1)，单类名压不过它 —— width:100% 一直在赢，输入框被撑成内容区全宽
+   再叠加 22px 左边距，右缘直接冲出弹窗（用户看到的「项目名称不居中」就是它）。
+   🔴 宽度必须显式 calc(100% - 44px) 而不能 width:auto：input 是替换元素，
+   auto 取的是内在宽度（≈161px 的秃输入框），不会像普通块级那样撑满。 */
+.proj-dialog .proj-name{
+  display:block;
   margin:16px 22px 0; width:calc(100% - 44px);
   padding:9px 12px; font-size:13px;
   background:#141a26; border:1px solid #232d3e; border-radius:var(--r-sm); color:#e8eefc;
 }
-.proj-name:focus{outline:none; border-color:var(--blue);}
+.proj-dialog .proj-name:focus{outline:none; border-color:var(--blue);}
 .proj-grid{display:flex; flex-direction:column; gap:8px; padding:16px 22px 4px;}
+/* 分辨率 ×3 + 视频质量 = 2×2 紧凑格：弹窗里四轴的选项卡很高，
+   顶部四行能省一行（~116px），制作调性的卡片才不至于整块折到首屏外面看不见 */
+.proj-two{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
 .proj-row{
   display:flex; align-items:center; gap:12px;
   padding:9px 12px; border:1px solid #1e2735; border-radius:var(--r-sm);
@@ -1181,7 +1258,7 @@ input[type=search]:focus{
 }
 .proj-row:hover{border-color:#2c3a4f;}
 /* 竖排版：标签独占一行，控件摊在下面占满宽度（三轴的选项网格用） */
-.proj-row.col{flex-direction:column; align-items:stretch; gap:9px; padding:11px 12px;}
+.proj-row.col{flex-direction:column; align-items:stretch; gap:9px; padding:9px 12px;}
 .proj-row.col .proj-kind{width:auto;}
 
 /* ---- 三轴「点选网格」：点一下即选中（替代原来的下拉） ----
@@ -1199,7 +1276,9 @@ input[type=search]:focus{
 .popt b{font-size:12.5px; font-weight:600; color:#dbe5f5; line-height:1.35;}
 .popt span{
   font-size:11px; line-height:1.5; color:#7f8ea8;
-  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden;
+  /* 🔴 限 2 行（曾 3 行）：desc 的全文在弹窗下方的说明小字里有完整版，卡片里截断不丢信息；
+     不截的话「制作调性」5 张卡占 3 排，整块被折到弹窗可视区外，用户以为没法改 */
+  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden;
 }
 /* 选中态：蓝描边 + 淡蓝底 + 右上角勾（不靠颜色单一维度表达，色弱也认得出） */
 .popt.on{
@@ -1237,6 +1316,10 @@ input[type=search]:focus{
   border:1px dashed rgba(59,130,246,.25); border-radius:var(--r-sm);
 }
 .proj-dialog .row{margin:16px 22px 18px;}
+/* 弹窗自身是滚动容器（四轴选项卡高，877px 视口也放不下全部）——
+   滚动条太素用户发现不了「下面还有」→ 加深一点 + hover 提亮 */
+.proj-dialog::-webkit-scrollbar-thumb{background:#39465e; border-color:#141a25;}
+.proj-dialog::-webkit-scrollbar-thumb:hover{background:#4c5b78;}
 
 /* 设置页时侧栏「设置」按钮高亮（与页面一致，不再高亮项目树） */
 .btn-new.on{

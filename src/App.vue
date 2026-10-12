@@ -4,7 +4,7 @@
   <header class="titlebar">
     <div class="tb-brand">
       <span class="tb-logo"></span>
-      <span class="tb-name">飞鱼AI短剧 Studio</span>
+      <span class="tb-name">飞鱼AI视频导演台</span>
     </div>
     <span class="tb-sep"></span>
     <div class="tb-crumb">
@@ -418,7 +418,9 @@
       <input v-if="projModal.mode === 'create'" class="proj-name" type="text" v-model="projModal.name"
              placeholder="项目名称" @keyup.enter="confirmProj" />
 
+      <!-- 分辨率 ×3 + 视频质量 = 2×2 紧凑格（压弹窗高度，四轴选项卡才能少折进折叠线） -->
       <div class="proj-grid">
+      <div class="proj-two">
         <div class="proj-row">
           <span class="proj-kind">图片分辨率</span>
           <select v-model="projModal.img"><option v-for="o in resOpts.img" :key="o.value" :value="o.value">{{ o.label }}</option></select>
@@ -438,6 +440,7 @@
             <option v-for="t in st.tierOptions" :key="t.key" :value="t.key">{{ t.label }}{{ t.default ? '（推荐）' : '' }}</option>
           </select>
         </div>
+      </div>
         <!-- 风格 = 四轴：画面风格 × 世界设定 × 内容体裁 × 制作调性（项目级）。
              规范正文里的题材词随它们替换；四轴各管一件事，组合起来才是这部片子的风格。
              🔴 2026-10-07：四轴由「下拉」改为「点选网格」（点一下即选中）——
