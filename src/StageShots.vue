@@ -18,6 +18,13 @@
               title="立即把行内标出「可与上一镜合并」的相邻镜头并掉（判据与黄标同一套：场景一致 + 角色集合一致 + 只有一方有台词 + 合计≤15s）">
         合并 {{ mergePlan.count }} 处 → {{ mergePlan.shots.length }} 镜
       </button>
+      <!-- 自动补镜（2026-10-12）：时长容量类自检的一键修复 —— **只做加法**。
+           生成时已自动做过一次（见 generate 的 fitShotCount），这里服务「手动增删镜头 / 手改时长
+           之后又不达标」的场景：把装不下的长段落按声明秒数拆成多镜。绝不含合并。 -->
+      <button v-if="capPlan.added" class="btn sm sc-btn" @click="fixShotCount()"
+              title="按各段落声明的秒数自动补镜：把「声明秒数装不下的段落」拆成多镜。只做加法（绝不合并），拆出的画面可点「AI 重写」补写">
+        自动补镜 +{{ capPlan.added }} → {{ capPlan.shots.length }} 镜
+      </button>
     </div>
 
     <!-- 场景三方一致性横幅（2026-10-10）：改编稿 §三 声明 → scenes.json 落地 → 镜头引用。
@@ -423,7 +430,7 @@ import { useProject as useProjectStore } from './stores/project.js'
 import { usePipeline, fmtMs } from './stores/pipeline.js'
 import { stepLog, secs, dbgPrompt } from './ulog.js'
 import { composeSystem, composeUser, normalizeProfile, currentStyleLimits } from './prompts.js'
-import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, mergeShotPair, mergeAllShots, fitDurs, shotCheck, storyUnits, sceneAlign, sceneCardIssues, sceneDeclIssues, charAlign, stripTailEnNote, profileBrief, splitShot, splitAll, splitTag, auditModelArchive } from './promptlib.js'
+import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, mergeShotPair, mergeAllShots, fitDurs, fitShotCount, shotCheck, storyUnits, sceneAlign, sceneCardIssues, sceneDeclIssues, charAlign, stripTailEnNote, profileBrief, splitShot, splitAll, splitTag, auditModelArchive } from './promptlib.js'
 import { parseRes, resLabel, optsWith, clampDur, seg, joinPath } from './resutil.js'
 import { baseOf, variantOf, groupProfiles } from './variant.js'
 import { touchRevs, sigEq } from './stale.js'
@@ -725,6 +732,17 @@ export default {
         const sp = splitAll(this.shots)
         this.shots = sp.shots
 
+        // 🔴 时长容量闭环（2026-10-12）：**镜头数装不下脚本声明时长**时按段落秒数补镜。
+        //    与 splitAll 是两件事：splitAll 治「单个镜头内容太多」（台词念不完），
+        //    这里治「全片/单段时长装不下」（N×15 < T，或某段 20s 却只分到 1 条镜头）。
+        //    为什么必须程序做：fitDurs 只能把 T 摊到**已有**镜头上，装不下时它会静默丢弃余量
+        //    （V9X-4 实测：6 镜 × 15s = 90s vs 脚本 105s，丢 15s，而三条既有校验全部放行）。
+        //    补出来的段同样带「✂ 程序拆分」标记 —— 撤回拆分 / AI 重写 走的是同一套（不需要新入口）。
+        //    ⚠️ 必须在 saveArtifact('shots') 之前，否则补出来的镜头落不了盘。
+        await this.loadLimits()
+        const fc = fitShotCount(this.shots, this.adapted, this.limits)
+        if (fc.added) this.shots = fc.shots
+
         // 🔴 2026-10-09（Dragon）：**总时长贴回脚本各段秒数**。durFit 只管「这一镜念不念得完」，
         //    管不住全片总长 —— 单镜 dur 要按脚本段落秒数分摊。道理：脚本写「段落 1：12 秒」，
         //    全片就该是那些秒数之和（±20%），而不是模型按「5~8 秒好看」填出来的 12 镜 / 53 秒
@@ -829,6 +847,12 @@ export default {
             sp.groups.map(g => '第 ' + (g.at + 1) + ' 镜拆成 ' + g.n + ' 段').join('；') +
             '）。拆出的画面是程序按标点粗切的，可在行内点「AI 重写」让模型补写')
         }
+        if (fc.groups.length) {
+          L.info('时长容量补齐：脚本声明 ' + (fc.totalSec || '') + ' 秒，' + (fc.shots.length - fc.added) +
+            ' 个镜头装不下 → 按各段落声明秒数补了 ' + fc.added + ' 镜（' +
+            fc.groups.map(g => '第 ' + g.seg + ' 段拆成 ' + g.n + ' 条').join('；') + '），现共 ' +
+            fc.shots.length + ' 镜（逐个镜头的秒数已按段落秒数贴回）。补出的画面同样是程序粗切的，可点「AI 重写」补写')
+        }
         if (charAligned.fixes.length) {
           L.info('镜头人物名已向角色卡对齐（剥掉定位标签）：' + charAligned.fixes.map(f => f.from + ' → ' + f.to).join('；'))
         }
@@ -843,6 +867,7 @@ export default {
           ' 个 · 场景档案 ' + scenes2.length + ' 个', Date.now() - t0)
         this.$root.toast('已生成 ' + this.shots.length + ' 个镜头、' + chars2.length + ' 个角色、' + scenes2.length + ' 个场景' +
           (sp.groups.length ? '；' + sp.groups.length + ' 个超长镜头已自动拆分（画面可在行内点「AI 重写」补写）' : '') +
+          (fc.groups.length ? '；为装下脚本 ' + fc.totalSec + 's 已自动补 ' + fc.added + ' 镜' : '') +
           (warnN ? '；有 ' + warnN + ' 个场景档案缺失，已打黄标' : '') + '，请检查编辑后确认')
 
         // 🔴 2026-10-09（Dragon）：生成后的**自检 → 自动合并**。
@@ -857,7 +882,9 @@ export default {
         //    确实合不动了才留在自检横幅上提醒（横幅带手动补合按钮）。
         await this.loadLimits()
         let chk = this.shotCheckInfo
-        if (chk.issues.length) {
+        // 🔴 只有「镜头数超限」才走自动合并（合并是**减法**）；时长容量类问题（装不下）恰恰要**加法**，
+        //    拿它触发合并只会雪上加霜 —— 那类问题已在落盘前由 fitShotCount 补镜处理，这里只如实报告。
+        if (chk.issues.some(x => x.kind === 'units')) {
           const why0 = chk.issues.map(x => x.text).join('；')
           L.warn('分镜自检不通过：' + why0 + '（上限见当前体裁的分镜规范「镜头量」一节；程序按行内同一套判据自动合并）')
           const beforeN = this.shots.length
@@ -884,6 +911,12 @@ export default {
             L.done('分镜自检通过：' + this.shots.length + ' 镜 / ' + chk.total + 's（自动合并 ' + rounds + ' 轮）')
             this.$root.toast('分镜已自动合并：' + beforeN + ' → ' + this.shots.length + ' 个镜头 · ' + chk.total + 's（自检通过；合并后的镜头提示词已标过期）')
           }
+        } else if (chk.issues.length) {
+          // 时长容量类（全片装不下 / 逐段不齐 / 脚本超体裁容量）：补镜已在落盘前由 fitShotCount 做过，
+          // 这里只如实报告 —— 合并是减法，对这类问题只会更糟，所以绝不去合并。
+          const why = chk.issues.map(x => x.text).join('；')
+          L.warn('分镜自检不通过：' + why)
+          this.$root.toast('⚠ 分镜自检：' + why)
         }
       } catch (e) {
         L.fail('分镜生成失败', Date.now() - t0, e)
@@ -1621,6 +1654,12 @@ export default {
     durTag(i) { return durTag(this.shots[i] || {}) },
     contWarn(i) { return (this.contAll && this.contAll[i]) || [] },
     mergeWarn(i) { return (this.mergeAll && this.mergeAll[i]) || '' },
+    /**
+     * 「自动补镜」预览（2026-10-12）：时长容量类自检的一键修复，**只做加法**。
+     * 生成时已自动跑过一次（generate 里的 fitShotCount），这里服务「手动增删镜头 / 手改时长后又不达标」。
+     * added = 0（含剧集体裁 / 脚本超体裁容量 / 内容超容量等不由补镜解决的情形）→ 按钮自动不渲染。
+     */
+    capPlan() { return fitShotCount(this.shots, this.adapted, this.limits) },
     /* ---- 拆镜（第 2 批）：内容超单镜 15s 上限的镜头由程序按台词边界拆开 ---- */
     /** 该镜头的拆分标记（null = 不是拆分段） */
     splitInfo(i) { return (this.shots[i] && this.shots[i]._split) || null },
@@ -1650,8 +1689,7 @@ export default {
     /** 该镜头是否被手改过（_rev 由 touchShot 递增，新生成的镜头为 1）——「整理镜头」不碰用户的手改 */
     touched(s) { return ((s && s._rev) || 1) > 1 },
     /** 「整理镜头」预览：会重算时长的镜头数 + 会拆分的组（只统计没被手改过的镜头） */
-    tidyPreview() {
-      let durFixed = 0
+    tidyPreview() {      let durFixed = 0
       const arr = this.shots.map(s => {
         if (this.touched(s)) return s
         const f = durFit(s)
@@ -1707,6 +1745,44 @@ export default {
       await this.saveVideos()
       this.$root.toast('整理完成：时长重算 ' + pv.durFixed + ' 个镜头 · 拆分 ' + sp.groups.length +
         ' 组（镜头 ' + before + ' → ' + sp.shots.length + '）；拆出的画面可点「AI 重写」补写')
+    },
+    /**
+     * 按段落秒数自动补镜（2026-10-12）：时长容量类自检的**一键加法修复**。
+     * 与 tidyShots 的分工：那个是「按内容重算时长 + 拆内容超长的镜」（整理），
+     * 这个是「把声明秒数装不下的长段落拆成多镜」（补齐容量）—— 判据与拆分机制复用同一套
+     * （fitShotCount 内部就用 splitShotParts），槽位重建也与 tidyShots 完全一致。
+     */
+    async fixShotCount() {
+      const pv = fitShotCount(this.shots, this.adapted, this.limits)
+      if (!pv.added) { this.$root.toast('无需补镜：当前镜头数已装得下脚本声明时长'); return }
+      const before = this.shots.length
+      const oldP = this.prompts, oldV = this.vstate
+      const np = [], nv = {}
+      pv.map.forEach((dsts, oi) => {
+        const op = oldP[oi], ov = oldV[oi] || {}
+        const res = ov.res || (this.st.current && this.st.current.res && this.st.current.res.vid) || '864x480'
+        if (dsts.length === 1) {
+          // 没被拆的镜头：提示词与视频记录原样搬运（只是位置可能后移）
+          np[dsts[0]] = op || { text: '', refs: emptyRefs() }
+          nv[dsts[0]] = ov
+          return
+        }
+        // 被拆开的镜头：原提示词对应整段镜头，拆开后作废；素材选择沿用；原视频记录清空（文件仍在磁盘）
+        const refs = op && op.refs ? JSON.parse(JSON.stringify(op.refs)) : emptyRefs()
+        dsts.forEach(di => {
+          np[di] = { text: '', refs: JSON.parse(JSON.stringify(refs)) }
+          nv[di] = { files: [], cur: -1, confirmed: false, res }
+        })
+      })
+      this.shots = pv.shots
+      this.prompts = np
+      this.vstate = nv
+      this.syncSlots()
+      await this.saveShots()
+      await this.savePrompts()
+      await this.saveVideos()
+      this.$root.toast('已自动补镜：' + before + ' → ' + pv.shots.length + ' 镜（+' + pv.added +
+        '），秒数按各段落声明贴回；拆出的画面可点「AI 重写」补写')
     },
     /**
      * 让 AI 为拆出来的每一段重写「画面动作 / 镜头语言」。

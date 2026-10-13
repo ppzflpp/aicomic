@@ -488,6 +488,12 @@ const CPS = 4.5
 const PAUSE = 1
 /** 复合运镜的时长下限（秒）：两段运镜挤进 1 秒是废镜 */
 const COMPOUND_MIN = 6
+/**
+ * 舒适单镜时长（秒）：容量规划的目标值 —— 让镜头落在 12s 上下，
+ * 而不是贴着 DUR_MAX(15s) 硬顶。低于它 = 镜头数够用；逼近/贴住它 = 在硬撑。
+ * 与 DUR_MAX 之差（3s）就是「给内容留的呼吸量」。
+ */
+const DUR_COMFORT = 12
 /** 单行台词的字数硬上限：超过它一行就占满整镜，必须切开（由 DUR_MAX 与 CPS 派生 = 63 字） */
 const LINE_CHAR_MAX = Math.floor((DUR_MAX - PAUSE) * CPS)
 
@@ -736,14 +742,31 @@ export function splitShot(s, gid) {
   const src = s || {}
   const n = durNeed(src)
   if (!(n.need > DUR_MAX)) return null
+  return splitShotParts(src, Math.max(2, Math.ceil(n.need / DUR_MAX)), gid)
+}
 
-  const want = Math.max(2, Math.ceil(n.need / DUR_MAX))
+/**
+ * 按**指定段数**拆一条镜头（纯函数，2026-10-12）—— splitShot 的底层实现，也是容量规划的入口。
+ * 与 splitShot 的唯一区别：段数由调用方给定（容量规划算出来的「这段需要几条镜头」），
+ * 而不是由内容（台词/发声）推算。切分机制完全共用：
+ *   台词 —— 按行边界分组（行是最小语义单位，绝不切半行）；**台词实在装不下时以台词为准**，
+ *           段数可能多于 want（`parts = max(want, 台词组数, 2)`），绝不把两句话塞进同一段。
+ *   动作 —— 按标点句边界切，再按各段台词量分配。
+ *   镜头语言 —— 沿用原值；连续性 —— 每段写完整快照，change 只挂最后一段。
+ * @param {object} s    待拆镜头
+ * @param {number} want 期望段数（< 2 时按 2 处理）
+ * @param {string} gid  组标识（不传则自生成）
+ * @returns {Array} 长度 ≥2 的镜头序列，每段带 _split = {gid, k, n, ai, src}
+ */
+export function splitShotParts(s, want, gid) {
+  const src = s || {}
   const id = gid || ('sp' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6))
+  const wantN = Math.max(2, Math.round(Number(want) || 2))
 
   // 台词：取行 → 超长行按单行字数上限切开 → 按「每段念得完」分组；段数由内容定（可能多于 want）
   const raw = String(src.dialogue || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean)
-  const dlgGroups = groupByLines(splitLongLines(raw), want)
-  const parts = Math.max(want, dlgGroups.length, 2)
+  const dlgGroups = groupByLines(splitLongLines(raw), wantN)
+  const parts = Math.max(wantN, dlgGroups.length, 2)
 
   // 动作：切句 → 按各段台词量分配（台词为空 = 纯发声镜头时按句数均分）
   const sents = splitSentences(src.action, parts)
@@ -1097,25 +1120,217 @@ export function fitDurs(list, totalSec, keep) {
   return { shots: out, changed, total: sum(out) }
 }
 
+// ---------------------------------------------------------------
+// 时长容量（2026-10-12）：把「脚本要求的时长 T」与「镜头数能装下的时长」对账
+//   为什么要有这一层：`fitDurs` 只能把 T 摊到**已有**镜头上，装不下时它的补偿循环
+//   （上面那句「自由镜头全部顶到 15s，余量无处可放」）会**静默丢弃**余量 —— 全片就短了。
+//   而此前三条校验都对它放行：durWarnings 只看「内容需要 > dur」（无台词长运镜永不告警）、
+//   shotCheck 的镜头数与总时长各自套着宽松阈值（V9X-4 实测 6 镜 × 15s = 90s vs 脚本 105s，
+//   偏差 14.3% < durTol 20% → 一声不响，用户只能靠肉眼数出「全是 15s」）。
+//
+//   本层判据是**纯算术**：(镜头数, 脚本总秒数, 各段声明秒数) 的属性，与模型写了什么无关 ——
+//   所以给 0 容忍、不走 durTol，并且**只认「时长：」已声明的体裁**（剧集没有声明 → 整层跳过）。
+//
+//   三种「装不下」的形状里只有前两种是**容量**问题（第三种「单个镜头内容超 15s」由
+//   durWarnings 逐镜黄标 + splitAll 自动拆分负责，不在这里重复判）：
+//     ① 全片装不下        N × 15 < T                      → capacity-short（会丢秒）
+//     ② 分布装不下        段落 20s 却只分到 1 条（容量 15s）→ capacity-seg（总时长对，但逐段不齐）
+//   再看脚本自身是否对本体裁不自洽：逐段对齐需 Σmax(1,⌈秒/15⌉) 镜 > 体裁上限 → capacity-script（回上游）
+//   🔴 ②是此前**完全没有**的（「逐段对齐」只写在 shots-ad.md 里、程序零校验）——
+//      7 镜 × 15s = 105s 那种「总时长一分不差、单镜全贴硬顶」全靠它才抓得住。
+// ---------------------------------------------------------------
+
+/**
+ * 容量对账（纯函数）。
+ * @returns {{totalSec, units, segSecs, shots, capN, needN, comfortN, targetN, capacity,
+ *            floorSum, deficit, aligned, cur, needSeg, needTotal, segShort, issues}}
+ *   totalSec  脚本总秒数 T（各段「时长：」之和；无声明 = 0 → 调用方整层跳过）
+ *   units     段落数；segSecs 各段声明秒数（按出现顺序）
+ *   shots     镜头数 N；capN 体裁允许的镜头数上限 ceil(段落数 × shotsPerUnit)（没声明 = 0 = 不判）
+ *   needN     全局：装得下 T 所需的**最少**镜头数 ceil(T / 15)
+ *   comfortN  全局：不贴硬顶所需的镜头数 ceil(T / 12)
+ *   targetN   建议补到的镜头数 min(capN, max(N, needTotal 或 comfortN))
+ *   capacity  现有镜头数的时长容量 N × 15
+ *   floorSum  内容硬下限之和 Σ durFit（台词 / 发声 / 复合运镜；每镜已封顶 15，供参考）
+ *   deficit   全局结构性短缺 T − capacity（> 0 = 必然丢秒）
+ *   aligned   段落秒数可用（segSecs 条数与段落数一致）→ 才做「逐段对齐」判定
+ *   cur       各段落当前拥有的镜头数（按镜头顺序分派）；needSeg 各段落**需要**的镜头数 max(1, ceil(秒/15))
+ *   needTotal Σ needSeg（逐段对齐所需的镜头数）；segShort 对不齐的段落 [{at, sec, got, need}]
+ *   issues    kind ∈ capacity-script | capacity-short | capacity-seg
+ */
+export function shotCapacity({ shots = [], adapted = '', limits = {} } = {}) {
+  const list = Array.isArray(shots) ? shots : []
+  const u = storyUnits(adapted)
+  const perUnit = Number(limits && limits.shotsPerUnit) || 0
+  const T = u.hasSec ? u.totalSec : 0
+  const N = list.length
+  const capN = (u.count && perUnit) ? Math.ceil(u.count * perUnit) : 0
+  const needN = T ? Math.ceil(T / DUR_MAX) : 0
+  const comfortN = T ? Math.ceil(T / DUR_COMFORT) : 0
+  const capacity = N * DUR_MAX
+  const floorSum = list.reduce((a, s) => a + (durFit(s) || 0), 0)
+  const deficit = T ? Math.max(0, T - capacity) : 0
+  // 逐段对齐（「每一镜的 dur 要贴近它所在段落的声明秒数」——此前只写在 shots-ad.md 里，程序零校验）
+  const aligned = !!(u.count > 0 && (u.segSecs || []).length === u.count)
+  const needSeg = aligned ? u.segSecs.map(s => Math.max(1, Math.ceil(s / DUR_MAX))) : []
+  const needTotal = needSeg.reduce((a, b) => a + b, 0)
+  const cur = (aligned && N >= u.count) ? groupBySegments(N, u.segSecs, T) : []
+  const segShort = (cur.length === u.count)
+    ? needSeg.map((k, i) => ({ at: i + 1, sec: u.segSecs[i], got: cur[i], need: k })).filter(x => x.got < x.need)
+    : []
+  const targetN = capN ? Math.min(capN, Math.max(N, aligned ? needTotal : comfortN)) : 0
+
+  const issues = []
+  const reqN = aligned ? needTotal : needN
+  if (T && capN && reqN > capN) {
+    // 脚本分布对本体裁的容量假设不自洽：拆到上限也装不下 —— 只能回上游（拆段落 / 减时长），程序不瞎拆
+    issues.push({
+      kind: 'capacity-script',
+      text: '脚本 ' + T + 's 对本体裁超容：' + (aligned
+        ? '按逐段对齐需要 ' + needTotal + ' 镜（各段 max(1, ⌈秒数/' + DUR_MAX + '⌉) 之和）'
+        : '至少要 ' + needN + ' 镜') +
+        '，而本体裁上限只有 ' + capN + ' 镜（' + u.count + ' 段落 × ' + perUnit + '）。' +
+        '请回改编稿把段落拆细 —— 每段声明 ≤' + DUR_MAX + 's 时一段一镜即自洽；或者删减总时长'
+    })
+  } else if (deficit > 0) {
+    issues.push({
+      kind: 'capacity-short',
+      text: N + ' 镜装不下脚本 ' + T + 's（' + N + '×' + DUR_MAX + 's=' + capacity + 's）—— 会全员顶到 ' +
+        DUR_MAX + 's 硬顶、丢掉 ' + deficit + 's。建议补到 ' + targetN + ' 镜（' + needN +
+        ' 镜是硬下限，' + comfortN + ' 镜可让单镜落在 ' + DUR_COMFORT + 's 上下）'
+    })
+  } else if (segShort.length) {
+    issues.push({
+      kind: 'capacity-seg',
+      text: '逐段对不齐：第 ' + segShort.slice(0, 4).map(x => x.at).join('、') +
+        (segShort.length > 4 ? ' 等 ' : ' ') + '段落声明 ' +
+        segShort.slice(0, 4).map(x => x.sec + 's').join('/') +
+        '，却只有 ' + segShort.slice(0, 4).map(x => x.got + ' 个镜头').join('/') +
+        '（容量 ' + segShort.slice(0, 4).map(x => x.got * DUR_MAX + 's').join('/') +
+        '）—— 总时长对得上，但这几段的内容被压进更少的镜头里。建议补到 ' + targetN + ' 镜'
+    })
+  }
+  return { totalSec: T, units: u.count, segSecs: u.segSecs || [], shots: N, capN, needN, comfortN,
+           targetN, capacity, floorSum, deficit, aligned, cur, needSeg, needTotal, segShort, issues }
+}
+
+/**
+ * 把 N 条镜头按**出现顺序**分给 units 个段落（按各段声明秒数占比，最大余数法对齐）。
+ * 生成期「段落顺序 = 镜头顺序」，所以顺序分组是可靠的分派依据。
+ * 保证每段至少 1 条、总和恰为 N（N < units 时返回全 1，调用方据此放弃）。
+ */
+function groupBySegments(N, seg, total) {
+  const units = seg.length
+  const out = new Array(units).fill(1)
+  const rest = N - units
+  if (rest <= 0) return out
+  const T = total || seg.reduce((a, b) => a + b, 0) || 1
+  const raw = seg.map(s => (rest * s) / T)
+  const frac = []
+  for (let i = 0; i < units; i++) { const f = Math.floor(raw[i]); out[i] += f; frac.push({ i, f: raw[i] - f }) }
+  let used = out.reduce((a, b) => a + b, 0)
+  frac.sort((a, b) => (b.f - a.f) || (a.i - b.i))
+  for (let k = 0; k < frac.length && used < N; k++) { out[frac[k].i]++; used++ }
+  return out
+}
+
+/**
+ * 容量补齐（纯函数）：镜头数装不下脚本总时长时，按各段落声明的秒数把**长段落**拆成多镜，
+ * 直到容量够 —— 这是 `fitDurs` 丢时长问题的**根治**（把 N 变成「由 T 反推」的变量）。
+ *
+ * 与 splitAll 的分工（两者互补，生成期都要跑）：
+ *   splitAll     治「**单个**镜头内容太多」（台词 / 发声 > 15s）：按台词边界拆。
+ *   fitShotCount 治「**全片 / 单段**时长装不下」（N × 15 < T，或某段落拿到的镜头数装不下它的声明秒数）：
+ *                按**段落秒数**拆 —— 补镜量 = 该段需要的条数 − 它已有的条数。
+ *
+ * 拆分粒度是「段落」：一段声明 20s 需要 ceil(20/15)=2 条；25s → 2 条。
+ * 本函数只定**条数**，具体每条的秒数交给随后跑的 fitDurs 贴回（分工不重叠）。
+ * 🔴 一个段落已有 k 条时，只把其中**最长的那条**（最可能是在硬撑的）拆成 (want−k+1) 段。
+ * 🔴 判据是**逐段**的：不仅「全片装不下」要补，「总时长恰好对得上、但某几段被压进更少镜头」
+ *    也要补（shots-ad.md 的「逐段对齐」此前只写在 md 里，程序零校验 → 7 镜 105s 那种
+ *    「总时长完美、单镜全 15s」就会漏过去）。
+ *
+ * @returns {{shots, groups, map, added, reason, totalSec}}
+ *   groups / map 语义与 splitAll **完全一致**（map[旧下标] = 新下标数组），调用方按同一套逻辑重建槽位。
+ *   reason: '' 未动 | 'capacity' 已补镜 | 'script' 脚本超体裁容量（回上游）
+ *           | 'nolimit' 体裁没声明上限
+ *           | 'align' 段落秒数拿不到 / 镜头比段落少 | 'aligned' 算下来无需新增
+ */
+export function fitShotCount(shots, adapted, limits) {
+  const arr = Array.isArray(shots) ? shots : []
+  const noop = { shots: arr, groups: [], map: arr.map((_, i) => [i]), added: 0, reason: '' }
+  const cap = shotCapacity({ shots: arr, adapted, limits })
+  if (!cap.totalSec) return noop                                  // 没有「时长：」声明（剧集）→ 整层跳过
+  if (!cap.capN) return { ...noop, reason: 'nolimit' }             // 体裁没声明镜头量上限 → 不猜
+  if (!cap.aligned) return { ...noop, reason: 'align' }            // 段落秒数拿不到 → 不猜分组
+  const units = cap.units
+  if (arr.length < units) return { ...noop, reason: 'align' }      // 镜头比段落还少 → 是漏镜，不是容量问题
+  if (cap.needTotal > cap.capN) return { ...noop, reason: 'script' } // 拆到上限也装不下 → 回上游
+
+  const seg = cap.segSecs.slice()
+  const need = cap.needSeg.slice()
+  const comfort = seg.map(s => Math.max(1, Math.ceil(s / DUR_COMFORT)))
+  const sum = a => a.reduce((x, y) => x + y, 0)
+  // 目标条数：优先「舒适」（单镜 ~12s，尽量不贴硬顶），受体裁上限约束；退而求其次「够装」
+  let want
+  if (sum(comfort) <= cap.capN) want = comfort
+  else if (sum(need) <= cap.capN) want = need
+  else return { ...noop, reason: 'script' }
+
+  const cur = cap.cur
+  const out = [], groups = [], map = []
+  let si = 0
+  for (let i = 0; i < units; i++) {
+    const k = cur[i]
+    const owned = arr.slice(si, si + k)
+    si += k
+    const grow = (want[i] > owned.length) ? (want[i] - owned.length + 1) : 0
+    if (grow >= 2) {
+      // 拆这段里「最长」的那条（顶格的那条最可能是在硬撑）
+      let bi = 0
+      for (let j = 1; j < owned.length; j++) {
+        if ((Number(owned[j].dur) || 0) > (Number(owned[bi].dur) || 0)) bi = j
+      }
+      for (let j = 0; j < owned.length; j++) {
+        if (j === bi) {
+          const parts = splitShotParts(owned[j], grow)
+          const at = out.length
+          groups.push({ gid: parts[0]._split.gid, at, n: parts.length, seg: i + 1 })
+          map.push(parts.map((_, kk) => at + kk))
+          for (const p of parts) out.push(p)
+        } else {
+          map.push([out.length]); out.push(owned[j])
+        }
+      }
+    } else {
+      for (const s of owned) { map.push([out.length]); out.push(s) }
+    }
+  }
+  if (!groups.length) return { ...noop, reason: 'aligned', totalSec: cap.totalSec }
+  return { shots: out, groups, map, added: out.length - arr.length, reason: 'capacity', totalSec: cap.totalSec }
+}
+
 /**
  * 改编稿的「叙事单元」结构（纯函数，2026-10-09；分镜自检用）。
  *   广告体裁的改编稿写成 `段落 N：地点·内外` + `时长：N 秒`；
  *   剧集体裁写成 `场次 N：地点·内外`（没有时长行）。
  * 数出：单元数 / 单元名 / 各单元秒数之和（没有时长行 → totalSec=0、hasSec=false，调用方据此跳过时长校验）。
  * 🔴 只认**行首**的 `段落 N：` / `场次 N：`（可带前置空白）；正文里叙述性的「第二段落」不算单元。
- * @returns {{count: number, heads: Array<{n:number,name:string}>, totalSec: number, hasSec: boolean}}
+ * @returns {{count: number, heads: Array<{n:number,name:string}>, segSecs: number[], totalSec: number, hasSec: boolean}}
+ *   segSecs —— 各段落声明的秒数（**按出现顺序**，容量规划按它逐段配镜；条数与 count 不一致时调用方自行降级）
  */
 export function storyUnits(md) {
   const heads = []
+  const segSecs = []
   let totalSec = 0, hasSec = false
   for (const raw of String(md == null ? '' : md).split(/\r?\n/)) {
     const ln = raw.trim()
     let m = ln.match(/^(?:段落|场次)\s*(\d+)\s*[：:]\s*(.+)$/)
     if (m) { heads.push({ n: Number(m[1]), name: m[2].trim() }); continue }
     m = ln.match(/^(?:时长|本段时长|段落时长)\s*[：:]\s*(\d+(?:\.\d+)?)\s*秒/)
-    if (m) { totalSec += Number(m[1]); hasSec = true }
+    if (m) { const v = Number(m[1]); segSecs.push(v); totalSec += v; hasSec = true }
   }
-  return { count: heads.length, heads, totalSec: hasSec ? Math.round(totalSec) : 0, hasSec }
+  return { count: heads.length, heads, segSecs, totalSec: hasSec ? Math.round(totalSec) : 0, hasSec }
 }
 
 /**
@@ -1129,7 +1344,10 @@ export function storyUnits(md) {
  * limits 由**体裁声明**（genre json 的 `limits: {shotsPerUnit, durTol}`）——
  * 剧集体裁的镜头量不是按段落数算的（基座是「每 1000 字 8-15 镜」），声明缺席就不判，
  * 免得给剧集项目刷假警报。
- * @returns {{units:number, shots:number, total:number, cap:{units:number,durLo:number,durHi:number}, issues:Array<{kind:string,text:string}>}}
+ * 🔴 2026-10-12 起多一层：**时长容量**（shotCapacity）——判「N 个镜头装不装得下脚本 T 秒」，
+ *    纯算术、0 容忍、不受 durTol 影响。issue.kind ∈ units | capacity-script | capacity-short |
+ *    capacity-content | dur（最后一条只在容量层没话说时才出）。
+ * @returns {{units:number, shots:number, total:number, cap:object, capacity:object, issues:Array<{kind:string,text:string}>}}
  */
 export function shotCheck({ shots = [], adapted = '', limits = {} } = {}) {
   const list = Array.isArray(shots) ? shots : []
@@ -1143,14 +1361,21 @@ export function shotCheck({ shots = [], adapted = '', limits = {} } = {}) {
   if (cap.units && n > cap.units) {
     issues.push({ kind: 'units', text: '镜头数 ' + n + ' 个，超过上限 ' + cap.units + ' 个（脚本 ' + u.count + ' 个段落 × ' + perUnit + '）' })
   }
-  if (u.hasSec && durTol) {
+  // 🔴 时长容量（2026-10-12）：纯算术判据、0 容忍，**不走 durTol**。
+  //    上面那条宽松阈值（±20%）会把「结构性装不下」当成「节奏略偏」放行 ——
+  //    V9X-4 实测 6 镜 90s vs 脚本 105s（偏差 14.3%）就这么溜过去了。
+  const capty = shotCapacity({ shots: list, adapted, limits })
+  for (const it of capty.issues) issues.push(it)
+  // 容量层已经给出更精确的诊断时，不再用那条宽松判据重复报同一件事
+  const durExplained = capty.issues.length > 0
+  if (u.hasSec && durTol && !durExplained) {
     cap.durLo = Math.floor(u.totalSec * (1 - durTol))
     cap.durHi = Math.ceil(u.totalSec * (1 + durTol))
     if (total < cap.durLo || total > cap.durHi) {
       issues.push({ kind: 'dur', text: '总时长 ' + total + 's，超出脚本 ' + u.totalSec + 's 的 ±' + Math.round(durTol * 100) + '% 区间（' + cap.durLo + '-' + cap.durHi + 's）' })
     }
   }
-  return { units: u.count, shots: n, total, cap, issues }
+  return { units: u.count, shots: n, total, cap, capacity: capty, issues }
 }
 
 // ---------------------------------------------------------------
