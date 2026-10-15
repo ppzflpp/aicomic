@@ -308,7 +308,17 @@
                 <textarea v-model="chapter" rows="10" placeholder="粘贴小说章节原文…" @change="st.saveChapter(chapter)"></textarea>
               </div>
               <div class="script-col">
-                <p class="zone-label">AI 优化稿</p>
+                <!-- 小字区标 + 节奏体检卡（2026-10-13 Dragon）：StageShots 把**节奏体检卡**（`.pace-card`）
+                     Teleport 到右栏这里 —— 目标时长 T 是**上游输入**（它决定镜数 N），该在写剧本时就设。
+                     🔴 这是目标时长的**唯一入口**：项目配置弹窗里那个同名输入已于同日删除
+                        （见下方 proj-grid 里的说明），避免一个概念两处并存。
+                     🔴 落点必须是 .zone-label 的**兄弟节点**，不能塞进 <p class="zone-label"> 里 ——
+                        verify3 断言 .zone-label 的文本**恰好**是 ['原文输入','AI 优化稿']，
+                        塞进去会让它变成「AI 优化稿95」这种脏串（同时还会破坏它的字号断言）。 -->
+                <div class="zone-label-row">
+                  <p class="zone-label">AI 优化稿</p>
+                  <span id="adapt-pace" style="display:inline-flex;align-items:center;min-width:0"></span>
+                </div>
                 <stage-adapt />
               </div>
             </div>
@@ -337,6 +347,10 @@
           <div class="stage-head">
             <span class="s-num">3</span>
             <span class="s-title">分镜脚本</span>
+            <!-- 分镜总时长落点（2026-10-13，Dragon）：StageShots 把「所有镜头 dur 合计」Teleport 到这里，
+                 实时跟随编辑。行头那颗「分镜 X」后面的单镜秒数已删除 —— 汇总放模块标题、明细在编辑区，
+                 同一屏不重复两遍。 -->
+            <span id="shots-total" style="display:inline-flex;align-items:center"></span>
             <span v-if="headStale('shots')" class="stale head-stale" title="点击消除提示"
                   @click="ackHead('shots')">{{ headStale('shots') }}</span>
             <span style="flex:1"></span>
@@ -418,29 +432,69 @@
       <input v-if="projModal.mode === 'create'" class="proj-name" type="text" v-model="projModal.name"
              placeholder="项目名称" @keyup.enter="confirmProj" />
 
-      <!-- 分辨率 ×3 + 视频质量 = 2×2 紧凑格（压弹窗高度，四轴选项卡才能少折进折叠线） -->
+      <!-- 视频质量 / 视频比例 / 三个分辨率（2026-10-15）：
+           质量与比例是**上游两个输入**，选定后下面三个分辨率自动带出推荐值（带「推荐」角标）。
+           推荐画布不在前端硬编码 —— 随档位表由主进程 tierCanvas 下发（见 stores/project.js 的 recCanvas）。 -->
       <div class="proj-grid">
-      <div class="proj-two">
-        <div class="proj-row">
-          <span class="proj-kind">图片分辨率</span>
-          <select v-model="projModal.img"><option v-for="o in resOpts.img" :key="o.value" :value="o.value">{{ o.label }}</option></select>
-        </div>
-        <div class="proj-row">
-          <span class="proj-kind">视频分辨率</span>
-          <select v-model="projModal.vid"><option v-for="o in resOpts.vid" :key="o.value" :value="o.value">{{ o.label }}</option></select>
-        </div>
-        <div class="proj-row">
-          <span class="proj-kind">成片分辨率</span>
-          <select v-model="projModal.out"><option v-for="o in resOpts.out" :key="o.value" :value="o.value">{{ o.label }}</option></select>
-        </div>
-        <!-- 视频生成档位：项目级。选项由主进程档位注册表给出（UI 不硬编码、不出现任何模型信息） -->
-        <div class="proj-row">
+        <div class="proj-row col">
           <span class="proj-kind">视频质量</span>
-          <select class="proj-tier" v-model="projModal.tier">
-            <option v-for="t in st.tierOptions" :key="t.key" :value="t.key">{{ t.label }}{{ t.default ? '（推荐）' : '' }}</option>
-          </select>
+          <div class="popt-grid proj-tier-grid">
+            <button type="button" v-for="t in st.tierOptions" :key="t.key"
+                    class="popt" :class="{on: projModal.tier === t.key}"
+                    :data-tier="t.key" @click="pickTier(t.key)">
+              <b>{{ t.label }}</b>
+              <span v-if="t.desc">{{ t.desc }}</span>
+            </button>
+          </div>
         </div>
+        <div class="proj-row col">
+          <span class="proj-kind">视频比例</span>
+          <div class="popt-grid proj-aspect-grid">
+            <button type="button" v-for="a in st.aspectOptions" :key="a.id"
+                    class="popt" :class="{on: projModal.aspect === a.id}"
+                    :data-aspect="a.id" @click="pickAspect(a.id)">
+              <b>{{ a.label }}</b>
+              <span v-if="a.desc">{{ a.desc }}</span>
+            </button>
+          </div>
+        </div>
+        <!-- 三个分辨率：下拉按当前比例过滤（横版只列横版档位），避免选出比例对不上的值 -->
+        <div class="proj-two">
+          <div class="proj-row">
+            <span class="proj-kind">图片分辨率</span>
+            <select v-model="projModal.img" @change="onResPick('img')">
+              <option v-for="o in st.resOptsFor('img', projModal.aspect)" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+            <em class="proj-rec" v-if="isRec('img')">推荐</em>
+            <button type="button" class="proj-recbtn" v-else-if="touched('img')" @click="restoreRec('img')">恢复推荐</button>
+          </div>
+          <div class="proj-row">
+            <span class="proj-kind">视频分辨率</span>
+            <select v-model="projModal.vid" @change="onResPick('vid')">
+              <option v-for="o in st.resOptsFor('vid', projModal.aspect)" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+            <em class="proj-rec" v-if="isRec('vid')">推荐</em>
+            <button type="button" class="proj-recbtn" v-else-if="touched('vid')" @click="restoreRec('vid')">恢复推荐</button>
+          </div>
+          <div class="proj-row">
+            <span class="proj-kind">成片分辨率</span>
+            <select v-model="projModal.out" @change="onResPick('out')">
+              <option v-for="o in st.resOptsFor('out', projModal.aspect)" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+            <em class="proj-rec" v-if="isRec('out')">推荐</em>
+            <button type="button" class="proj-recbtn" v-else-if="touched('out')" @click="restoreRec('out')">恢复推荐</button>
+          </div>
+        </div>
+        <!-- 🔴 2026-10-13：此处原来的「单集目标时长」输入**已删除**（用户要求）。
+             它是「本集要铺多长」这个**上游输入**的入口，但同一份数据（projects.target_sec）
+             在剧本创作页已有更好的落点 —— 右栏「AI 优化稿」旁的**节奏体检卡**（`.pace-card`，
+             StageShots 用 Teleport 挂过去），那里还能同时看见「B 个画面单元 → N* 镜」的推导结果。
+             原则：**一个概念只留一个入口**，两处并存时用户改哪边都不确定哪边生效。
+             ⚠️ 保存项目配置时**不再提交** targetSec —— 主进程 setProjectRes 是 COALESCE 语义
+             （缺字段 = 保留原值），所以弹窗保存**不会**把节奏卡设好的时长清零。
+             新建项目落到 DB 默认值 0（不启用双轨配时），与存量项目一致。 -->
       </div>
+      <div class="proj-grid proj-grid-style">
         <!-- 风格 = 四轴：画面风格 × 世界设定 × 内容体裁 × 制作调性（项目级）。
              规范正文里的题材词随它们替换；四轴各管一件事，组合起来才是这部片子的风格。
              🔴 2026-10-07：四轴由「下拉」改为「点选网格」（点一下即选中）——
@@ -495,14 +549,14 @@
           </div>
         </div>
       </div>
-      <p class="proj-hint" v-if="projTierDesc()">{{ projTierDesc() }}</p>
+      <p class="proj-hint warn" v-if="projMismatch()">{{ projMismatch() }}</p>
       <p class="proj-hint" v-if="projStyleDesc()">{{ projStyleDesc() }}</p>
       <p class="proj-hint warn" v-if="projStyleIssue()">{{ projStyleIssue() }}</p>
 
       <div class="proj-note">
         {{ projModal.mode === 'create'
-          ? '风格与视频质量对本项目的所有剧集立即生效；分辨率只作为新建剧集的初始值。'
-          : '⚠ 风格与视频质量立即对全部剧集生效；分辨率修改只影响之后新建的剧集。' }}
+          ? '风格与视频质量影响本项目所有剧集；分辨率仅作为新建剧集的初始值。'
+          : '⚠ 风格与视频质量会立即影响所有剧集；分辨率改动只作用于之后新建的剧集。' }}
       </div>
 
       <div class="row">
@@ -804,21 +858,29 @@ export default {
       this.pl.autoAdapt = true
       this.toast('已确认原文，正在自动改编…')
     },
-    /** 新建项目：弹窗里一并定三个分辨率 + 视频生成档位 + 风格三轴（都是项目级） */
+    /** 新建项目：弹窗里一并定**视频质量 + 视频比例 + 三个分辨率** + 风格四轴（都是项目级）。
+     *  2026-10-15：三个分辨率不再是「下拉第一项」，而是「档位 + 比例」的**推荐值** ——
+     *  画布必须与该档位实际挂的加速模型训练分辨率匹配，否则镜头构图会漂到全景（2026-10-15 实测）。 */
     newProject() {
-      const d = this.st.resOptions || { img: [], vid: [], out: [] }
       const ax = this.st.defaultAxes()
+      const tier = this.st.defaultTier()
+      const aspect = '16:9'
+      const rec = this.st.recRes(tier, aspect)
+      // 兜底：档位表没声明画布（老方案 / 加载未完成）时退回「该比例下下拉的第一项」
+      const fb = (kind, dv) => ((this.st.resOptsFor(kind, aspect) || [])[0] || {}).value || dv
       this.projModal = {
         mode: 'create', id: null, name: '',
-        img: (d.img[0] || {}).value || '1920x1080',
-        vid: (d.vid[0] || {}).value || '864x480',
-        out: (d.out[0] || {}).value || '1920x1080',
-        tier: this.st.defaultTier(),
+        img: rec ? rec.img : fb('img', '1920x1080'),
+        vid: rec ? rec.vid : fb('vid', '864x480'),
+        out: rec ? rec.out : fb('out', '1920x1080'),
+        tier, aspect,
+        /** 用户手动改过哪个分辨率 —— 联动（改档位 / 改比例）就不再覆盖它，避免把用户的选择冲掉 */
+        touched: { img: false, vid: false, out: false },
         render: ax.render, world: ax.world, genre: ax.genre, tone: ax.tone,
         styleOld: ''
       }
     },
-    /** 项目配置：读项目当前三项 + 视频档位 + 风格三轴；分辨率改了只影响之后新建的剧集，
+    /** 项目配置：读项目当前三项 + 视频档位 + 比例 + 风格四轴；分辨率改了只影响之后新建的剧集，
      *  档位与风格立即生效（风格决定提示词规范里的题材词，见 prompts.js 的 readPrompt） */
     openProjCfg(pid) {
       const p = this.st.tree.find(x => x.id === pid)
@@ -830,33 +892,98 @@ export default {
       // 但是否真的改掉由用户点保存决定（projStyleIssue 会明确提示"原来用的 X 已不存在"）
       const fix = (ax) => this.st.axisOptions(ax).some(x => x.id === tri[ax])
         ? tri[ax] : ((this.st.axisOptions(ax)[0] || {}).id || tri[ax])
+      // 🔴 2026-10-15 比例：主端 readRes 已对存量项目按 res_vid 宽高推断好（aspect 列可空），
+      //    这里再兜一层推断，纯前端刷新（不落库）时也不会把比例显示成空。
+      const tier = r.tier || this.st.defaultTier()
+      const aspect = r.aspect || this.st.aspectOfRes(r.vid)
+      const rec = this.st.recRes(tier, aspect) || {}
+      const img = r.img || '1920x1080', vid = r.vid || '864x480', out = r.out || '1920x1080'
       this.projModal = {
         mode: 'edit', id: pid, name: p.name,
-        img: r.img || '1920x1080', vid: r.vid || '864x480', out: r.out || '1920x1080',
-        tier: r.tier || this.st.defaultTier(),
+        img, vid, out, tier, aspect,
+        /** 与推荐值不同 = 这一项历史上就是自定义的 → 视作 touched，改档位 / 改比例时不动它。
+         *  否则（例如老项目恰好等于推荐值）就跟默认值一样参与联动。 */
+        touched: {
+          img: !!rec.img && img !== rec.img,
+          vid: !!rec.vid && vid !== rec.vid,
+          out: !!rec.out && out !== rec.out
+        },
         render: fix('render'), world: fix('world'), genre: fix('genre'), tone: fix('tone'),
         styleOld: old
       }
     },
-    /** 当前弹窗选中的档位说明（画在 select 下方的小字） */
-    projTierDesc() {
+    /* ---------------- 视频质量 / 比例 / 三分辨率联动（2026-10-15）----------------
+     * 规则：质量与比例是上游两个输入，任一变化 → 把「档位+比例」的推荐值写回**用户没手动改过**的字段。
+     * 手动改过的字段（touched）保持不动，旁边给「恢复推荐」。 */
+
+    pickTier(key) {
       const m = this.projModal
-      const t = (this.st.tierOptions || []).find(x => x.key === (m && m.tier))
-      return t ? t.desc : ''
+      if (!m || m.tier === key) return
+      m.tier = key
+      this.applyRec()
     },
-    /** 当前弹窗四轴选择的说明小字（四轴各一句 + 若等于某个预置就点名它） */
+    pickAspect(a) {
+      const m = this.projModal
+      if (!m || m.aspect === a) return
+      m.aspect = a
+      this.applyRec()
+    },
+    /** 写回推荐值（只覆盖未 touched 的字段） */
+    applyRec() {
+      const m = this.projModal
+      if (!m) return
+      const rec = this.st.recRes(m.tier, m.aspect)
+      if (!rec) return
+      for (const k of ['img', 'vid', 'out']) if (rec[k] && !m.touched[k]) m[k] = rec[k]
+    },
+    /** 手动改分辨率：只标记 touched，互不联动。
+     *  🔴 图片分辨率与视频分辨率是各自独立的 —— 用户手动改其中一个，另一个不动。
+     *     只有「选视频质量 / 选比例」才会自动带出三个推荐值（见 pickTier / pickAspect → applyRec）。 */
+    onResPick(kind) {
+      const m = this.projModal
+      if (!m || !m.touched) return
+      m.touched[kind] = true
+    },
+    /** 当前值是否就是推荐值（决定显示「推荐」角标） */
+    isRec(kind) {
+      const m = this.projModal
+      if (!m) return false
+      const rec = this.st.recRes(m.tier, m.aspect)
+      return !!rec && !!rec[kind] && m[kind] === rec[kind]
+    },
+    touched(kind) {
+      const m = this.projModal
+      return !!(m && m.touched && m.touched[kind])
+    },
+    /** 「恢复推荐」：取消 touched 并写回推荐值 */
+    restoreRec(kind) {
+      const m = this.projModal
+      if (!m || !m.touched) return
+      m.touched[kind] = false
+      const rec = this.st.recRes(m.tier, m.aspect)
+      if (rec && rec[kind]) m[kind] = rec[kind]
+    },
+    /** 画面尺寸与该视频质量不搭配时的提醒（只讲后果，不堆技术名词） */
+    projMismatch() {
+      const m = this.projModal
+      if (!m) return ''
+      // 判据：是否在该档位「可接受」的尺寸清单里（而非等于推荐值）—— 相邻两档实际都正常，误报会让人白折腾。
+      const acc = this.st.canvasAccept(m.tier)
+      if (!acc || !acc.length || !m.vid || acc.indexOf(m.vid) >= 0) return ''
+      const rec = this.st.recCanvas(m.tier, m.aspect)
+      return '⚠ 当前画面尺寸与所选视频质量不搭配，可能让人物变小、画面不完整。建议改回 ' +
+        (rec ? rec.replace('x', '×') : '推荐尺寸') + '，或换一个视频质量。'
+    },
+    /** 风格一句话摘要（四轴卡片已展开全部说明，这里只给一句紧凑总结，不重复长说明） */
     projStyleDesc() {
       const m = this.projModal
       if (!m) return ''
-      const parts = []
-      for (const ax of ['render', 'world', 'genre', 'tone']) {
-        const o = this.st.axisOptions(ax).find(x => x.id === m[ax]) || {}
-        const t = [o.label, o.desc].filter(Boolean).join('：')
-        if (t) parts.push(t)
-      }
-      if (!parts.length) return ''
       const pre = this.st.presetNameOf({ render: m.render, world: m.world, genre: m.genre, tone: m.tone })
-      return parts.join('　｜　') + (pre ? '　（等于预置：' + pre + '）' : '')
+      if (pre) return '风格预设：' + pre
+      const labels = ['render', 'world', 'genre', 'tone']
+        .map(ax => (this.st.axisOptions(ax).find(x => x.id === m[ax]) || {}).label)
+        .filter(Boolean)
+      return labels.length ? labels.join(' · ') : ''
     },
     /**
      * 风格体系的警告（黄条）—— 两类：
@@ -886,7 +1013,9 @@ export default {
       const m = this.projModal
       if (!m) return
       const style = this.st.tripleId({ render: m.render, world: m.world, genre: m.genre, tone: m.tone })
-      const res = { img: m.img, vid: m.vid, out: m.out, tier: m.tier, style }
+      // 🔴 此处**不再提交 targetSec**（2026-10-13）：入口已收敛到剧本创作页的节奏体检卡。
+      //    主进程 setProjectRes 走 COALESCE，缺字段 = 保留原值 → 保存项目配置不会把时长清零。
+      const res = { img: m.img, vid: m.vid, out: m.out, tier: m.tier, aspect: m.aspect, style }
       if (m.mode === 'create') {
         const name = (m.name || '').trim()
         if (!name) { this.toast('请填写项目名称'); return }

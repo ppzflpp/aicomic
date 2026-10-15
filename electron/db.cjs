@@ -70,6 +70,19 @@ function init(userDataDir, documents) {
   // 存量项目自动落到它，行为与改造前一致（规范正文经风格包替换后逐字不变）。
   addColumn('projects', 'style', "TEXT NOT NULL DEFAULT 'guofeng-real'");
 
+  // 单集目标时长（2026-10-13）：双轨配时的第二根轨 —— 镜数不再由字数推，而由
+  // 「目标时长 T × 画面单元数 B」推（见 src/promptlib.js 的 pacingPlan）。
+  // '0' = 未设置 → 整层惰性（老项目行为与改造前逐字不变）。
+  // 与档位 / 风格同理 —— 项目级、对本项目所有剧集立即生效（生成时实时读项目行），不做集级快照。
+  addColumn('projects', 'target_sec', "TEXT NOT NULL DEFAULT '0'");
+
+  // 视频比例（2026-10-15）：项目级 '16:9' | '9:16'，是「档位 + 比例 → 三个分辨率推荐值」的两个上游输入之一。
+  // 🔴 **可空、且不设默认值**：存量项目的这一列是 NULL，读时由 `readRes` 按 res_vid 的宽高推断
+  //    （宽>高 → 16:9，宽<高 → 9:16），所以老项目打开配置弹窗时比例是**推断出来的**而非猜的，
+  //    行为与改造前完全一致，也不会因为猜错比例而把老项目的分辨率改掉。
+  //    只在用户**显式点了比例**时才写入（COALESCE 语义）。
+  addColumn('projects', 'aspect', 'TEXT');
+
   // 历史路径迁移（目录改为纯英文路径后，把库里残留的旧路径改写成新路径）
   migratePaths();
 

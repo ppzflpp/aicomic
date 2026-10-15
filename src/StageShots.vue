@@ -27,6 +27,31 @@
       </button>
     </div>
 
+    <!-- 节奏体检卡（2026-10-13 建；当晚 Dragon 要求**搬到「剧本创作」卡右栏「AI 优化稿」右边**）：
+         目标时长 T 是**上游输入**（它决定镜数 N），该在写剧本时就设 —— 原先只挂在分镜页，
+         得先跑一次生成才知道该填多少。落点 = App.vue 的 #adapt-pace（在「AI 优化稿」小字区标右边）。
+         🔴 Teleport 延迟挂载：块 1 的 <section :key> 与块 3 同随换集重建 → 必须等 DOM 真插入文档后
+            再渲染，否则落点找不到（与 #shots-batch 同款，tpReady 在 mounted + $nextTick 置位）。
+            两个块的 key 都是 `集id:后缀`（App.vue 的 stageKey），换集时**同时**重建 → 不会出现
+            「目标在、内容没了」的半挂状态。
+         🔴 镜数 N 由「目标时长 T × 画面单元 B」推导，而不是由改编稿的字数推（基座那条「每 1000 字 8-15 镜」
+            是给短剧快节奏写的，会把古装正剧这种高画面密度文案估短：真人剧 350 字被估成 5 镜 / 24 秒，而目标是 1 分钟）。
+            只在体裁声明了 limits.pacing 时渲染（广告不声明 → 恒不渲染，一个像素都不影响它）。
+         🔴 这里填的是「本集要铺多长」，**不是**「把每个镜头拉长」—— 时长驱动**镜数**，不是拉长单镜。 -->
+    <Teleport v-if="tpReady" to="#adapt-pace">
+      <div v-if="paceCard" class="pace-card">
+        <span class="pc-ico">🎬</span>
+        <span class="pc-txt">
+          节奏：<template v-if="paceCard.on">{{ paceCard.B }} 个画面单元 · </template>目标
+          <input class="pc-in" type="number" min="0" max="1800" step="5" v-model.number="targetSec"
+                 :disabled="busy" @change="saveTarget()"
+                 title="本集要铺多长（秒）：生成分镜时镜数由它 × 画面单元数推导；0 = 不启用。改它加的是镜头数，不是把每个镜头拉长" />
+          秒<template v-if="paceCard.on"> → <b>{{ paceCard.Nstar }}</b> 镜（均 {{ paceCard.asl }}s / 现 {{ paceCard.N }} 镜）· {{ paceCard.R }} 秒/单元（舒适 {{ paceCard.lo }}~{{ paceCard.hi }}）</template>
+          <i v-else class="pc-note">（0 = 不启用，时长按镜头内容走）</i>
+        </span>
+      </div>
+    </Teleport>
+
     <!-- 场景三方一致性横幅（2026-10-10）：改编稿 §三 声明 → scenes.json 落地 → 镜头引用。
          此前这三方从未比对过，导致「座舱·内 丢了」「四季被并成一条」这类事故程序全绿灯。
          与上面 .shot-check 分开：那个只判镜头量/时长（广告体裁专属），这个是场景档案的结构问题（所有体裁都可能）。 -->
@@ -47,8 +72,12 @@
              🔴 无锁定：所有分区随时可编辑；上游变化由 ⚠ 脏标记提示。 -->
         <div class="zone-1">
           <div class="row-head">
+            <!-- 🔴 2026-10-13（Dragon）：原来这里还挂着一颗单镜秒数（span.dur，行头显示「8s」那种），
+                 已删 —— 单镜时长在下面的分镜编辑区里能看能改，行头再挂一份是冗余；
+                 整体时长改为在**模块标题后面**汇总显示（见 App.vue 的 #shots-total）。
+                 ⚠️ 这条注释刻意**回避**那个已删类名的字面量：测试拿它做反面断言，注释里出现它会把
+                    断言直接打红（同一坑：反面断言别用裸子串，见记忆「铁律」）。 -->
             <b class="shot-tag">分镜 {{ i + 1 }}</b>
-            <span class="dur">{{ s.dur }}s</span>
             <span v-if="contWarn(i).length" class="dur-warn"
               :title="contWarn(i).join('\n')">⚠ 连续性 {{ contWarn(i).length }}</span>
             <span v-if="contTip(i)" class="cont-tag" :class="{ chg: !!s.change }"
@@ -119,16 +148,18 @@
               <div v-for="(f, k) in prompts[i].refs.images" :key="'ri' + k" class="ref-thumb"
                    draggable="true"
                    :class="{ 'drag-src': dragFrom && dragFrom.i === i && dragFrom.k === k,
-                             'drag-to': dragTo && dragTo.i === i && dragTo.k === k }"
+                             'drag-to': dragTo && dragTo.i === i && dragTo.k === k,
+                             unused: refUnused(i, 'images', k) }"
                    @dragstart="refDragStart(i, k)" @dragover.prevent="refDragOver(i, k)"
                    @drop.prevent="refDragDrop(i, k)" @dragend="refDragEnd()">
-                <img :src="refSrc(f)" :title="f" />
+                <img :src="refSrc(f)" :title="refTitle(i, 'images', k, f)" />
                 <span class="rtag">参考图</span>
                 <button class="img-x" title="移除" @click.stop="delRef(i, 'images', k)">✕</button>
               </div>
               <button v-if="caps.refImage !== false && prompts[i].refs.images.length < maxRefImg" class="ref-add" :title="'从本地选参考图（最多 ' + maxRefImg + ' 张）'" @click="addRef(i, 'images')">参考图</button>
 
-              <div v-for="(f, k) in prompts[i].refs.videos" :key="'rv' + k" class="ref-thumb vid" :title="f">
+              <div v-for="(f, k) in prompts[i].refs.videos" :key="'rv' + k" class="ref-thumb vid"
+                   :class="{ unused: refUnused(i, 'videos', k) }" :title="refTitle(i, 'videos', k, f)">
                 <video v-if="refVidSrc(f)" :src="refVidSrc(f)" controls preload="metadata"></video>
                 <div v-else class="ph-mini"><i class="spin"></i>加载中…</div>
                 <span class="rtag vid">视频</span>
@@ -166,6 +197,15 @@
                 <button class="img-x" title="移除尾帧" @click.stop="clearFrame(i, 'last')">✕</button>
               </div>
               <button v-else-if="caps.lastFrame !== false" class="ref-add" title="选一张图作为尾帧（与首帧配合可做首尾帧过渡）" @click="pickFrame(i, 'last')">尾帧</button>
+
+              <!-- 读图（2026-10-13）：本地大模型挂了视觉投影器（mmproj）时才有这个开关。
+                   开了以后生成本镜提示词会把参考图/首尾帧**真的**发给模型「看」，
+                   而不是只让它读文件名。默认关；引擎没挂 mmproj 时按钮恒不出现（零影响）。 -->
+              <button v-if="llmVision && hasRefs(i)" class="ref-eye" :class="{ on: prompts[i].refs.vision }"
+                      :title="prompts[i].refs.vision
+                        ? ('本镜已开启「读图」——生成提示词时把 ' + refImages(i).length + ' 张图交给模型；点击关闭')
+                        : '让模型先看图、再写本镜提示词（默认只读文件名与角色档案）'"
+                      @click.stop="toggleRefVision(i)">读图</button>
             </div>
           </div>
 
@@ -186,8 +226,8 @@
           <!-- 底部：生成路线提示靠左｜视频分辨率 + 生成视频按钮靠右 -->
           <div class="cops zone-foot">
             <span class="ref-mode">
-              <span v-if="prompts[i]" class="mode-tag" :class="modeOf(prompts[i]).cls">{{ modeOf(prompts[i]).tag }}</span>
-              <span v-if="prompts[i]" class="hint">{{ modeOf(prompts[i]).text }}</span>
+              <span v-if="prompts[i]" class="mode-tag" :class="modeOf(prompts[i], i).cls">{{ modeOf(prompts[i], i).tag }}</span>
+              <span v-if="prompts[i]" class="hint">{{ modeOf(prompts[i], i).text }}</span>
             </span>
             <span style="flex:1"></span>
             <!-- 视频分辨率（从提示词上方移入；宽度按内容自适应，不撑满父布局）。
@@ -269,6 +309,19 @@
          空闲 = 「批量生成提示词 / 批量生成视频」；跑动中 = 「停止批量」（提示词那颗，软停：当前跑完即止）；
          视频那颗跑动中 = 「停止生成」（2026-10-09 改为硬停：点了立刻中断当前任务并结束整批）；
          已请求停止 = 「停止中…」（禁点，收尾后自动恢复） -->
+    <!-- 分镜总时长（2026-10-13，Dragon）：所有镜头 dur 之和，**实时**跟随编辑 / 拆分 / 合并 / 增删。
+         落点 = App.vue「分镜脚本」模块标题后面的 #shots-total（同 tpReady 机制）。
+         🔴 这里只做**只读汇总**，不放输入框 —— 单镜时长在分镜编辑区里改，这里跟着变。
+         🔴 2026-10-13 傍晚按实机反馈修正两处：
+            ① 纯文字、不带任何 emoji 图标（原来前面挂了一颗闹钟）。
+            ② `totalDur` 必须定义在 **computed** 里 —— 首版误塞进 methods，而模板写 `{{ totalDur }}`
+               不带括号取值，Vue 会把这个 bind 到实例上的方法原样渲染成原生函数字符串。 -->
+    <Teleport v-if="tpReady" to="#shots-total">
+      <span v-if="shots.length" class="total-dur"
+            :title="'本集 ' + shots.length + ' 个镜头的时长合计（单镜上限 15s；成片还含转场与片头片尾，实际会略长）'">
+        总时长 {{ totalDur }}s
+      </span>
+    </Teleport>
     <Teleport v-if="tpReady" to="#shots-batch">
       <button class="btn sm" :class="{ regen: !batchP && !batchPStop && prompts.some(p => p.text.trim()), danger: batchP || batchPStop }"
               :disabled="batchPStop || batchV"
@@ -430,7 +483,7 @@ import { useProject as useProjectStore } from './stores/project.js'
 import { usePipeline, fmtMs } from './stores/pipeline.js'
 import { stepLog, secs, dbgPrompt } from './ulog.js'
 import { composeSystem, composeUser, normalizeProfile, currentStyleLimits } from './prompts.js'
-import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, mergeShotPair, mergeAllShots, fitDurs, fitShotCount, shotCheck, storyUnits, sceneAlign, sceneCardIssues, sceneDeclIssues, charAlign, stripTailEnNote, profileBrief, splitShot, splitAll, splitTag, auditModelArchive } from './promptlib.js'
+import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, mergeShotPair, mergeAllShots, fitDurs, fitShotCount, pacingPlan, shotCheck, storyUnits, sceneKey, sceneAlign, sceneCardIssues, sceneDeclIssues, charAlign, stripTailEnNote, profileBrief, splitShot, splitAll, splitTag, auditModelArchive } from './promptlib.js'
 import { parseRes, resLabel, optsWith, clampDur, seg, joinPath } from './resutil.js'
 import { baseOf, variantOf, groupProfiles } from './variant.js'
 import { touchRevs, sigEq } from './stale.js'
@@ -480,8 +533,15 @@ export default {
       // 只服务**逐镜**合并（点行内黄标）。批量合并没有弹窗：点按钮/自检超限都直接执行。
       askMerge: null,
       // 当前体裁声明的分镜自检参数（genre json 的 limits，见 prompts.currentStyleLimits）：
-      // 广告 = { shotsPerUnit: 1.5, durTol: 0.2 }；剧集没声明 = {} → 自检不判（镜头量按字数算）
+      // 广告 = { shotsPerUnit: 1.5, durTol: 0.2 }；剧集 = { pacing: {...} }（双轨配时，2026-10-13）；
+      // 都没声明 = {} → 自检不判
       limits: {},
+      // 单集目标时长（秒，项目级，见 db 的 projects.target_sec）：双轨配时的输入。
+      // 0 = 未设置 → pacingPlan 整层惰性（行为与改造前逐字不变）
+      targetSec: 0,
+      // 本地大模型是否「可看图」（llama-server 挂了 mmproj，见 launcher.mmprojOf）。
+      // 引擎没报告 vision 时：本镜的「读图」开关恒不出现 → 行为与从前逐字不变
+      llmVision: false,
       // 「整理镜头」确认弹窗（存量分镜按内容重算时长 + 拆分超限镜头）
       askTidy: false,
       // 正在 AI 重写的拆分组的 gid（'' = 空闲）——同一组的每一段都能据此显示「正在重写画面…」
@@ -525,11 +585,63 @@ export default {
     /**
      * 分镜自检（2026-10-09）：把「生成出多少镜 / 多长」与「改编稿里有几个叙事单元」对一遍。
      * 上限来自**体裁声明**（this.limits）—— 广告体裁是「段落数 × 1.5」与「脚本各段合计 ±20%」；
-     * 剧集体裁没声明，这里恒为空（镜头量按字数算，不该拿段落数去卡）。
+     * 剧集体裁改为 `limits.pacing`（双轨配时：镜数由目标时长 × 画面单元数推）。
      * 与规范（shots-ad.md「镜头量」）逐字对应，只是把「只有模型自己知道」变成「界面也拦一道」。
      */
-    shotCheckInfo() { return shotCheck({ shots: this.shots, adapted: this.adapted, limits: this.limits }) },
+    shotCheckInfo() {
+      return shotCheck({ shots: this.shots, adapted: this.adapted, limits: this.limits, targetSec: this.targetSec })
+    },
+    /** 项目级的单集目标时长（秒）—— 与 db 的 projects.target_sec 同步，随项目配置弹窗一起改 */
+    projTargetSec() {
+      const p = (this.st.tree || []).find(x => x.id === this.epProjectId)
+      return Math.max(0, Math.round(Number(p && p.res && p.res.targetSec) || 0))
+    },
+    /**
+     * 节奏体检卡的数据（双轨配时，2026-10-13）。
+     * 返回 null = 当前体裁**没声明** limits.pacing（广告）→ 卡片恒不渲染，一行都不影响它。
+     * 声明了但没填目标时长（T=0）→ on:false，卡片只显示输入框（让用户填）。
+     * 判据全部来自 pacingPlan，与模型写了什么无关：B 从改编稿逐行数、R = T/B 与镜数无关。
+     */
+    paceCard() {
+      if (!(this.limits && this.limits.pacing)) return null
+      const p = pacingPlan({ adapted: this.adapted, shots: this.shots, targetSec: this.targetSec, limits: this.limits })
+      if (!p.ok) return { on: false, B: 0, units: 0 }
+      return {
+        on: true, B: p.B, units: p.units, T: p.T, Tfrom: p.Tfrom, N: p.N, Nstar: p.Nstar,
+        R: p.R.toFixed(2), asl: (p.T / Math.max(1, p.Nstar)).toFixed(1),
+        lo: p.secPerBeat[0], hi: p.secPerBeat[1]
+      }
+    },
     mergeAll() { return mergeWarnings(this.shots) },
+    /**
+     * 「本集配时」注入块（双轨配时第 2 步 · md 层，2026-10-13）：把程序算好的 T / B / 建议镜数
+     * 渲染成一小段文字，塞进分镜提示词的素材格式（shots-story.md 的 {{pacingBlock}}）。
+     * 🔴 为什么由程序算、不让模型自己数：`N* = clamp(⌈B÷每镜单元数⌉, ⌈T÷15⌉, ⌊T÷4⌋)` 是纯算术，
+     *    而模型不做算术（基座里同款时长公式与算例，实测 10 个样本一次都没执行过）。程序算死、
+     *    模型照做 —— 与「时长不采信模型填的数」同一个哲学。
+     * 返回 '' 时占位符所在整段会被 fillTemplate 整块跳过（见 h3.md 的「空值整块跳过」语义），
+     * 所以广告体裁（没声明 limits.pacing）与剧集未填目标时长时，提示词里不会留下悬空的一句话。
+     */
+    pacingBrief() {
+      if (!(this.limits && this.limits.pacing)) return ''
+      const p = pacingPlan({ adapted: this.adapted, shots: this.shots, targetSec: this.targetSec, limits: this.limits })
+      if (!p.B) return ''                       // 数不出画面单元（没声明 beatUnit）→ 不给数字，免得它拿 0 去算
+      if (!p.ok) {                              // 目标时长没声明（T = 0）→ 仍把 B 给它，让它按单元配镜
+        return '· 本集**未声明目标时长**（项目配置里填「单集目标时长」即可启用配时）。\n' +
+          '· 改编稿画面单元数 B = ' + p.B + ' 个 → **镜头数就取 ' + p.B + ' 个**（一个画面单元一个镜头）。\n' +
+          '· 每镜 dur 按基座的时长规则由内容定（4-15 秒），不要为了凑总时长把某一镜拉长。'
+      }
+      const N = p.Nstar
+      const lo = Math.ceil(p.T / 15)            // 单镜上限 15 秒 → 至少这么多镜才装得下 T
+      const hi = Math.floor(p.T / 4)            // 单镜下限 4 秒 → 至多这么多镜才塞得进内容
+      const per = (p.T / Math.max(1, N)).toFixed(1)
+      const from = p.Tfrom === 'script' ? '（取自剧本稿自带的「时长：」合计）' : '（项目配置 · 单集目标时长）'
+      return '· 本集目标时长 T = ' + p.T + ' 秒' + from + '\n' +
+        '· 改编稿画面单元数 B = ' + p.B + ' 个（' + p.units + ' 个场次/段落）\n' +
+        '· **建议镜头数 N = ' + N + ' 个** —— 必须落在 ' + lo + ' ~ ' + hi + ' 之间（少于 ' + lo + ' 装不下 T，多于 ' + hi + ' 塞不进内容）\n' +
+        '· 平均每镜 ' + p.T + ' ÷ ' + N + ' ≈ ' + per + ' 秒（每镜仍须落在 4-15 秒；程序生成后会按 T 重配每个镜头的秒数，你写的 dur 只是节奏参考）\n' +
+        '· 总时长自检：所有镜头 dur 之和要贴住 ' + p.T + ' 秒。不够时的正确动作是「让某个画面单元单独成一镜」，**不是**「把每个镜头都拉长」'
+    },
     /** 场景档案体检（缺档案 / 空档案 / 挂错名字）→ 「场景名 → 黄标文案」，一次算全表供各行查用 */
     scIssues() {
       const ep = this.st.current
@@ -554,7 +666,16 @@ export default {
     },
     allConfirmed() {
       return this.shots.length > 0 && this.shots.every((_, i) => this.vstate[i] && this.vstate[i].confirmed)
-    }
+    },
+    /**
+     * 🔴 分镜总时长（2026-10-13，Dragon）：所有镜头 dur 之和，实时跟随编辑 / 拆分 / 合并 / 增删。
+     *  显示在 App.vue「分镜脚本」模块标题后面（落点 `#shots-total`，同 tpReady Teleport 机制）。
+     *  🔴 口径必须与 `shotCheck` 的 `total` **逐字一致**（`Number(s.dur) || 0` 累加）——
+     *     两处若用不同口径（一个夹取 4~15、一个不夹），同一屏上会给出两个不一样的「总时长」。
+     *  🔴 必须在 computed 里、模板**不带括号**取值。若写成 methods 而模板写 `{{ totalDur }}`，
+     *     Vue 会把方法 bind 到实例上，渲染出来是 `function () { [native code] }` —— 2026-10-13 实机踩到，已纠正。
+     */
+    totalDur() { return this.shots.reduce((a, s) => a + (Number((s || {}).dur) || 0), 0) }
   },
   watch: {
     'st.current'(ep) {
@@ -612,13 +733,31 @@ export default {
       this.initShots(ep)
       this.initPrompts(ep)
       this.initVideos(ep)
+      this.targetSec = this.projTargetSec     // 单集目标时长（项目级，双轨配时的输入）
       this.loadLimits()
+      this.loadVision()                       // 引擎是否挂了视觉投影器（mmproj）
     },
-    /** 读当前体裁声明的分镜自检参数（广告 = 段落数 × 1.5 / 时长 ±20%；剧集没声明 = 不判）。
+    /** 问主进程要一次引擎信息，只取「本地大模型能不能看图」这一个事实（便宜：只读目录） */
+    async loadVision() {
+      try {
+        const info = await window.studio.engineInfo()
+        this.llmVision = !!(info && info.llama && info.llama.vision)
+      } catch (_) { this.llmVision = false }
+    },
+    /** 读当前体裁声明的分镜自检参数（广告 = 段落数 × 1.5 / 时长 ±20%；剧集 = pacing 双轨配时）。
      *  风格包在 prompts.js 里按「项目|风格」缓存，所以这里每次切集调一次很便宜。 */
     async loadLimits() {
       try { this.limits = (await currentStyleLimits(this.epProjectId)) || {} }
       catch (_) { this.limits = {} }
+    },
+    /** 落库单集目标时长（项目级）。0 = 不启用；只写这一个字段，不做整树刷新（免得扰动正在编辑的分镜）。 */
+    async saveTarget() {
+      const pid = this.epProjectId
+      if (!pid) return
+      const v = Math.max(0, Math.min(1800, Math.round(Number(this.targetSec) || 0)))
+      this.targetSec = v
+      await this.st.setProjectTargetSec(pid, v)
+      this.$root.toast(v ? ('已设置单集目标时长 ' + v + ' 秒 —— 生成分镜时镜数由它推导') : '已关闭目标时长（镜数回到由内容决定）')
     },
     initShots(ep) {
       this.shots = JSON.parse(JSON.stringify(ep.shots || []))
@@ -686,7 +825,11 @@ export default {
           script: this.adapted,
           knownChars: known.chars.join('、'),
           knownBrief: profileBrief(known.briefs, null, 16),
-          knownScenes: known.scenes.join('、')
+          knownScenes: known.scenes.join('、'),
+          // 双轨配时（2026-10-13）：节目单要铺多长 → 该给几个镜头。算式在程序里算死，
+          // 模型只负责「把镜头切在该切的地方」。剧集专属（shots-story.md 的 {{pacingBlock}} 位），
+          // 广告体裁返回 '' → fillTemplate 整段跳过，基座 shots.md 里没有这个占位符，零影响。
+          pacingBlock: this.pacingBrief
         })
         dbgPrompt('阶段3 分镜脚本', '文字模型', [['system', system], ['user', user]])
         const text = await window.studio.llmChat([
@@ -740,7 +883,7 @@ export default {
         //    补出来的段同样带「✂ 程序拆分」标记 —— 撤回拆分 / AI 重写 走的是同一套（不需要新入口）。
         //    ⚠️ 必须在 saveArtifact('shots') 之前，否则补出来的镜头落不了盘。
         await this.loadLimits()
-        const fc = fitShotCount(this.shots, this.adapted, this.limits)
+        const fc = fitShotCount(this.shots, this.adapted, this.limits, this.targetSec)
         if (fc.added) this.shots = fc.shots
 
         // 🔴 2026-10-09（Dragon）：**总时长贴回脚本各段秒数**。durFit 只管「这一镜念不念得完」，
@@ -1005,6 +1148,40 @@ export default {
     sceneProfiles() {
       return groupProfiles(this.scenes)
     },
+    /** 本镜 `chars` 里的角色名集合（顿号分隔）。`主体名--视角` 的变体卡在 groupProfiles 里按**主体名**归组，
+     *  所以这里存的是主体名，下面匹配时也用 baseOf(c.name)。 */
+    shotCharNames(s) {
+      const out = new Set()
+      for (const n of String((s && s.chars) || '').split(/[、,，/]/).map(x => x.trim()).filter(Boolean)) out.add(n)
+      return out
+    },
+    /** 本镜「画面里出现的主体」= chars 里的角色 + 本镜场景名（参考素材过滤用） */
+    shotSubjects(s) {
+      const out = this.shotCharNames(s)
+      const sc = String((s && s.scene) || '').trim()
+      if (sc) out.add(sc)
+      return out
+    },
+    /**
+     * 下发给视频提示词模型的**角色档案块**（配套 shots.md rev25）。
+     * 🔴 2026-10-14（用户拍板）：只发**本镜画面里出现**的角色 —— `chars` 里没写的角色，
+     *    即使这一镜挂了它的参考图，档案也不下发。
+     *    `chars` 为空（LLM 没写 / 老数据）→ 不过滤，保持老行为（宁可多发，不可漏发）。
+     */
+    charProfilesFor(s) {
+      const names = this.shotCharNames(s)
+      if (!names.size) return groupProfiles(this.chars)
+      return groupProfiles((this.chars || []).filter(c => names.has(baseOf(c.name))))
+    },
+    /** 本镜的**场景档案块** —— 只发本镜 `scene` 那一条（宽松命中；一个都没命中则不过滤，宁可多发） */
+    sceneProfilesFor(s) {
+      const all = this.scenes || []
+      const sc = String((s && s.scene) || '').trim()
+      if (!sc) return groupProfiles(all)
+      let pick = all.filter(c => baseOf(c.name) === sc)
+      if (!pick.length) { const k = sceneKey(sc); pick = k ? all.filter(c => sceneKey(baseOf(c.name)) === k) : [] }
+      return groupProfiles(pick.length ? pick : all)
+    },
     async savePrompts() {
       if (!this.canSave()) return
       // _gen / _genAt 是纯 UI 状态（生成中），绝不能落库，否则重开就是「永远转圈」
@@ -1173,9 +1350,13 @@ export default {
       }
       return out
     },
-    /** 本镜头当前选择的素材 → 将走哪条生成路线（始终显示） */
-    modeOf(p) {
-      const r = p.refs || {}
+    /**
+     * 本镜头当前选择的素材 → 将走哪条生成路线（始终显示）。
+     * 🔴 2026-10-14：显示的是**实际生效**的素材 —— 传了 `i` 就按本镜 chars/scene 过滤（`effRefs`），
+     *    免得界面写着「参考模式」而真正生成时一张图都没发。
+     */
+    modeOf(p, i) {
+      const r = (typeof i === 'number') ? this.effRefs(i) : (p.refs || {})
       const nImg = (r.images || []).length
       const nVid = (r.videos || []).length
       const mode = this.h3ModeOf(r)
@@ -1245,6 +1426,68 @@ export default {
     async delRef(i, kind, k) {
       this.prompts[i].refs[kind].splice(k, 1)
       await this.savePrompts()
+    },
+    /* ---- 读图（2026-10-13）：让本地大模型**真的看一眼**本镜的参考素材 ---- */
+    /** 本镜有没有可选素材（决定「读图」小按钮出不出） */
+    hasRefs(i) {
+      const r = this.effRefs(i)
+      return !!((r.images && r.images.length) || (r.videos && r.videos.length) || r.first || r.last)
+    },
+    /**
+     * 本镜**实际生效**的参考素材 —— 与 UI 上挂的素材（prompts[i].refs）可能不同。
+     * 🔴 2026-10-14（用户拍板）：按本镜 `chars` / `scene` 过滤 —— `chars` 里没写的主体，
+     *    即使这一镜挂了它的参考图/参考视频，也**不写进提示词、不送去生成**。
+     * - 认不出归属的素材（用户从素材目录外选的图）判断不了是谁的 → 一律保留。
+     * - 本镜 `chars` 与 `scene` 都为空 → 不做过滤（老数据兜底，宁可多发）。
+     * - 首帧 / 尾帧是**构图锚点**不是主体参考，不参与过滤。
+     * 🔴 提示词里的 <Picture N> 编号与实际注入的素材**必须同源**（genP 与 genV 都取这一份），
+     *    否则模型看到的第一张图不是它以为的那张。
+     * @param {number} i 镜头下标
+     * @param {object} [src] 素材来源 refs；**不传 = 组件本地副本**（UI 所见，模板/角标/路线提示用）。
+     *   🔴 genV 必须显式传 store 那份（`pr.refs`）—— 视频生成一直以**库里的权威副本**为准
+     *   （就连 `prompt` 文本也是从 `st.current.prompts` 取的），UI 副本只是编辑态；两者在生产环境同步，
+     *   但「别块直接写库」时只有 store 是新的。
+     */
+    effRefs(i, src) {
+      const r = (src && typeof src === 'object') ? src : ((this.prompts[i] && this.prompts[i].refs) || {})
+      const raw = { images: r.images || [], videos: r.videos || [], first: r.first || null, last: r.last || null }
+      const names = this.shotSubjects(this.shots[i])
+      if (!names.size) return raw
+      const keep = (abs) => { const o = this.refOwnerInfo(abs); return !o || names.has(o.base) }
+      return { images: raw.images.filter(keep), videos: raw.videos.filter(keep), first: raw.first, last: raw.last }
+    },
+    /** 挂了、但（因本镜 chars/scene 不含该主体而）不会被用到的素材 → 缩略图标「未使用」 */
+    refUnused(i, kind, k) {
+      const r = (this.prompts[i] && this.prompts[i].refs) || {}
+      const abs = ((kind === 'videos' ? r.videos : r.images) || [])[k]
+      if (!abs) return false
+      const names = this.shotSubjects(this.shots[i])
+      if (!names.size) return false
+      const o = this.refOwnerInfo(abs)
+      return !!(o && !names.has(o.base))
+    },
+    /** 参考素材缩略图的悬停提示：被过滤掉时说明原因，否则就是文件名 */
+    refTitle(i, kind, k, fallback) {
+      if (!this.refUnused(i, kind, k)) return fallback
+      return fallback + '\n\n⚠ 本镜未使用：分镜行「角色」里没有这个主体 —— 它不写进提示词，也不送去生成。'
+    },
+    /**
+     * 要下发给大模型的图片（绝对路径）。**只发图，不发视频** —— 视频要先抽帧才能进模型，
+     * 而抽帧用的 ffmpeg 与显存编排都在生图/生视频阶段，链路完全不同，不在这里硬凑。
+     * 顺序与提示词里的 <Picture N> 一致：参考图 → 首帧 → 尾帧。
+     */
+    refImages(i) {
+      const r = this.effRefs(i)
+      return [...(r.images || []), r.first, r.last].filter(x => typeof x === 'string' && x)
+    },
+    /** 开关本镜的「读图」—— 开了以后生成本镜提示词时把这些图一并交给模型 */
+    async toggleRefVision(i) {
+      const r = this.prompts[i].refs
+      r.vision = !r.vision
+      await this.savePrompts()
+      this.$root.toast(r.vision
+        ? '本镜已开启「读图」：生成提示词时会把 ' + this.refImages(i).length + ' 张参考图交给模型'
+        : '本镜已关闭「读图」')
     },
     /* ---- 参考图拖动排序（2026-10-08）----
        只在同一镜头的参考图之间排序（素材属于本镜头，不跨行搬运）。
@@ -1428,7 +1671,12 @@ export default {
       L.start('正在生成第' + (i + 1) + '个镜头的提示词' + prog)
       try {
         const refs = p.refs || {}
-        const mode = this.h3ModeOf(refs)
+        // 🔴 2026-10-14：本镜**实际生效**的素材（按 chars / scene 过滤过）。
+        //    下面的 <Picture N> 清单、读图附图、说话人锁图，以及阶段 6 真正注入 ComfyUI 的素材，
+        //    全部取自这一份，保证「提示词里的编号」与「实际附上的图」一致。
+        //    这里显式传 `p.refs`（组件本地副本，编辑态）—— 与改造前 `p.refs` 同源。
+        const eff = this.effRefs(i, p.refs)
+        const mode = this.h3ModeOf(eff)
         // 规范文件由「当前视频方案」声明（st.promptFiles.video，来自 electron/profiles/*.json 的
         // prompt.files 段）：H3 声明 { base:'h3.md', ref:'h3ref.md' }（基础三段式 / 参考六段式），
         // LTX-2.5 声明 { base:'ltx.md' }（无参考支路，整段散文）。拿不到声明时回落 H3 老约定。
@@ -1453,7 +1701,7 @@ export default {
             // 🔴 2026-10-08：改**精确主体基名比较**。原来是拿 refOwner 的返回串做子串包含判断，
             //    有了 `主体名--视角` 这种带后缀的卡名后会误命中（而且短名会命中长名），
             //    可能把台词挂到错的 <Picture N> 上。
-            const k = (refs.images || []).findIndex(f => this.refOwnerBase(f) === n)
+            const k = eff.images.findIndex(f => this.refOwnerBase(f) === n)
             if (k >= 0) pic = ' → <Picture ' + (k + 1) + '>'
           }
           return n + pic
@@ -1473,20 +1721,20 @@ export default {
         //    <Picture N> 撞号；基础模式下参考图恒为空 → 编号仍从 1 起（仅尾帧时是 <Picture 1>，
         //    与 h3.md 的 L2VA 对齐句写法一致）。
         let refAssets = '', frames = ''
-        let picN = (mode === 'Ref2VA') ? (refs.images || []).length : 0
+        let picN = (mode === 'Ref2VA') ? eff.images.length : 0
         const frameSrc = []
-        if (refs.first) frameSrc.push('<Picture ' + (++picN) + '> = the first frame image attached to the model')
-        if (refs.last) frameSrc.push('<Picture ' + (++picN) + '> = the last frame image attached to the model')
+        if (eff.first) frameSrc.push('<Picture ' + (++picN) + '> = the first frame image attached to the model')
+        if (eff.last) frameSrc.push('<Picture ' + (++picN) + '> = the last frame image attached to the model')
         frames = frameSrc.join('\n')
         if (mode === 'Ref2VA') {
           const inv = []
-          refs.images.forEach((f, k) => inv.push('<Picture ' + (k + 1) + '> = ' + this.baseName(f) + this.refOwner(f)))
-          refs.videos.forEach((f, k) => inv.push('<Video ' + (k + 1) + '> = ' + this.baseName(f)))
+          eff.images.forEach((f, k) => inv.push('<Picture ' + (k + 1) + '> = ' + this.baseName(f) + this.refOwner(f)))
+          eff.videos.forEach((f, k) => inv.push('<Video ' + (k + 1) + '> = ' + this.baseName(f)))
           refAssets = inv.join('\n')
         }
         const user = await composeUser(specFile, {
-          characters: this.charProfiles() || '(none)',
-          scenes: this.sceneProfiles() || '(none)',
+          characters: this.charProfilesFor(s) || '(none)',
+          scenes: this.sceneProfilesFor(s) || '(none)',
           n: i + 1,
           dur: s.dur,
           shot: JSON.stringify(s, null, 2),
@@ -1498,10 +1746,24 @@ export default {
           frames
         })
         dbgPrompt('阶段5 H3提示词', '文字模型 · 第' + (i + 1) + '镜 · ' + mode, [['system', system], ['user', user]])
+        // 读图（2026-10-13）：本镜开了「读图」且引擎确实挂了 mmproj 时，把参考图/首尾帧**当成图**
+        // 一起下发（而不是只让模型读文件名）。开关默认关 → 老行为逐字不变。
+        const visionImgs = (p.refs && p.refs.vision && this.llmVision) ? this.refImages(i) : null
+        // 🔴 读图的「越权」护栏（2026-10-13 实测得出）：参考图是**身份/场景参考**，它锁的是「这个人长什么样」，
+        //    不锁「这一镜穿什么、伤成什么样」。实测（.h3lora-test/ab-result.txt C2）：把图交给模型后，
+        //    它照图写「红喜服」，而本镜连续性写的是「青灰布裙」——图把档案顶掉了。
+        //    加上这句之后实测（vision-smoke-result.txt ③）模型会明确以本镜连续性为准。只在开读图时追加，
+        //    不开读图的路径一个字节都不变。
+        const userVision = (visionImgs && visionImgs.length)
+          ? user + '\n\n⚠ 关于上面附带的图像（本镜参考图/首尾帧）：它们**只**用来确认人物身份、长相与场景样貌；'
+            + '本镜人物的**服装、伤势、道具、时段**一律以「连续性」和档案为准——'
+            + '图像与档案冲突时，以档案为准，不要把图里的服装当成这一镜的服装。'
+          : user
+        if (visionImgs && visionImgs.length) L.start('第' + (i + 1) + '个镜头附带 ' + visionImgs.length + ' 张参考图给模型看图')
         const text = await window.studio.llmChat([
           { role: 'system', content: system },
-          { role: 'user', content: user }
-        ], { temperature: 0.6, maxTokens: 2048, label: '阶段5 H3提示词' })
+          { role: 'user', content: userVision }
+        ], { temperature: 0.6, maxTokens: 2048, label: '阶段5 H3提示词', images: visionImgs })
         p.text = text.trim()
         const ms = Date.now() - t0
         p.genMs = ms                  // 逐条耗时（持久化在 prompts.json，显示在该镜头行上）
@@ -1659,7 +1921,7 @@ export default {
      * 生成时已自动跑过一次（generate 里的 fitShotCount），这里服务「手动增删镜头 / 手改时长后又不达标」。
      * added = 0（含剧集体裁 / 脚本超体裁容量 / 内容超容量等不由补镜解决的情形）→ 按钮自动不渲染。
      */
-    capPlan() { return fitShotCount(this.shots, this.adapted, this.limits) },
+    capPlan() { return fitShotCount(this.shots, this.adapted, this.limits, this.targetSec) },
     /* ---- 拆镜（第 2 批）：内容超单镜 15s 上限的镜头由程序按台词边界拆开 ---- */
     /** 该镜头的拆分标记（null = 不是拆分段） */
     splitInfo(i) { return (this.shots[i] && this.shots[i]._split) || null },
@@ -1753,7 +2015,7 @@ export default {
      * （fitShotCount 内部就用 splitShotParts），槽位重建也与 tidyShots 完全一致。
      */
     async fixShotCount() {
-      const pv = fitShotCount(this.shots, this.adapted, this.limits)
+      const pv = fitShotCount(this.shots, this.adapted, this.limits, this.targetSec)
       if (!pv.added) { this.$root.toast('无需补镜：当前镜头数已装得下脚本声明时长'); return }
       const before = this.shots.length
       const oldP = this.prompts, oldV = this.vstate
@@ -2078,11 +2340,15 @@ export default {
       const prompt = pr.text
       if (!prompt) { this.st.fail(new Error('镜头 ' + (i + 1) + ' 缺少 ' + this.promptZoneName() + '，请先生成本镜头的提示词')); return false }
       // 参考素材全部来自本行该镜头的设置（可不选）
-      const refs = pr.refs || {}
-      const refImages = refs.images || []
-      const refVideos = refs.videos || []
-      const firstFrame = refs.first || null
-      const lastFrame = refs.last || null
+      // 🔴 2026-10-14：与提示词**同一份**过滤结果（按本镜 chars / scene）
+      //    —— 否则提示词里的 <Picture N> 与实际注入 ComfyUI 的图对不上。
+      // 🔴 来源必须是 `pr.refs`（store 权威副本，和上面取 `pr.text` 同一个对象），
+      //    不能用组件本地副本 this.prompts[i] —— 那只是编辑态，别块直接写库时它还是旧的。
+      const eff = this.effRefs(i, pr.refs)
+      const refImages = eff.images
+      const refVideos = eff.videos
+      const firstFrame = eff.first
+      const lastFrame = eff.last
       const hasRef = refImages.length > 0 || refVideos.length > 0
       // 能力降级兜底：当前视频方案明确不支持某种素材时，在这里拦住并说清出路，
       // 而不是把它塞进工作流让 ComfyUI 报一堆看不懂的节点错误（入口本身也会被隐藏）。
@@ -2240,7 +2506,7 @@ export default {
   }
 }
 
-function emptyRefs() { return { images: [], videos: [], first: null, last: null } }
+function emptyRefs() { return { images: [], videos: [], first: null, last: null, vision: false } }
 
 function require_json(text) {
   const m = text.match(/```(?:json)?\s*([\s\S]*?)```/)

@@ -312,11 +312,16 @@ function normDrop(o) {
 }
 
 /**
- * 体裁可声明的「程序侧校验参数」`limits`（2026-10-09）：
+ * 体裁可声明的「程序侧校验参数」`limits`：
  *   shotsPerUnit —— 镜头数上限 = 叙事单元数 × 该系数（广告 = 1.5，见 shots-ad.md）
  *   durTol       —— 总时长允许偏离「脚本各段秒数之和」的比例（广告 = 0.2）
+ *   pacing       —— **双轨配时**（2026-10-13，见 src/promptlib.js 的 pacingPlan / pacingAudit）：
+ *                   让镜数 N 由「目标时长 T」与「画面单元数 B」推导，而不是由字数推。
  * 只收有限正数并夹在合理区间（系数 ≤10、容差 ≤1），其它一律当没声明。
- * 没声明的体裁（剧集）**不做这项校验** —— 剧集的镜头量按字数算，拿段落数去卡会刷假警报。
+ * 没声明的体裁 **这一层整层跳过** —— 广告不声明 `pacing`，继续走「逐段秒数 + capacity-seg」老路。
+ * 🔴 `pacing` 走的是**有意白名单**：每个字段只认形状合法的值，非法就当没声明。
+ *    因为 promptlib 里 `beatUnit` / `secPerBeat` 缺省 = 整层惰性（绝不猜），
+ *    漏检一个字段就会让「广告被误判成素材太稀」这类事故无声发生。
  */
 function normLimits(o) {
   const src = o && o.limits;
@@ -326,6 +331,37 @@ function normLimits(o) {
   if (Number.isFinite(per) && per > 0 && per <= 10) out.shotsPerUnit = per;
   const tol = Number(src.durTol);
   if (Number.isFinite(tol) && tol > 0 && tol <= 1) out.durTol = tol;
+  const pac = normPacing(src.pacing);
+  if (pac) out.pacing = pac;
+  return Object.keys(out).length ? out : null;
+}
+
+/** 数画面单元的粒度：逐行（小说体改编稿，一行一个动作/情绪节拍）｜逐句 */
+const PACING_BEAT_UNITS = new Set(['line', 'sentence'])
+/** 目标时长的落点：整集｜单段（后者留给需要按段落控时的体裁） */
+const PACING_TARGET_DURS = new Set(['episode', 'segment'])
+
+/** 双轨配时声明归一化：只收形状合法的字段，非法字段直接不要（不是报错，是当没声明） */
+function normPacing(v) {
+  if (!v || typeof v !== 'object') return null;
+  const out = {};
+  const bu = s(v.beatUnit).trim();
+  if (PACING_BEAT_UNITS.has(bu)) out.beatUnit = bu;
+  const td = s(v.targetDur).trim();
+  if (PACING_TARGET_DURS.has(td)) out.targetDur = td;
+  const pair = (x, lo, hi) => {
+    const a = Array.isArray(x) ? x : [];
+    const p = Number(a[0]), q = Number(a[1]);
+    return (Number.isFinite(p) && Number.isFinite(q) && p >= lo && q <= hi && q > p) ? [p, q] : null;
+  };
+  const ss = pair(v.shotSec, 1, 60);
+  if (ss) out.shotSec = ss;
+  const sp = pair(v.secPerBeat, 0.5, 30);
+  if (sp) out.secPerBeat = sp;
+  const bps = Number(v.beatsPerShot);
+  if (Number.isFinite(bps) && bps >= 1 && bps <= 8) out.beatsPerShot = bps;
+  const bpm = Number(v.beatsPerShotMax);
+  if (Number.isFinite(bpm) && bpm >= 1 && bpm <= 8) out.beatsPerShotMax = bpm;
   return Object.keys(out).length ? out : null;
 }
 

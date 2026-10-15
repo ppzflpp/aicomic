@@ -74,6 +74,14 @@
         <span style="flex:1"></span>
         <button class="btn ghost sm" @click="releaseNow">立即释放显存</button>
       </div>
+
+      <!-- 本地大模型的视觉能力（2026-10-13）：剧本 / 分镜 / 提示词都走它。
+           挂上视觉投影器（mmproj）后，模型就能「看图写提示词」（分镜页每镜的「读图」开关）。 -->
+      <div class="env-group">本地大模型</div>
+      <div class="env-row">
+        <span class="env-name">视觉理解（mmproj）</span>
+        <span :style="{ fontSize: '12.5px', color: visionOn ? '#7dd3fc' : 'inherit', opacity: visionOn ? 1 : .7 }">{{ visionText }}</span>
+      </div>
     </div>
 
   </div>
@@ -95,15 +103,26 @@ export default {
       vidOptions: [],
       imgProfile: '',
       vidProfile: '',
-      profileErrs: []
+      profileErrs: [],
+      // 引擎信息里的 llama 段（只取「能不能看图」相关字段；engineInfo 只读目录，很便宜）
+      llama: null
     }
   },
   computed: {
-    st() { return useProjectStore() }
+    st() { return useProjectStore() },
+    visionOn() { return !!(this.llama && this.llama.vision) },
+    visionText() {
+      const l = this.llama
+      if (!l) return '—'
+      if (l.vision) return '已启用（' + (l.mmprojFile || 'mmproj') + '）—— 分镜页每镜可勾「读图」'
+      if (l.visionSupported) return '未安装：把 mmproj-*.gguf 放到模型同目录（' + (l.modelDir || '模型根\\text_encoders') + '）后重启软件'
+      return '当前模型不支持图像输入（' + (l.modelFile || '未找到模型') + '）'
+    }
   },
   async mounted() {
     await this.st.refreshEnv()
     await this.loadProfiles()
+    await this.loadLlama()
     try { this.autoOrch = await window.studio.getAutoOrchestrate() } catch (_) {}
   },
   methods: {
@@ -154,7 +173,11 @@ export default {
       await this.st.refreshEnv()
     },
     /* ---- 引擎状态：llama.cpp 与 ffmpeg 都随软件内置（tools\），这里只刷健康状态 ---- */
-    async recheck() { await this.st.refreshEnv() },
+    async recheck() { await this.st.refreshEnv(); await this.loadLlama() },
+    /** 只取引擎信息里的 llama 段（看图能力） */
+    async loadLlama() {
+      try { this.llama = (await window.studio.engineInfo()).llama } catch (_) { this.llama = null }
+    },
     async chooseWs() {
       const ws = await window.studio.chooseWorkspace()
       if (ws) { this.st.workspace = ws; await this.st.refresh(); await this.st.refreshEnv() }

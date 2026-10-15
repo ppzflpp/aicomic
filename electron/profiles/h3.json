@@ -96,22 +96,23 @@
 
   "tierOrder": ["fast", "balanced", "hq"],
   "defaultTier": "balanced",
-  "tierLabels": { "fast": "速度优先", "balanced": "平衡", "hq": "质量优先" },
+  "tierLabels": { "fast": "速度优先", "balanced": "平衡", "hq": "质量最优" },
   "tierDescs": {
-    "fast": "最快出片，适合批量验证分镜节奏",
-    "balanced": "质量接近最佳、速度适中",
-    "hq": "质量上限最高，出片最慢，适合关键镜头与终稿"
+    "fast": "出片最快，清晰度略低，适合先看分镜效果",
+    "balanced": "速度与清晰度均衡，日常出片推荐",
+    "hq": "画面最清晰，但耗时最长，适合关键镜头与最终成片"
   },
 
   "tiers": {
     "fast": {
       "fl2v": [
-        { "match": "fl2v.*8step(?!.*768p)", "steps": 8, "shift": [12, 3] },
-        { "match": "fl2v.*4step", "steps": 4, "shift": [6, 3] }
+        { "match": "fl2v.*4step", "steps": 4, "shift": [6, 3] },
+        { "match": "fl2v.*8step(?!.*768p)", "steps": 8, "shift": [12, 3] }
       ],
       "ref2v": [
-        { "match": "turbo_v4_step600", "steps": 4, "shift": null },
-        { "match": "ref2v", "steps": 4, "shift": null }
+        { "match": "ref2v.*4step", "steps": 4, "shift": null },
+        { "match": "ref2v.*8step.*768p", "steps": 8, "shift": [6, 3] },
+        { "match": null, "steps": 20, "shift": null }
       ]
     },
     "balanced": {
@@ -120,21 +121,31 @@
         { "match": "fl2v.*8step", "steps": 8, "shift": [12, 3] }
       ],
       "ref2v": [
-        { "match": "turbo_v4_step600", "steps": 8, "shift": null },
-        { "match": "ref2v", "steps": 4, "shift": null }
+        { "match": "fl2v.*8step(?!.*768p)", "steps": 8, "shift": [12, 3] },
+        { "match": "ref2v.*4step", "steps": 4, "shift": null },
+        { "match": null, "steps": 20, "shift": null }
       ]
     },
     "hq": {
       "fl2v": [ { "match": null, "steps": 20, "shift": null } ],
-      "ref2v": [ { "match": null, "steps": 20, "shift": null } ]
+      "ref2v": [
+        { "match": "ref2v.*8step.*768p", "steps": 8, "shift": [6, 3] },
+        { "match": null, "steps": 20, "shift": null }
+      ]
     }
+  },
+
+  "tierCanvas": {
+    "fast":     { "16:9": "864x480",  "9:16": "480x864",  "accept": ["864x480", "480x864", "960x544", "544x960"] },
+    "balanced": { "16:9": "960x544",  "9:16": "544x960",  "accept": ["864x480", "480x864", "960x544", "544x960"] },
+    "hq":       { "16:9": "1344x768", "9:16": "768x1344", "accept": ["1344x768", "768x1344"] }
   },
 
   "wiring": {
     "framing": "native",
     "firstKey": "first_frame",
     "lastKey": "last_frame",
-    "frameCrop": { "first": "disabled", "last": "center" },
+    "frameCrop": { "first": "disabled", "last": "center", "ref": "center" },
     "scaleMethod": "lanczos",
     "condOutput": 0,
     "latentOutput": 1,
@@ -158,7 +169,7 @@
     "nodeIds": {
       "firstImg": 200, "firstScale": 201,
       "lastImg": 202, "lastScale": 203,
-      "refImg": 220, "refVid": 230, "refVidComp": 240, "guide": 90
+      "refImg": 220, "refImgScale": 250, "refVid": 230, "refVidComp": 240, "guide": 90
     }
   },
 

@@ -5,7 +5,7 @@ export { stripHeader, parseSections, section, sectionRaw, parseFallbacks, pickFa
 
 /**
  * 项目级提示词「规范」文件（与 electron/prompts.cjs 的 FILES 对应）：
- * 每个项目 <项目>/prompts/ 下有 10 个 md，新建项目自动播种、缺失自动补、
+ * 每个项目 <项目>/prompts/ 下有 11 个 md，新建项目自动播种、缺失自动补、
  * 旧版自动删除重播；各模块生成前从这里读最新内容（用户改过的版本优先）。
  *
  * 🔴 这些 md 的正文就是发给大模型的提示词本体（2026-09-24 起）：

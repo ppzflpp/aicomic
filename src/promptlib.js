@@ -746,13 +746,59 @@ export function splitShot(s, gid) {
 }
 
 /**
+ * 复合运镜的**段首衔接词**（与 durNeed 的 compound 判据同源：`/随后|然后|，再|、再/`）。
+ * 拆镜时把它剥掉 —— 不剥的话「随后切至窗外特写」自己又命中 /随后/，compound 依旧为真，
+ * 等于白拆。两处判据必须同进同退。
+ */
+const CAM_LEAD_RE = /^(?:随后|然后|接着|而后|继之|再|又)\s*/
+
+/**
+ * 把一条运镜描述按「顿挫标点」切成若干独立运镜段（纯函数）。
+ * 🔴 为什么需要（2026-10-13 挖出，修「真人剧 T=60 → 实际 62 秒」）：
+ *    `splitShotParts` 原来把 `camera` **原样复制**到每一份 —— 一条
+ *    「中景缓推，随后切至窗外特写」拆成 3 份后，3 份都带「随后」，于是每份的
+ *    `durNeed.compound` 全为真 → `durFit` 全部 ≥ COMPOUND_MIN(6) → 拆完的时长**下限**
+ *    从 4s 抬到 6s。实测真人剧 T=60 / 14 镜时 Σfloor 已是 62s，补偿循环无余量可减，
+ *    `fitDurs` 只能出 62s。
+ * @returns {string[]} 至少 1 段（切不出来就返回 [原文]）
+ */
+function splitCamera(cam) {
+  const raw = String(cam || '').trim()
+  if (!raw) return []
+  const segs = raw.split(/[，,；;]+/).map(x => x.trim().replace(CAM_LEAD_RE, '').trim()).filter(Boolean)
+  return segs.length ? segs : [raw]
+}
+
+/**
+ * 把 n 段运镜按比例摊到 parts 份镜头上（纯函数）：第 k 份取第 [⌊k·n/parts⌋, ⌊(k+1)·n/parts⌋) 段，
+ * 空区间补一段（段数少于份数 = 多出来的份沿用同一段，信息不丢），**最后一份兜住剩余段**（一段都不丢）。
+ * 🔴 只有 1 段时返回空表 —— 调用方据此保持「原样复制」的老行为逐字不变
+ *    （「全景，低机位」这类并列描述、以及「推近后环绕」这种真正拆不开的复合运镜都走这条路）。
+ */
+function camPerShot(segs, parts) {
+  const n = segs.length
+  if (n <= 1) return []
+  const out = []
+  for (let k = 0; k < parts; k++) {
+    const a = Math.floor(k * n / parts)
+    let b = Math.floor((k + 1) * n / parts)
+    if (b <= a) b = Math.min(n, a + 1)
+    if (k === parts - 1) b = n
+    out.push(segs.slice(a, b).join('，'))
+  }
+  return out
+}
+
+/**
  * 按**指定段数**拆一条镜头（纯函数，2026-10-12）—— splitShot 的底层实现，也是容量规划的入口。
  * 与 splitShot 的唯一区别：段数由调用方给定（容量规划算出来的「这段需要几条镜头」），
  * 而不是由内容（台词/发声）推算。切分机制完全共用：
  *   台词 —— 按行边界分组（行是最小语义单位，绝不切半行）；**台词实在装不下时以台词为准**，
  *           段数可能多于 want（`parts = max(want, 台词组数, 2)`），绝不把两句话塞进同一段。
  *   动作 —— 按标点句边界切，再按各段台词量分配。
- *   镜头语言 —— 沿用原值；连续性 —— 每段写完整快照，change 只挂最后一段。
+ *   镜头语言 —— **复合运镜按段分派**（2026-10-13：原样复制会让每一份都命中 compound，
+ *               把拆完的时长下限从 4s 抬到 6s，真人剧 T=60 于是出 62s）；单段运镜原样复制。
+ *               连续性 —— 每段写完整快照，change 只挂最后一段。
  * @param {object} s    待拆镜头
  * @param {number} want 期望段数（< 2 时按 2 处理）
  * @param {string} gid  组标识（不传则自生成）
@@ -781,6 +827,10 @@ export function splitShotParts(s, want, gid) {
   }
   if (src._rev) snap._rev = src._rev
 
+  // 复合运镜按段分派（2026-10-13）：只有**真复合**（≥2 个运镜动词，或有随后/然后/再 衔接）才切；
+  // 单段运镜与「全景，低机位」这类并列描述一律走老路（camSegs 为空 → 原样复制到每一份）。
+  const camSegs = durNeed({ camera: snap.camera }).compound ? camPerShot(splitCamera(snap.camera), parts) : []
+
   const out = []
   for (let k = 0; k < parts; k++) {
     const seg = {
@@ -788,7 +838,7 @@ export function splitShotParts(s, want, gid) {
       chars: snap.chars,
       action: (actGroups[k] || []).join(''),
       dialogue: (dlgGroups[k] || []).join('\n'),
-      camera: snap.camera,
+      camera: camSegs.length ? camSegs[k] : snap.camera,
       dur: 0
     }
     if (snap.continuity) seg.continuity = snap.continuity
@@ -1235,32 +1285,58 @@ function groupBySegments(N, seg, total) {
 }
 
 /**
- * 容量补齐（纯函数）：镜头数装不下脚本总时长时，按各段落声明的秒数把**长段落**拆成多镜，
- * 直到容量够 —— 这是 `fitDurs` 丢时长问题的**根治**（把 N 变成「由 T 反推」的变量）。
+ * 配镜补齐（纯函数，2026-10-12 建；2026-10-13 加双轨配时路径）：
+ * 把「镜头数 N」变成**由时长反推**的变量 —— 这是 `fitDurs` 丢时长 / 拍太短的**根治**。
+ *
+ * 两条路径（**互斥**，看改编稿有没有「时长：」行）：
+ *   ① 逐段秒数路径（广告）：一段声明 20s 就至少要 ceil(20/15)=2 条 —— 按**段落秒数**补。
+ *   ② 双轨配时路径（剧集，2026-10-13）：改编稿没有秒数（`adapt.md` 禁止它写秒数），
+ *      改由**目标时长 T** 与**画面单元数 B** 推 `N*`（见 pacingPlan）——
+ *      需体裁声明 `limits.pacing` **且**调用方给了 `targetSec`，否则整层惰性、一个字节不动。
  *
  * 与 splitAll 的分工（两者互补，生成期都要跑）：
  *   splitAll     治「**单个**镜头内容太多」（台词 / 发声 > 15s）：按台词边界拆。
- *   fitShotCount 治「**全片 / 单段**时长装不下」（N × 15 < T，或某段落拿到的镜头数装不下它的声明秒数）：
- *                按**段落秒数**拆 —— 补镜量 = 该段需要的条数 − 它已有的条数。
+ *   fitShotCount 治「**全片 / 单段**装不下」（N × 15 < T，或某段拿到的镜头数装不下它该有的量）：按段补。
  *
- * 拆分粒度是「段落」：一段声明 20s 需要 ceil(20/15)=2 条；25s → 2 条。
  * 本函数只定**条数**，具体每条的秒数交给随后跑的 fitDurs 贴回（分工不重叠）。
  * 🔴 一个段落已有 k 条时，只把其中**最长的那条**（最可能是在硬撑的）拆成 (want−k+1) 段。
- * 🔴 判据是**逐段**的：不仅「全片装不下」要补，「总时长恰好对得上、但某几段被压进更少镜头」
- *    也要补（shots-ad.md 的「逐段对齐」此前只写在 md 里，程序零校验 → 7 镜 105s 那种
- *    「总时长完美、单镜全 15s」就会漏过去）。
+ * 🔴 只做加法、**永不合并**（合并是减法，拿「装不下」触发合并只会雪上加霜）。
  *
+ * @param {Array} shots 现有镜头
+ * @param {string} adapted 改编稿
+ * @param {object} limits 体裁声明的 limits
+ * @param {number} [targetSec] 本集目标时长（秒）；只在双轨配时路径用
  * @returns {{shots, groups, map, added, reason, totalSec}}
  *   groups / map 语义与 splitAll **完全一致**（map[旧下标] = 新下标数组），调用方按同一套逻辑重建槽位。
- *   reason: '' 未动 | 'capacity' 已补镜 | 'script' 脚本超体裁容量（回上游）
- *           | 'nolimit' 体裁没声明上限
- *           | 'align' 段落秒数拿不到 / 镜头比段落少 | 'aligned' 算下来无需新增
+ *   reason: '' 未动 | 'capacity' 按段落秒数补镜 | 'pacing' 按目标时长补镜 | 'paced' 双轨配时下已达标
+ *           | 'script' 脚本超体裁容量（回上游）| 'nolimit' 体裁没声明上限
+ *           | 'align' 段落秒数 / 单元数拿不到 | 'aligned' 算下来无需新增
  */
-export function fitShotCount(shots, adapted, limits) {
+export function fitShotCount(shots, adapted, limits, targetSec) {
   const arr = Array.isArray(shots) ? shots : []
   const noop = { shots: arr, groups: [], map: arr.map((_, i) => [i]), added: 0, reason: '' }
   const cap = shotCapacity({ shots: arr, adapted, limits })
-  if (!cap.totalSec) return noop                                  // 没有「时长：」声明（剧集）→ 整层跳过
+
+  // ① 双轨配时路径：改编稿**没有**逐段秒数（剧集）时才走；有秒数（广告）永远走下面那条老路
+  if (!cap.totalSec) {
+    const plan = pacingPlan({ adapted, shots: arr, targetSec, limits })
+    if (plan.ok && plan.units === cap.units) {
+      if (arr.length < plan.units) return { ...noop, reason: 'align', totalSec: plan.T }
+      if (arr.length < plan.Nstar) {
+        const cur = groupBySegments(arr.length, plan.per, plan.B)
+        const want = groupBySegments(plan.Nstar, plan.per, plan.B)
+        const g = growBySegments(arr, cur, want)
+        if (g.groups.length) {
+          return { shots: g.out, groups: g.groups, map: g.map, added: g.out.length - arr.length,
+                   reason: 'pacing', totalSec: plan.T }
+        }
+      }
+      return { ...noop, reason: 'paced', totalSec: plan.T }
+    }
+    return noop                                     // 没声明 pacing / 没目标时长 → 与从前完全一致
+  }
+
+  // ② 逐段秒数路径（广告）
   if (!cap.capN) return { ...noop, reason: 'nolimit' }             // 体裁没声明镜头量上限 → 不猜
   if (!cap.aligned) return { ...noop, reason: 'align' }            // 段落秒数拿不到 → 不猜分组
   const units = cap.units
@@ -1277,16 +1353,26 @@ export function fitShotCount(shots, adapted, limits) {
   else if (sum(need) <= cap.capN) want = need
   else return { ...noop, reason: 'script' }
 
-  const cur = cap.cur
+  const g = growBySegments(arr, cap.cur, want)
+  if (!g.groups.length) return { ...noop, reason: 'aligned', totalSec: cap.totalSec }
+  return { shots: g.out, groups: g.groups, map: g.map, added: g.out.length - arr.length,
+           reason: 'capacity', totalSec: cap.totalSec }
+}
+
+/**
+ * 按「每段目标条数」把各段**最长**的一条拆开（fitShotCount 两条路径共用，避免两处逻辑漂移）。
+ * 一个段落已有 k 条时只拆最长的那条，拆成 (want−k+1) 段 —— 顶格的那条最可能是在硬撑。
+ * @returns {{out, groups, map}} 语义与 splitAll 一致：map[旧下标] = 新下标数组
+ */
+function growBySegments(arr, cur, want) {
   const out = [], groups = [], map = []
   let si = 0
-  for (let i = 0; i < units; i++) {
+  for (let i = 0; i < cur.length; i++) {
     const k = cur[i]
     const owned = arr.slice(si, si + k)
     si += k
     const grow = (want[i] > owned.length) ? (want[i] - owned.length + 1) : 0
     if (grow >= 2) {
-      // 拆这段里「最长」的那条（顶格的那条最可能是在硬撑）
       let bi = 0
       for (let j = 1; j < owned.length; j++) {
         if ((Number(owned[j].dur) || 0) > (Number(owned[bi].dur) || 0)) bi = j
@@ -1306,8 +1392,7 @@ export function fitShotCount(shots, adapted, limits) {
       for (const s of owned) { map.push([out.length]); out.push(s) }
     }
   }
-  if (!groups.length) return { ...noop, reason: 'aligned', totalSec: cap.totalSec }
-  return { shots: out, groups, map, added: out.length - arr.length, reason: 'capacity', totalSec: cap.totalSec }
+  return { out, groups, map }
 }
 
 /**
@@ -1333,6 +1418,158 @@ export function storyUnits(md) {
   return { count: heads.length, heads, segSecs, totalSec: hasSec ? Math.round(totalSec) : 0, hasSec }
 }
 
+// ---------------------------------------------------------------
+// 双轨配时（2026-10-13）：镜数 N 由「目标时长 T」与「画面单元数 B」两个物理量推导
+//   背景：镜数此前由**字数**推（shots.md「每 1000 字 8-15 镜」）→ 两个反向事故都躲不掉：
+//     · 装不下   —— V9X-4：6 镜 × 15s = 90 < 105，静默丢 15s（已由容量闭环修）
+//     · 没人说要装 —— 真人剧：5 镜 × 均 4.8s = 24s，而目标是 60s
+//   第二根轨就是「目标时长」：R = T ÷ B（秒/单元）**与 N 无关** ⇒ 生成分镜**之前**就能判定
+//   「这份文案能不能舒服地撑到目标时长」。
+//   🔴 整层由体裁声明 `limits.pacing` 门控：不声明 = 一行都不判（广告继续走老路）。
+//   🔴 `beatUnit` 与 `secPerBeat` **没有全局默认值** —— 广告改编稿是「一整段画面描述」，
+//      逐行数 ≈ 1 → R ≈ 25 秒/单元 → 会直接误报「素材太稀」；两体裁根本不是一个数，
+//      所以必须由体裁自己声明，不声明就整层惰性，绝不猜。
+// ---------------------------------------------------------------
+
+/** 取 [lo, hi] 数值对，非法值回落 dft（pacing 的参数都按对数声明） */
+function pair2(v, dft) {
+  const a = Array.isArray(v) ? v : []
+  const lo = Number(a[0]), hi = Number(a[1])
+  return [Number.isFinite(lo) ? lo : dft[0], Number.isFinite(hi) ? hi : dft[1]]
+}
+
+/**
+ * 画面单元计数（纯函数）。一个「画面单元」= 一次换空间 / 换机位 / 换情绪节拍。
+ * 改编稿的**行结构本身就是它**：单元头（`场次 N：地点` / `段落 N：地点`）之下一行一个单元。
+ *   · 只数单元头**之后**的内容行；`时段：`/`出场人物：`/`时长：` 这类元信息行不算；
+ *   · 遇到下一个顶层小节（`五、…`）即停止 —— 免得把「节奏与情绪备注」数进来；
+ *   · 单元头之前的正文（梗概 / 角色设定 / 场景设定）一律不算。
+ * @param {string} md 改编稿
+ * @param {{beatUnit?: 'line'|'sentence'}} opts 由体裁声明；缺省/非法 → ok:false（整层惰性）
+ * @returns {{ok, reason, beatUnit, B, units, per}}
+ */
+export function episodeBeats(md, opts = {}) {
+  const beatUnit = String((opts && opts.beatUnit) || '').trim()
+  if (beatUnit !== 'line' && beatUnit !== 'sentence') {
+    return { ok: false, reason: 'nobeatunit', beatUnit, B: 0, units: 0, per: [] }
+  }
+  const isTop = ln => /^[一二三四五六七八九十]+[、.]/.test(ln)
+  const isHead = ln => /^(?:段落|场次)\s*\d+\s*[：:]/.test(ln)
+  const isMeta = ln => /^(?:时段|时间|出场人物|登场人物|人物|角色|地点|场景|时长|本段时长|段落时长)\s*[：:]/.test(ln)
+  const raw = []
+  let cur = null, started = false, stopped = false
+  for (const line of String(md == null ? '' : md).split(/\r?\n/)) {
+    const ln = line.trim()
+    if (isTop(ln)) { if (started) stopped = true; continue }
+    if (stopped) continue
+    if (isHead(ln)) { cur = []; raw.push(cur); started = true; continue }
+    if (!cur || !ln || isMeta(ln)) continue
+    cur.push(ln)
+  }
+  const cnt = b => (beatUnit === 'sentence')
+    ? b.reduce((a, l) => a + l.split(/[。！？!?]/).map(x => x.trim()).filter(Boolean).length, 0)
+    : b.length
+  const per = raw.map(cnt)
+  const B = per.reduce((a, b) => a + b, 0)
+  return { ok: per.length > 0, reason: per.length > 0 ? '' : 'nobeats', beatUnit, B, units: per.length, per }
+}
+
+/**
+ * 双轨配时规划（纯函数）。
+ *   唯一公式：`N_floor = max(⌈T/DUR_MAX⌉, ⌈B/每镜单元上限⌉)`
+ *             `N_ceil  = ⌊T/DUR_MIN⌋`
+ *             `N*      = clamp(⌈B/每镜目标单元数⌉, N_floor, N_ceil)`
+ *   `beatsPerShot`（目标，默认 1 = 一个画面单元一个镜头）就是那个**口味旋钮**：
+ *     1 → 快剪档（B=14 → 14 镜 / 均 4.3s）；1.5 → 中档（10 镜 / 6s）；2 → 慢镜档（7 镜 / 8.6s）。
+ *     三者**都不挤不拖**（R = T/B 与 N 无关），差别纯粹是审美，所以它必须由体裁声明而不是程序猜。
+ *   `beatsPerShotMax`（默认 2）是**硬上限**：H3 单镜一次连续生成、镜内不能剪辑，
+ *     一镜塞 >2 个画面单元，超出的那些根本演不出来（shots-ad.md rev6 的实测结论）。
+ * 🔴 T 的来源：`targetSec`（用户声明的本集目标时长）优先；没给才回落到脚本自带的「时长：」之和。
+ * @returns {{ok, reason, beatUnit, B, units, per, T, Tfrom, N, R, perShot, avgSec,
+ *            Nfloor, Nceil, Nstar, shotSec, secPerBeat, beatsPerShot, beatsPerShotMax}}
+ *   R = T/B（秒/单元，节奏刻度，**与 N 无关**）；perShot = B/N（单元/镜）；avgSec = T/N（平均镜长）
+ *   reason: '' 可用 | 'nopacing' 体裁没声明 | 'nobeatunit' 没声明数法 | 'nobase' 缺 T 或 B
+ */
+export function pacingPlan({ adapted = '', shots = 0, targetSec = 0, limits = {} } = {}) {
+  const p = (limits && limits.pacing) || null
+  const empty = { ok: false, reason: 'nopacing', beatUnit: '', B: 0, units: 0, per: [],
+                  T: 0, Tfrom: '', N: 0, R: 0, perShot: 0, avgSec: 0, Nfloor: 0, Nceil: 0, Nstar: 0,
+                  shotSec: [0, 0], secPerBeat: [0, 0], beatsPerShot: 0, beatsPerShotMax: 0 }
+  if (!p) return { ...empty }
+  const beatUnit = String(p.beatUnit || '').trim()
+  const eb = episodeBeats(adapted, { beatUnit })
+  if (!eb.ok) return { ...empty, reason: eb.reason || 'nobeatunit', beatUnit }
+  const N = Math.max(0, Math.round(Array.isArray(shots) ? shots.length : (Number(shots) || 0)))
+  const u = storyUnits(adapted)
+  const tgt = Math.round(Number(targetSec) || 0)
+  const T = tgt || (u.hasSec ? u.totalSec : 0)
+  const Tfrom = tgt ? 'target' : (u.hasSec ? 'script' : '')
+  const shotSec = pair2(p.shotSec, [4, DUR_MAX])
+  const secPerBeat = pair2(p.secPerBeat, [0, 0])
+  const maxB = Math.max(1, Number(p.beatsPerShotMax) || 2)
+  const tgtB = Math.min(maxB, Math.max(1, Number(p.beatsPerShot) || 1))
+  const B = eb.B
+  if (!T || !B) {
+    return { ...empty, reason: 'nobase', beatUnit, B, units: eb.units, per: eb.per, T, Tfrom, N,
+             shotSec, secPerBeat, beatsPerShot: tgtB, beatsPerShotMax: maxB }
+  }
+  const DMIN = shotSec[0], DMAX = shotSec[1]
+  const Nfloor = Math.max(Math.ceil(T / DMAX), Math.ceil(B / maxB))
+  const Nceil = Math.max(1, Math.floor(T / DMIN))
+  // 上下夹反时（T 太小塞不下 B）以 Nfloor 为准 —— 那正是「素材太密」，交给 pace-dense 报
+  const Nstar = Math.max(Nfloor, Math.min(Math.ceil(B / tgtB), Nceil))
+  const R = T / B
+  const perShot = N ? B / N : 0
+  const avgSec = N ? T / N : 0
+  return { ok: true, reason: '', beatUnit, B, units: eb.units, per: eb.per, T, Tfrom, N,
+           R, perShot, avgSec, Nfloor, Nceil, Nstar, shotSec, secPerBeat,
+           beatsPerShot: tgtB, beatsPerShotMax: maxB }
+}
+
+/**
+ * 双轨配时体检（纯函数）。三类 issue（都只在体裁声明了 `limits.pacing` 时才可能出）：
+ *   pace-cramp  单元/镜 > beatsPerShotMax —— 一镜装不下那么多画面单元（H3 单镜一次连续生成、
+ *               镜内不能剪辑，超出的单元根本演不出来）→ **下游补镜**（`fitShotCount` 的 pacing 路径）
+ *   pace-dense  R = T/B < secPerBeat[0] —— 素材太密 / 目标时长太短 → **上游**（延长目标或删内容）
+ *   pace-thin   R = T/B > secPerBeat[1] —— 素材太稀 / 撑不满目标 → **上游**（扩写或缩短目标）
+ * 🔴 后两类程序修不了（是「素材 ↔ 目标」的矛盾，不是配镜问题），如实报告回上游，绝不硬凑 ——
+ *    与 capacity-script 同一个哲学：能算的算死，不能算的说清楚。
+ */
+export function pacingAudit({ adapted = '', shots = 0, targetSec = 0, limits = {} } = {}) {
+  const plan = pacingPlan({ adapted, shots, targetSec, limits })
+  const issues = []
+  if (!plan.ok) return { ...plan, issues }
+  const maxB = plan.beatsPerShotMax || 2
+  if (plan.N > 0 && plan.perShot > maxB) {
+    issues.push({
+      kind: 'pace-cramp',
+      text: '单元挤：' + plan.B + ' 个画面单元塞进 ' + plan.N + ' 个镜头（' + plan.perShot.toFixed(1) +
+        ' 单元/镜，上限 ' + maxB + '）—— 一镜一次连续生成、镜内不能剪辑，超出的单元演不出来。建议补到 ' +
+        plan.Nstar + ' 镜（约 ' + (plan.T / plan.Nstar).toFixed(1) + ' 秒/镜）'
+    })
+  }
+  const [lo, hi] = plan.secPerBeat
+  const R = plan.R
+  if (lo && hi && R) {
+    if (R < lo) {
+      issues.push({
+        kind: 'pace-dense',
+        text: '素材偏密：' + plan.T + 's ÷ ' + plan.B + ' 个画面单元 = ' + R.toFixed(1) + ' 秒/单元，低于舒适下限 ' +
+          lo + 's —— 每个单元只有 ' + R.toFixed(1) + 's 展示，内容会被挤掉。目标时长至少要 ' +
+          Math.ceil(plan.B * lo) + 's，或者删减文案'
+      })
+    } else if (R > hi) {
+      issues.push({
+        kind: 'pace-thin',
+        text: '素材偏稀：' + plan.T + 's ÷ ' + plan.B + ' 个画面单元 = ' + R.toFixed(1) + ' 秒/单元，超过舒适上限 ' +
+          hi + 's —— 镜头里没有那么多内容可演，会空转拖沓。要么把文案扩写到约 ' +
+          Math.ceil(plan.T / hi) + ' 个画面单元，要么把目标时长缩到 ' + Math.floor(plan.B * hi) + 's'
+      })
+    }
+  }
+  return { ...plan, issues }
+}
+
 /**
  * 分镜自检（纯函数，2026-10-09）：把「生成出来多少镜 / 多长」与「改编稿里有几个叙事单元」对一遍。
  *
@@ -1341,15 +1578,17 @@ export function storyUnits(md) {
  * （4 段落 / 脚本 30 秒，上限 6 镜、时长上限 36 秒）时界面一声不响，用户只能自己去数。
  * 对照：场景名有 sceneCardIssues 黄标 + 缺档案自动兜底，镜头量这里此前什么都没有。
  *
- * limits 由**体裁声明**（genre json 的 `limits: {shotsPerUnit, durTol}`）——
+ * limits 由**体裁声明**（genre json 的 `limits: {shotsPerUnit, durTol, pacing}`）——
  * 剧集体裁的镜头量不是按段落数算的（基座是「每 1000 字 8-15 镜」），声明缺席就不判，
  * 免得给剧集项目刷假警报。
  * 🔴 2026-10-12 起多一层：**时长容量**（shotCapacity）——判「N 个镜头装不装得下脚本 T 秒」，
  *    纯算术、0 容忍、不受 durTol 影响。issue.kind ∈ units | capacity-script | capacity-short |
- *    capacity-content | dur（最后一条只在容量层没话说时才出）。
- * @returns {{units:number, shots:number, total:number, cap:object, capacity:object, issues:Array<{kind:string,text:string}>}}
+ *    capacity-seg | dur（最后一条只在容量层没话说时才出）。
+ * 🔴 2026-10-13 起再多一层：**双轨配时**（pacingAudit）—— 由体裁 `limits.pacing` 门控，
+ *    不声明则 issues 恒空。issue.kind ∈ pace-cramp | pace-dense | pace-thin。
+ * @returns {{units:number, shots:number, total:number, cap:object, capacity:object, pacing:object, issues:Array<{kind:string,text:string}>}}
  */
-export function shotCheck({ shots = [], adapted = '', limits = {} } = {}) {
+export function shotCheck({ shots = [], adapted = '', limits = {}, targetSec = 0 } = {}) {
   const list = Array.isArray(shots) ? shots : []
   const u = storyUnits(adapted)
   const n = list.length
@@ -1375,7 +1614,11 @@ export function shotCheck({ shots = [], adapted = '', limits = {} } = {}) {
       issues.push({ kind: 'dur', text: '总时长 ' + total + 's，超出脚本 ' + u.totalSec + 's 的 ±' + Math.round(durTol * 100) + '% 区间（' + cap.durLo + '-' + cap.durHi + 's）' })
     }
   }
-  return { units: u.count, shots: n, total, cap, capacity: capty, issues }
+  // 🔴 双轨配时（2026-10-13）：由体裁 `limits.pacing` 门控 —— 不声明则 issues 恒空，
+  //    广告继续走「逐段秒数 + capacity-seg」老路，一行都不受影响。
+  const pacing = pacingAudit({ adapted, shots: list, targetSec, limits })
+  for (const it of pacing.issues) issues.push(it)
+  return { units: u.count, shots: n, total, cap, capacity: capty, pacing, issues }
 }
 
 // ---------------------------------------------------------------
@@ -1521,17 +1764,40 @@ export function sceneCardIssues(shots, scenes) {
 //      ——只查「镜头引用了不存在的档案」。而上面的病根在**更上游**：
 //      「改编稿第三部分声明了什么」这条信息从未参与任何比对。
 //   本函数补上：声明（§三，逐字解析）→ 落地（scenes.json）→ 引用（shots[].scene）。
-//   解析不到 §三 声明（例如剧本体裁走 adapt.md，结构不同）→ declared 为空、恒 ok，绝不误报。
+//   解析不到 §三 声明 → declared 为空、恒 ok，绝不误报。
+//   🔴 2026-10-13 纠正一处**错误假设**：原注释写「剧集体裁走 adapt.md、结构不同 → 解析不到」，
+//     实际上剧集 §三 的字段清单里就有「**空间结构**」，凭它反倒能被扫出来 —— 于是一路报假警。
+//     现在两种体裁的 §三 都**正式支持**：标题认「空间」或「场景」，
+//     档案名兼容「裸名字」（广告 adapt-ad.md）与「场景名：名字」（剧集 adapt.md）两种写法。
+//   🔴 2026-10-13 又修一处**独立的**恒误报（与上面那条前缀问题不是一回事，别混）：`missing` 必须
+//     **门控在「已经生成过」之后**。原因是这个三方比对的**三方可得时机差了一个阶段**：
+//       · declared 来自改编稿 §三 —— **改编完就有值**（上游）
+//       · landed 来自 ep.scenes（scenes.json）—— **只在「生成分镜脚本」时**由 saveArtifact 写入（下游）
+//     用「上游必有值」比「下游必然为空」→ 生成前 missing 恒等于 declared → 横幅在「只改编了剧本」
+//     的阶段就必弹。实测（离线探针扫全项目）：凡能解析出 §三 的项目，未生成态 100% 报 missing。
+//     🔴 与配时类护栏的**原则区别**（判断护栏该不该在生成前出声，看它报的是哪一种）：
+//       · `pace-dense` 报「**生成动作不会自动解决**的矛盾」（T 撑不下 B 个画面单元）→ 生成前报**正是它的价值**；
+//       · `missing`    报「**生成动作本身就会解决**的状态」（还没落地）→ 生成前报是**纯噪音**。
+//     🔴 分层：`missing` 数组照旧如实计算（它是**事实**：这些还没落地），**只门控 issues**（那才是**告警**）。
+//        门控判据「已经生成过」= 已有镜头 或 已有落地档案 —— 这道门**不放过真事故**：
+//        V9X-4「座舱·内 丢了」发生时镜头必然非空 → 照旧报。
+//        其余四种 kind（extra / orphan / undeclared / collapsed）本身就以「落地非空」为前提，
+//        生成前不可能触发，无需门控。
 // ---------------------------------------------------------------
 export function sceneDeclIssues(adapted, scenes, shots) {
   const md = String(adapted == null ? '' : adapted)
   const lines = md.split(/\r?\n/)
-  // 先定位「第 X 部分：空间…」区块（标题写法兼容「二、…」「### 三、空间与光线连续性」），找不到就整篇扫
+  // 先定位「第 X 部分：空间…」区块（标题写法兼容「二、…」「### 三、空间与光线连续性」），找不到就整篇扫。
+  // 🔴 2026-10-13 修：标题判据必须**同时认「空间」与「场景」** ——
+  //    广告体裁的 adapt-ad.md 写「三、空间与光线连续性」，而**剧集体裁的 adapt.md 写「三、场景设定」**。
+  //    此前只认「空间」→ 剧集改编稿定位不到区块、退化成**全文扫**，再叠上下面那条「场景名：」前缀没剥的
+  //    毛病，就变成「真人剧 / 真人剧2 每集恒报『第三部分声明的空间档案没有落地』」。
+  //    放宽后：剧集能正确定位到 §三（同时 §四 分场剧本里那些「场次 N：地点」不会再被顺手扫到）。
   let start = 0
   let end = lines.length
   for (let i = 0; i < lines.length; i++) {
     const t = lines[i].trim().replace(/^#+\s*/, '')
-    if (/^[一二三四五六七八九十]+\s*[、.．]\s*.*空间/.test(t)) { start = i + 1; end = lines.length; continue }
+    if (/^[一二三四五六七八九十]+\s*[、.．]\s*.*(?:空间|场景)/.test(t)) { start = i + 1; end = lines.length; continue }
     if (start > 0 && /^[一二三四五六七八九十]+\s*[、.．]\s*\S/.test(t) && i > start) { end = i; break }
   }
   // 档案名 = 一个独立成段的短行，且**它的下一个非空行以「空间结构」开头**
@@ -1549,6 +1815,12 @@ export function sceneDeclIssues(adapted, scenes, shots) {
       //    剩 `*甲·外` 与落地的 `甲·外` 又不相等（同一个坑，换个写法再摔一次）。
       .replace(/^\s*(?:[-*+]\s+|\d+\s*[.、．)）]\s*)/, '')
       .replace(/^\*\*|\*\*$/g, '')
+      // 🔴 2026-10-13 修：剥掉「场景名：」**字段名前缀** —— 剧集体裁的 adapt.md 规定 §三 逐条写成
+      //    「场景名：沈府·婚房·内」。不剥的话 declared 是带前缀的整行，而落地的档案名是**裸名**
+      //    （「沈府·婚房·内」，取自 §五 场次头的写法）→ 两边永不相等 → missing 恒报，
+      //    连「场景全部落地」都消不掉（真人剧 / 真人剧2 实测：生成完也报「声明 3 条 · 落地 0 条」）。
+      //    🔴 冒号是**必须项**：以「场景」开头的合法名字（如「场景大道·外」）不含冒号，不会被误剥。
+      .replace(/^场景名称?\s*[:：]\s*/, '')
       .trim()
     if (!t || /^[#>|]/.test(t)) continue
     if (t.length > 40) continue            // 档案名不会这么长（护栏：避免把说明段当名字）
@@ -1561,10 +1833,12 @@ export function sceneDeclIssues(adapted, scenes, shots) {
   const landed = uniq((Array.isArray(scenes) ? scenes : [])
     .filter(o => o && String(o.name || '').trim()).map(o => String(o.name).trim()))
   const used = shotSceneNames(shots)
-  // 🔴 解析不到 §三 声明 → 一律不判（剧集体裁改编稿走 adapt.md，结构不同）：
-  //    这条护栏必须在前，否则「落地档案不在声明里」会对剧集全量误报。
+  // 「已经生成过」的判据（门控用，见函数头那条 🔴）：有镜头，**或**已有落地的场景档案。
+  // 为什么是「或」而不是只看镜头：用户可能把镜头全删了而档案还在 —— 那时「声明没落地」依然是真问题。
+  const generated = landed.length > 0 || (Array.isArray(shots) ? shots.length : 0) > 0
+  // 🔴 解析不到 §三 声明 → 一律不判（这条护栏必须在前，否则「落地档案不在声明里」会全量误报）。
   if (!declared.length) {
-    return { declared, landed, used, missing: [], extra: [], orphans: [], usedNotDeclared: [], collapsed: false, issues: [], ok: true }
+    return { declared, landed, used, generated, missing: [], extra: [], orphans: [], usedNotDeclared: [], collapsed: false, issues: [], ok: true }
   }
 
   const missing = declared.filter(n => landed.indexOf(n) < 0)
@@ -1589,7 +1863,9 @@ export function sceneDeclIssues(adapted, scenes, shots) {
       text: '改编稿第三部分声明了 ' + declared.length + ' 条空间档案，实际只落地 1 条（' + landed[0] +
         '）——多条声明被合并成一条，下游只会出一张参考图'
     })
-  } else if (missing.length) {
+  } else if (missing.length && generated) {
+    // 🔴 门控：只在「已经生成过」时才报（病根见函数头那条 🔴）——生成前 landed 恒为空，
+    //    这不是错误而是**待生成态**，报出来是纯噪音（用户还没点「生成分镜脚本」就先被报了警）。
     issues.push({
       kind: 'missing',
       text: '改编稿第三部分声明的空间档案没有落地：' + missing.join('、') + '（这些段落会退化成通用空镜）'
@@ -1606,7 +1882,7 @@ export function sceneDeclIssues(adapted, scenes, shots) {
   if (usedNotDeclared.length) {
     issues.push({ kind: 'undeclared', text: '镜头用了第三部分没声明的场景名：' + usedNotDeclared.join('、') })
   }
-  return { declared, landed, used, missing, extra, orphans, usedNotDeclared, collapsed, issues, ok: issues.length === 0 }
+  return { declared, landed, used, generated, missing, extra, orphans, usedNotDeclared, collapsed, issues, ok: issues.length === 0 }
 }
 
 // ---------------------------------------------------------------

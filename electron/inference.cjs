@@ -82,6 +82,56 @@ async function health() {
 
 /* ---------------- LLM ---------------- */
 
+/** 单条消息的「文字长度」：content 可能是字符串，也可能是 OpenAI 多模态数组（只数 text 段） */
+function contentLen(c) {
+  if (Array.isArray(c)) return c.reduce((n, p) => n + (p && p.type === 'text' ? String(p.text || '').length : 0), 0);
+  return String(c || '').length;
+}
+
+/** 图片扩展名 → MIME（llama-server 的 image_url 只认 data URL / http URL，不认本地路径） */
+const IMG_MIME = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp'
+};
+/** 一次请求最多带几张图（H3 的参考图上限 4 张；再多对 9B 模型也只是浪费上下文） */
+const MAX_LLM_IMAGES = 4;
+/** 单张图上限 8MB（base64 后约 +33%；4K PNG 通常 3–6MB，够用） */
+const MAX_LLM_IMAGE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * 把「本地图片绝对路径」读成 data URL，挂到最后一条 user 消息上（OpenAI 多模态格式）。
+ *
+ * 为什么在这里做、而不是在 UI 侧读好再传：base64 体积是原图的 1.33 倍，走 IPC 传进主进程
+ * 等于白搬一趟；而主进程本来就要把整个 body 序列化给 llama-server。传路径 → 这里读 → 直接进 body。
+ * 读不到 / 超大 / 非图片一律**跳过**（不能因为一张坏图把整次请求废掉）。
+ * 注意：只有 llama-server 带了 `--mmproj`（见 launcher.cjs 的 mmprojOf）才认得多模态 content，
+ * 否则会直接报错 —— 所以 UI 侧只在引擎报告 vision=true 时才允许勾选。
+ */
+function attachImages(messages, images) {
+  const list = (Array.isArray(images) ? images : [])
+    .filter(p => typeof p === 'string' && p && (() => { try { return fs.statSync(p).isFile(); } catch (_) { return false; } })());
+  if (!list.length) return { messages, used: [] };
+  const parts = [], used = [];
+  for (const p of list.slice(0, MAX_LLM_IMAGES)) {
+    let buf = null;
+    try { buf = fs.readFileSync(p); } catch (_) { continue; }
+    if (!buf.length || buf.length > MAX_LLM_IMAGE_BYTES) continue;
+    const mime = IMG_MIME[path.extname(p).toLowerCase()] || 'image/png';
+    parts.push({ type: 'image_url', image_url: { url: 'data:' + mime + ';base64,' + buf.toString('base64') } });
+    used.push(path.basename(p));
+  }
+  if (!parts.length) return { messages, used: [] };
+  const out = messages.map(m => ({ ...m }));
+  let idx = -1;
+  for (let i = out.length - 1; i >= 0; i--) { if (out[i].role === 'user') { idx = i; break; } }
+  if (idx < 0) return { messages, used: [] };
+  const text = Array.isArray(out[idx].content)
+    ? out[idx].content.filter(p => p && p.type === 'text').map(p => String(p.text || '')).join('\n')
+    : String(out[idx].content || '');
+  out[idx].content = [{ type: 'text', text }].concat(parts);
+  return { messages: out, used };
+}
+
 /**
  * LLM 对话（OpenAI 兼容，llama-server）。
  *
@@ -91,11 +141,17 @@ async function health() {
  *    流式下响应头 ~180ms 就返回，且能持续读增量。
  * 2) 默认关闭思考模式（chat_template_kwargs.enable_thinking=false）。Qwen3.5 默认先吐
  *    大段 reasoning_content，content 为空；9B 模型仅 ~9 tok/s，开着思考会白烧几分钟。
+ *
+ * 多模态（2026-10-13）：opts.images = 本地图片绝对路径数组 → 自动挂到最后一条 user 消息上。
+ * 需要 llama-server 启动时带了 --mmproj（launcher.cjs 自动探测），否则模型不认。
  */
-async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = false, thinking = false, timeoutMs = 900000, onDelta = null } = {}) {
+async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = false, thinking = false, timeoutMs = 900000, onDelta = null, images = null } = {}) {
   const t0 = Date.now();
-  const userLen = messages.reduce((n, m) => n + String(m.content || '').length, 0);
-  logger.detail('LLM 请求：输入约 ' + userLen + ' 字，max_tokens=' + maxTokens + (json ? '，JSON 模式' : ''));
+  const att = images ? attachImages(messages, images) : { messages, used: [] };
+  const msgs = att.messages;
+  const userLen = msgs.reduce((n, m) => n + contentLen(m.content), 0);
+  logger.detail('LLM 请求：输入约 ' + userLen + ' 字，max_tokens=' + maxTokens + (json ? '，JSON 模式' : '')
+    + (att.used.length ? '，附图 ' + att.used.length + ' 张（' + att.used.join('、') + '）' : ''));
   // 软护栏（2026-09-27）：按本机 Qwen3.5 实测换算率（1 中文字 ≈ 0.64 token）估算总量，
   // 接近每槽 -c 32768 上限时提前警告（输出预算会被压缩）——只提示、不拦截。
   const estIn = Math.round(userLen * 0.64);
@@ -111,7 +167,7 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
 
   const body = {
     model: 'local',
-    messages,
+    messages: msgs,
     temperature,
     max_tokens: maxTokens,
     stream: true,
@@ -515,6 +571,7 @@ function injectMedia(wf, media, profile) {
     firstImg: String(pick(ids0.firstImg, 200)), firstScale: String(pick(ids0.firstScale, 201)),
     lastImg: String(pick(ids0.lastImg, 202)), lastScale: String(pick(ids0.lastScale, 203)),
     refImg: i => String(pick(ids0.refImg, 220) + i),
+    refImgScale: i => String(pick(ids0.refImgScale, 250) + i),
     refVid: i => String(pick(ids0.refVid, 230) + i),
     refVidComp: i => String(pick(ids0.refVidComp, 240) + i),
     guide: i => String(pick(ids0.guide, 90) + i)
@@ -571,9 +628,21 @@ function injectMedia(wf, media, profile) {
     for (const [key, spec] of Object.entries(ex.afterLength || {})) ins[key] = refExtraValue(spec, N, media);
 
     (media.refImages || []).forEach((name, i) => {
-      const nid = id.refImg(i);
+      const nid = id.refImg(i), sid = id.refImgScale(i);
       wf[nid] = { class_type: 'LoadImage', inputs: { image: name } };
-      ins[String(Wg.refImageKey || 'ref_images.ref_image_{i}').replace('{i}', i)] = [nid, 0];
+      // 🔴 2026-10-14：参考图先缩放到**画布尺寸**再喂给条件节点（与首帧/尾帧同一套口径）。
+      //    模型节点内部虽然也会缩放参考图（H3 的 ref_image_size='match' 是「按像素面积等比、
+      //    只缩不放」），但那是「面积对齐」不是「尺寸对齐」—— 参考图与画布的长宽并不相同。
+      //    裁剪方式由方案声明（wiring.frameCrop.ref），默认 center：等比缩放后裁掉超出部分，
+      //    人物比例不变形（比例不一致的图会裁掉边缘，这是明确接受的取舍）。
+      wf[sid] = {
+        class_type: 'ImageScale',
+        inputs: {
+          image: [nid, 0], upscale_method: Wg.scaleMethod || 'lanczos',
+          width: W, height: H, crop: crop.ref || 'center'
+        }
+      };
+      ins[String(Wg.refImageKey || 'ref_images.ref_image_{i}').replace('{i}', i)] = [sid, 0];
     });
     (media.refVideos || []).forEach((name, i) => {
       const nid = id.refVid(i), cid = id.refVidComp(i);
@@ -1663,5 +1732,7 @@ module.exports = {
   srtTime, parseDurationLine, parseLevelCurve, bestSpeechSpan, trimSpeechSpan, cueText, cueWeight, spreadByWeight, buildCues, buildFilmCues, cuesToSrt,
   analyzeShot, probeDuration,
   // 导出仅为离线自测（test/h3-inject-check.cjs 直接验证连线，不需要显卡/ComfyUI）
-  injectH3Media
+  injectH3Media,
+  // 多模态纯函数（离线自测：把本地图读成 data URL 挂到 user 消息上）
+  attachImages, contentLen, IMG_MIME, MAX_LLM_IMAGES, MAX_LLM_IMAGE_BYTES
 };

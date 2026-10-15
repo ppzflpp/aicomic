@@ -49,7 +49,8 @@ const FILES = {
   'h3ref.md': 'H3 提示词规范（参考模式）',
   'promptgen.md': '生图提示词规范（档案 → 提示词）',
   'ltx.md': 'LTX-2.5 提示词规范',
-  'split.md': '拆镜重写规范（拆分镜头后的画面补写）'
+  'split.md': '拆镜重写规范（拆分镜头后的画面补写）',
+  'views.md': '视角规范（三视图 / 多视角派生）'
 };
 
 function isKnown(name) { return Object.prototype.hasOwnProperty.call(FILES, name); }

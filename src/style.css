@@ -175,6 +175,13 @@ body{
 .script-col + .script-col{border-left:1px solid var(--line-soft); padding-left:14px;}
 .script-col textarea{flex:1; min-height:150px;}
 .zone-label{margin:0 0 6px; font-size:11px; color:var(--sub-2);}
+/* 「AI 优化稿」标题行（2026-10-13 Dragon）：小字区标 + 节奏体检卡（StageShots 通过 Teleport 挂进 #adapt-pace）。
+   🔴 独立成类，**不许改 .zone-label 本体** —— verify3 既断言 .zone-label 的文本恰好是
+      ['原文输入','AI 优化稿']（控件塞进 <p> 会污染文本），又断言它的字号小于模块标题。
+   align-items 用 center 而不是 baseline：右边那坨是有边框的胶囊，基线对齐会把它顶歪。
+   flex-wrap 开着 —— 窄屏时节奏卡整体换到下一行，不挤扁那个输入框。 */
+.zone-label-row{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 6px;}
+.zone-label-row > .zone-label{margin:0;}
 .adapt-ops{margin-top:10px;}
 .adapt-ops #adapt-ms, .adapt-ops #adapt-ops{display:inline-flex; align-items:center;}
 @media (max-width:1200px){ .script-grid{grid-template-columns:1fr;} .script-col + .script-col{border-left:none; padding-left:0; border-top:1px solid var(--line-soft); padding-top:10px;} }
@@ -490,6 +497,32 @@ input[type=search]:focus{
 .scene-check .sc-ico{flex-shrink:0; font-size:13px;}
 .scene-check .sc-txt{flex:1; min-width:0;}
 .scene-check .sc-txt b{color:#fda4af; font-weight:600;}
+/* 节奏体检卡（2026-10-13）：双轨配时 —— 显示「画面单元数 / 目标时长 / 建议镜数 / 秒每单元」。
+   只在体裁声明了 limits.pacing（剧集）时渲染；色调走中性青 —— 它不是告警，是度量。
+   🔴 类名带 .pace-card / .pc- 前缀：CSS 无作用域，避免与别块同名字符串撞车。 */
+.pace-card{
+  display:flex; align-items:center; gap:8px; margin-bottom:8px;
+  font-size:11.5px; line-height:1.7; color:#9fb6c9;
+  background:rgba(148,197,255,.06); border:1px solid rgba(148,197,255,.22);
+  border-radius:7px; padding:6px 9px;
+}
+.pace-card .pc-ico{flex-shrink:0; font-size:13px;}
+.pace-card .pc-txt{flex:1; min-width:0;}
+.pace-card .pc-txt b{color:#bcd7f0; font-weight:600;}
+.pace-card .pc-in{
+  width:70px; margin:0 3px; padding:2px 6px; font-size:11.5px; text-align:right;
+  background:rgba(255,255,255,.06); color:#dbe7f2;
+  border:1px solid rgba(255,255,255,.18); border-radius:5px; outline:none;
+}
+.pace-card .pc-in:focus{border-color:rgba(148,197,255,.6);}
+.pace-card .pc-note{color:#7d94a8; font-style:normal;}
+/* 节奏体检卡搬进「AI 优化稿」标题行后的**紧凑版**（2026-10-13 Dragon）：原来它在分镜页是整行宽，
+   现在只占右栏标题行剩下的一半 → 去掉下边距、收窄内边距、字号降一档，让它和 11px 的区标齐平。
+   🔴 只用**限定后代选择器**覆盖，`.pace-card{...}` 与 `.pace-card .pc-in` 本体一个字不动
+      —— prompts-check 钉了这两个精确串（`.pace-card{` / `.pace-card .pc-in`）。 */
+.zone-label-row .pace-card{margin:0; padding:1px 7px; gap:6px; font-size:11px; line-height:1.6; border-radius:6px;}
+.zone-label-row .pace-card .pc-in{width:56px; padding:1px 5px; font-size:11px;}
+.zone-label-row .pace-card .pc-ico{font-size:12px;}
 /* 拆镜黄标（第 2 批）：本镜由程序按台词边界拆开而来。用冷色区分于琥珀系的时长/合并提示，
    右侧同行的两个小按钮（AI 重写 / 撤回）比 .btn.sm 再小一档，不撑高提示行 */
 .shot-row .dur-warn.spl{color:#93c5fd; background:rgba(147,197,253,.10); border-color:rgba(147,197,253,.32);}
@@ -522,12 +555,16 @@ input[type=search]:focus{
 }
 .kind-tag.scene{color:#c4b5fd; background:rgba(139,92,246,.16); border-color:rgba(139,92,246,.32);}
 /* 大预览图左上角的角标：名称与定位各一枚独立徽标（外层 .kind-wrap 绝对定位，内部横向排列、分开显示）。
-   字号与卡片里的「分辨率」标签同号（11.5px），并加深色半透明底 + 毛玻璃 —— 压在图上也要看得清 */
+   字号与卡片里的「分辨率」标签同号（11.5px），并加深色半透明底 + 毛玻璃 —— 压在图上也要看得清。
+   🔴 2026-10-13 三改（Dragon）：角标由「一排」变「两行」—— 名称/定位一行（.kw-top）、
+      分辨率 + 耗时一行（.kw-meta）；所以 .kind-wrap 改成**竖排**容器（见下面 .kw-top / .kw-meta 注释）。 */
 .kind-wrap{
   position:absolute; left:6px; top:6px; z-index:2;
-  display:flex; align-items:flex-start; gap:5px; flex-wrap:wrap;
+  display:flex; flex-direction:column; align-items:flex-start; gap:5px; flex-wrap:nowrap;
   max-width:calc(100% - 12px);
 }
+/* 第 1 行 = 名称徽标 + 定位徽标 + 「+」派生按钮（原来那一整排，现在自己占一行，内部仍可换行） */
+.kind-wrap > .kw-top{display:flex; align-items:flex-start; gap:5px; flex-wrap:wrap; min-width:0;}
 .kind-tag-pos{
   font-size:11.5px; font-weight:600; line-height:1.3;
   padding:3px 9px; border-radius:99px;
@@ -663,8 +700,75 @@ input[type=search]:focus{
 /* 分辨率并进本行（2026-10-08，Dragon）：靠左、宽度按内容自适应；其余元素仍靠右 */
 .ops-row .card-res{margin-top:0; margin-right:auto; width:auto; flex:0 0 auto;}
 .ops-row .card-res select{flex:0 0 auto; width:auto; min-width:0;}
+/* 三视图开关（2026-10-13）：与「分辨率」同一行。
+   🔴 选择器必须带 .ops-row 限定 —— 这些类被 StageChars / StageLibrary / StageShots 共用，裸类名会漏到别的页面。 */
+.ops-row .card-tv{margin-top:0; flex:0 0 auto; display:inline-flex; align-items:center; gap:5px;
+  font-size:11.5px; color:var(--sub); cursor:pointer; user-select:none; white-space:nowrap;}
+.ops-row .card-tv input{accent-color:#38bdf8; margin:0; cursor:pointer;}
+.ops-row .card-tv input:disabled{cursor:not-allowed;}
+/* 角色卡操作区改「竖排两行」（2026-10-13 三改，Dragon：
+   「生成3视图」与分辨率**同一行、靠右**；「文生图」按钮挪到分辨率**下面**那一行）。
+   第 1 行 .ops-res-row = 分辨率（靠左）+ 3 视图（margin-left:auto 顶到行尾）；
+   第 2 行 = 生图按钮（align-self:flex-end，仍停在卡片右下角）。
+   🔴 只加在专用的 .ops-stack 上，不动共用的 `.ops-row` 本体 —— 后者被 StageLibrary / StageShots
+      复用，给根容器加 column 会连带把那两个页面也竖过来。
+   🔴 上一版用过的 .ops-col（竖排容器）已删除，别再混用两套。 */
+.ops-row.ops-stack{flex-direction:column; align-items:stretch; gap:6px;}
+.ops-row.ops-stack .ops-res-row{display:flex; align-items:center; gap:8px; min-width:0;}
+.ops-row.ops-stack .card-res{margin-right:0;}   /* 行内不再靠 margin-right:auto 推右，改由 .card-tv 顶 */
+.ops-row.ops-stack .card-tv{margin-left:auto;}
+.ops-row.ops-stack > .btn{align-self:flex-end;}
 /* 出图耗时：紧贴「生图」按钮左边 */
 .ops-row .gen-ms{margin-right:2px;}
+/* ================= 主体卡内的「视角浮层」（2026-10-13 二改，Dragon） =================
+   背景：`主体名--视角` 的视角卡改造前各自占满一整格（430×506，与主体卡一样大），三视图一出
+   就多两张同样大的卡并排摊开。现在视角卡不进网格，而是**悬浮**在主体卡大预览图的**下缘**：
+   点一张 → 大图就地换成那张、右栏提示词跟着切（没有「展开面板」这个态）。
+   🔴 只改渲染层：视角卡在 chars.json 里仍是独立条目（共用主体档案 / `_manual` 豁免 /
+      一键填充整组 / 级联删除 / H3 原生多视角合并全部照旧，见 StageChars 的 ordered()）。
+   🔴 选择器一律带 .ccard 限定、类名一律 .vf- 前缀 —— 样式表无作用域，
+      StageLibrary 复用同一批 .ccard/.cleft/.cright/.thumbs，裸类名会漏到库编辑区。 */
+.ccard .vfloat{
+  position:absolute; left:0; right:0; bottom:0; z-index:3;
+  display:flex; align-items:center; justify-content:center; gap:6px; flex-wrap:wrap;
+  padding:5px 8px 6px;
+  /* 只在下缘铺一层渐变（不是整块实心底）：图片不被一块矩形硬切断 */
+  background:linear-gradient(to top, rgba(8,11,18,.94), rgba(8,11,18,.6) 58%, rgba(8,11,18,0));
+  /* 🔴 浮层本身不接事件：让「图片下缘」那块仍然能点开放大预览（只有 chip 自己可点） */
+  pointer-events:none;
+}
+/* 视角 chip 也吃**同一个组色**（--grp-h 由主体卡的 .vgrp 内联上来、向下继承）：
+   认亲不只靠卡片边框，浮层里的小图边框也是本组色相 —— 两组并排时一眼分得清谁是谁的视角。
+   var(--grp-h,212) 的兜底只是保险：浮层只可能出现在「组内 ≥2 张」的卡上，那时一定有 --grp-h。 */
+.ccard .vf-chip{
+  pointer-events:auto;
+  display:inline-flex; flex-direction:column; align-items:center; gap:2px;
+  padding:3px 5px 2px; min-width:0;
+  background:rgba(11,16,25,.66); border:1px solid hsl(var(--grp-h,212) 40% 38%); border-radius:8px;
+  cursor:pointer; transition:border-color .14s, background .14s;
+}
+.ccard .vf-chip:hover:not(:disabled){border-color:hsl(var(--grp-h,212) 70% 60%); background:rgba(59,130,246,.16);}
+/* 正在看的那张：亮边 + 提亮（几张小图排一起时，一眼看出当前在预览哪张） */
+.ccard .vf-chip.on{border-color:hsl(var(--grp-h,212) 90% 74%); background:rgba(59,130,246,.24);}
+.ccard .vf-chip:disabled{opacity:.5; cursor:not-allowed;}
+/* 🔴 手型（2026-10-13 三改，Dragon 反馈「悬停视角卡显示的是放大镜、不是手型」）：
+   浮层里的小图是 <img>，被 `.bigprev img{cursor:zoom-in}`（0,1,1）盖住 → 点选视角的暗示被
+   误导成「点开看大图」。这两条用更具体的选择器（0,2,0）把它改回手型 / 禁用态，
+   连子元素一起覆盖（img 自身的 cursor 优先于父 button）。 */
+.ccard .vf-chip, .ccard .vf-chip *{cursor:pointer;}
+.ccard .vf-chip:disabled, .ccard .vf-chip:disabled *{cursor:not-allowed;}
+.ccard .vf-thumb{flex:none; width:24px; height:30px; border-radius:5px; overflow:hidden;
+  background:#0b0f16; display:flex; align-items:center; justify-content:center;}
+.ccard .vf-thumb img{width:100%; height:100%; object-fit:contain;}
+.ccard .vf-none{font-style:normal; font-size:10px; color:#48566b;}
+.ccard .vf-name{font-size:10px; line-height:1.2; color:#c8d4e4; max-width:60px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap;}
+.ccard .vf-chip.on .vf-name{color:#e6edf7;}
+/* 🔴 2026-10-13 三改：原来这里是把分辨率 / 耗时两枚角标抬高 56px 躲开浮层 —— 它们已搬去名称行下面
+   （见上面 .kw-meta），这两条**整段删除**，别再加回来。
+   还需要抬高的只剩「库来源徽标」（.lib-badge 仍在图片左下角，会被浮层的渐变盖住一半）：
+   56px ≈ 浮层实际高度（5 + 30 + 2 + 12 + 6 + 边框），再留 6px 余量。 */
+.bigprev:has(.vfloat) .lib-badge{bottom:56px;}
 /* 「一键填充」独立一行、靠左（右下角的「生图 / 图生图」按钮位置保持不动）；
    2026-09-23：缩成小号胶囊 + 字号再收一档，更精致 */
 .cops.fill-row{justify-content:flex-start; margin-top:2px;}
@@ -1085,6 +1189,15 @@ input[type=search]:focus{
 .ref-thumb[draggable="true"]:active{cursor:grabbing;}
 .ref-thumb.drag-src{opacity:.4;}
 .ref-thumb.drag-to{border-color:rgba(125,211,252,.95); box-shadow:0 0 0 2px rgba(125,211,252,.45);}
+/* 未使用的参考素材（2026-10-14）：分镜行「角色」里没有这个主体 → 不写进提示词、也不送去生成。
+   仍然显示出来（用户看得见自己挂过什么），压暗 + 左下角贴一枚「未使用」，hover 有完整原因
+   （见 StageShots.refTitle）。判定在 StageShots.effRefs，与提示词/生成同源。 */
+.ref-thumb.unused{opacity:.4; filter:grayscale(1);}
+.ref-thumb.unused::after{
+  content:"未使用"; position:absolute; left:3px; bottom:3px; z-index:3; pointer-events:none;
+  font-size:9.5px; line-height:1; padding:2px 4px; border-radius:4px;
+  background:rgba(60,40,6,.86); color:#fde68a; border:1px solid rgba(251,191,36,.5);
+}
 /* 素材角标：贴在每张缩略图左上角（替代原来的左侧文字标签），不挡点击 */
 .rtag{
   position:absolute; left:3px; top:3px; z-index:2; pointer-events:none;
@@ -1100,6 +1213,18 @@ input[type=search]:focus{
   transition:border-color .14s, color .14s, background .14s;
 }
 .ref-add:hover{border-color:rgba(34,197,94,.6); color:#dcfce7; background:rgba(34,197,94,.13);}
+/* 「读图」开关（2026-10-13）：只在本地大模型挂了视觉投影器（mmproj）时出现。
+   中性青（非告警色）—— 关 = 虚线空框，开 = 实心青。
+   限定在 .ref-row 下：CSS 无作用域，裸类名会串到别的块。 */
+.ref-row .ref-eye{
+  flex-shrink:0; align-self:center; width:42px; height:34px; padding:0;
+  background:rgba(255,255,255,.04); border:1px dashed var(--line); border-radius:6px;
+  color:#9fb0c6; font-size:11px; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition:border-color .14s, color .14s, background .14s;
+}
+.ref-row .ref-eye:hover{border-color:rgba(125,211,252,.6); color:#dff2ff; background:rgba(125,211,252,.12);}
+.ref-row .ref-eye.on{border-style:solid; border-color:rgba(56,189,248,.75); color:#e6f7ff; background:rgba(56,189,248,.2);}
 /* 「+视频」添加按钮跟随视频框形状：4:3 横框 113×85，与参考视频缩略框同形 */
 .ref-add.wide{width:113px; aspect-ratio:4/3;}
 /* ================= 首帧接力（2026-10-09） ================= */
@@ -1162,6 +1287,14 @@ input[type=search]:focus{
   background:rgba(251,191,36,.09); border:1px solid rgba(251,191,36,.4); border-radius:99px;
   padding:3px 11px; transition:background .15s; white-space:nowrap;
 }
+/* 分镜总时长胶囊（2026-10-13，Dragon）：挂在 App.vue「分镜脚本」模块标题后面
+   （StageShots Teleport 到 #shots-total，实时跟随编辑）。
+   🔴 中性青、非告警色 —— 它只是**读数**：镜头多几个少几个都不该自己变脸报警。 */
+.total-dur{
+  display:inline-flex; align-items:center; gap:5px; font-size:11.5px; line-height:1.1;
+  color:#8fd3f4; background:rgba(56,189,248,.09); border:1px solid rgba(56,189,248,.32);
+  border-radius:99px; padding:3px 11px; white-space:nowrap;
+}
 .stale b{font-weight:600;}
 .stale:hover{background:rgba(251,191,36,.18);}
 .stale::before{content:"⚠"; font-size:12px;}
@@ -1223,9 +1356,12 @@ input[type=search]:focus{
 }
 
 /* ================= 项目配置弹窗（大气的分组式设计） ================= */
-/* 项目配置弹窗：比通用弹窗宽（三轴的选项卡片要摊开），高了可滚（用户加轴选项后不会被裁掉） */
+/* 项目配置弹窗：比通用弹窗宽（四轴的选项卡片一行要摊开 5 张），高了可滚（用户加轴选项后不会被裁掉）
+   🔴 2026-10-14：620px → 920px。四轴的选项网格从「auto-fill 自动换行」改成「固定一行 5 张」后，
+      5 张卡挤在 620px 里每张只剩 ~103px（desc 一行 7 个字），必须把弹窗一起加宽才读得出来。
+      窗口默认 1500×940、最小 1200 → 920px 落在 77% 以内，配合 max-width 不会溢出。 */
 .proj-dialog{
-  width:620px; max-width:calc(100vw - 40px); padding:0;
+  width:920px; max-width:calc(100vw - 40px); padding:0;
   max-height:92vh; overflow-x:hidden; overflow-y:auto;
 }
 .proj-head{
@@ -1261,9 +1397,14 @@ input[type=search]:focus{
 .proj-row.col{flex-direction:column; align-items:stretch; gap:9px; padding:9px 12px;}
 .proj-row.col .proj-kind{width:auto;}
 
-/* ---- 三轴「点选网格」：点一下即选中（替代原来的下拉） ----
-   卡片把 label 与 desc 一起摊开：这几个选项本来就不多，藏进下拉反而要逐个展开才知道有什么。 */
-.popt-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:9px;}
+/* ---- 四轴「点选网格」：点一下即选中（替代原来的下拉） ----
+   卡片把 label 与 desc 一起摊开：这几个选项本来就不多，藏进下拉反而要逐个展开才知道有什么。
+   🔴 2026-10-14：改为**固定一行 5 张**（原 `auto-fill minmax(230px,1fr)` 在 620px 弹窗里是 2 张一行，
+      四个轴共折成 8 行，最下面的「制作调性」整块被折进折叠线以下，用户以为没法改）。
+      四轴里选项最多的就是「制作调性」的 5 个 → 5 列正好把每一轴都收成一行，弹窗只剩 4 行。
+      不足 5 个的轴（画面风格 / 世界设定各 3 个、内容体裁 2 个）左侧对齐、右侧留白 ——
+      卡片宽度四轴一致，比「按数量拉伸」更好扫读。 */
+.popt-grid{display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:9px;}
 .popt{
   display:flex; flex-direction:column; gap:3px; text-align:left;
   padding:9px 11px; margin:0; font:inherit; cursor:pointer;
@@ -1276,9 +1417,11 @@ input[type=search]:focus{
 .popt b{font-size:12.5px; font-weight:600; color:#dbe5f5; line-height:1.35;}
 .popt span{
   font-size:11px; line-height:1.5; color:#7f8ea8;
-  /* 🔴 限 2 行（曾 3 行）：desc 的全文在弹窗下方的说明小字里有完整版，卡片里截断不丢信息；
-     不截的话「制作调性」5 张卡占 3 排，整块被折到弹窗可视区外，用户以为没法改 */
-  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden;
+  /* 🔴 2026-10-14：**取消 2 行截断**。当初截断是因为一行只放 2 张卡、四轴共 8 行，
+     不截的话「制作调性」那 5 张卡会把整块顶到可视区外面；改成一行 5 张后总行数只剩 4 行，
+     纵向反而富余 —— 而卡片变窄后 2 行只放得下 ~24 字（各轴 desc 有 27~59 字），
+     等于除选中那张以外，其余选项的说明全是残句。放开后同一行由 grid 默认 stretch 拉成等高，
+     卡片不会参差。 */
 }
 /* 选中态：蓝描边 + 淡蓝底 + 右上角勾（不靠颜色单一维度表达，色弱也认得出） */
 .popt.on{
@@ -1301,6 +1444,28 @@ input[type=search]:focus{
 .proj-row select:hover,.env-row select:hover{border-color:#2c3646;}
 .proj-row select:focus,.env-row select:focus{outline:none; border-color:var(--blue);}
 .proj-kind{flex:none; width:72px; font-size:12.5px; color:#b9c6dd; font-weight:500;}
+
+/* ---- 视频质量 / 视频比例 点选网格（2026-10-15）----
+   两者都是 .proj-row.col（标签在上、控件在下）且**占满弹窗宽度**：档位有 3 张、比例有 2 张，
+   塞进 .proj-two 的半宽里每张只剩 ~140px，desc 会被压成残句（与 2026-10-14 四轴踩过的坑同类）。 */
+.proj-tier-grid{grid-template-columns:repeat(3,minmax(0,1fr));}
+.proj-aspect-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+/* 质量/比例/分辨率 与 风格四轴 现在是两个 .proj-grid 相邻 → 第二段别再吃一次上内边距 */
+.proj-grid + .proj-grid{padding-top:0;}
+/* 「推荐」角标：当前值 = 「档位+比例」的推荐值。auto 带出来的值都带它，手改成别的就没了 —— 位置提示，不拦截。 */
+.proj-rec{
+  flex:none; font-style:normal; font-size:10.5px; line-height:1;
+  padding:3px 6px; border-radius:4px; color:#7dd3fc;
+  background:rgba(56,189,248,.12); border:1px solid rgba(56,189,248,.34);
+}
+/* 「恢复推荐」：用户手动改过这一项才出现，一点回到推荐值并解除 touched */
+.proj-recbtn{
+  flex:none; font:inherit; font-size:10.5px; line-height:1; cursor:pointer;
+  padding:4px 7px; border-radius:4px; color:#9fb6d6;
+  background:rgba(255,255,255,.03); border:1px dashed #2c3a4f;
+  -webkit-appearance:none; appearance:none;
+}
+.proj-recbtn:hover{color:#dbe5f5; border-color:#3b4a63; background:rgba(255,255,255,.06);}
 /* 视频质量档位说明（选中档位的一句话说明，只讲快慢与质量，不提模型） */
 .proj-hint{margin:8px 22px 0; font-size:11.5px; line-height:1.6; color:#7f8ea8; min-height:14px;}
 /* 风格体系的问题提示（风格包文件坏了 / 核心键缺失 / 项目原来用的组合已不存在）——
@@ -1353,13 +1518,33 @@ input[type=search]:focus{
   background:rgba(10,14,22,.72); border:1px solid rgba(255,255,255,.14);
   backdrop-filter:blur(4px); pointer-events:none;
 }
-/* 角色卡大预览（2026-09-27 二改，Dragon）：分辨率角标常驻显示于左下角（不再悬停才浮现） */
+/* 角色卡大预览的分辨率角标（2026-09-27 二改，Dragon）：常驻显示于左下角（不再悬停才浮现）。
+   🔴 2026-10-13 三改：**StageChars 里那枚已搬进 .kind-wrap 的元信息行**（见下面 .kw-meta 那段），
+      这条规则现在只作用于 **StageLibrary 库编辑区**的大预览（它结构没动，也靠这条落在左下角）。 */
 .bigprev .dim-tag{top:auto; right:auto; bottom:6px; left:6px;}
-/* 出图耗时角标（2026-10-08，Dragon）：从下方出图行挪到图上、常驻右下角
-   （右下角原为空位：左上=名称/定位、左下=分辨率与库来源徽标）；
-   显示方式参考分辨率角标 .dim-tag（同款胶囊 + 等宽字号），配色沿用耗时自身的绿/蓝以便区分 */
+
+/* ================= 图上角标改为「名称行 + 元信息行」（2026-10-13 三改，Dragon） =================
+   用户要求：「把「角色」上面的分辨率和时长显示到「主人公」这个标签所在行的下面」。
+   做法：把分辨率（.dim-tag）与出图耗时（.gen-tag）从图片**下缘**（左下 / 右下）搬进 .kind-wrap，
+   在名称/定位徽标（.kw-top）下面**独占一行**（.kw-meta）。
+   好处：① 不再靠 top/bottom 硬定位 —— 名称换行或浮层高度变化都不会错位；
+         ② 视角浮层出现时不用再把角标抬高 56px（两枚都已不在下缘）；
+         ③ 左下角原本「分辨率 ↔ 库来源徽标（.lib-badge）」叠在同一位置的毛病一并消失。
+   🔴 两行是靠 .kind-wrap 的 flex-direction:column 分的，**不用 flex-basis:100%**：
+      绝对定位的收缩容器里百分比基准不确定，靠它换行会随内容宽度飘。 */
+.kind-wrap > .kw-meta{
+  display:flex; align-items:center; gap:5px; flex-wrap:wrap;
+  pointer-events:none;   /* 角标不挡「点图片放大预览」：事件穿透到下面的图 */
+}
+/* 落进元信息行后**取消绝对定位**（选择器比 `.bigprev .dim-tag` 更具体，只作用于角色卡这一处；
+   🔴 .dim-tag 的基准规则仍是 StageLibrary 在用，别动它） */
+.bigprev .kind-wrap .dim-tag{position:static; top:auto; right:auto; bottom:auto; left:auto;}
+/* 出图耗时角标（2026-10-08，Dragon）：原在下方出图行的「耗时 xx」文字 → 去掉「耗时」前缀挪到图上；
+   2026-10-13 三改：与分辨率一起并入元信息行，因此**不再绝对定位**（原右下角 bottom/right 已去掉）。
+   显示方式与分辨率角标同款（胶囊 + 等宽字号），配色沿用耗时自身的绿/蓝以便区分。
+   🔴 .gen-tag 只有 StageChars 这一处在用，改基准规则不影响别的页面。 */
 .gen-tag{
-  position:absolute; bottom:6px; right:6px; z-index:2;
+  display:inline-flex; align-items:center;
   padding:3px 9px; border-radius:99px;
   font-size:11.5px; font-family:Consolas,monospace; font-weight:500;
   color:#9fe0b4; background:rgba(10,14,22,.78);
@@ -1367,8 +1552,6 @@ input[type=search]:focus{
   backdrop-filter:blur(4px); pointer-events:none; white-space:nowrap;
 }
 .gen-tag.live{color:#bfdbfe; border-color:rgba(59,130,246,.5);}
-/* 库来源徽标与耗时角标同时出现在图上时收窄徽标，避免它伸到右侧压住耗时 */
-.bigprev:has(.gen-tag) .lib-badge{max-width:calc(100% - 104px);}
 
 /* ---------------------------------------------------------------
    逐条耗时：显示在「小模块」标题旁（角色卡 / 镜头卡 / 成片卡）

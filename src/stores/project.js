@@ -41,6 +41,12 @@ export const useProject = defineStore('project', {
     /** 视频生成档位清单（主进程给，UI 只认档位名，不含任何模型信息）
      *  [{key:'fast'|'balanced'|'hq', label:'速度优先', desc:'…', default:true}] */
     tierOptions: [],
+    /** 视频比例选项（2026-10-15）。1:1 已按 Dragon 要求去掉，只留横竖两版 ——
+     *  成片分辨率清单里本来就没有 1:1 档，留着比例选项就会选到没有对应成片档的值。 */
+    aspectOptions: [
+      { id: '16:9', label: '横版 16:9', desc: 'B站 / 电视 / 传统横屏' },
+      { id: '9:16', label: '竖版 9:16', desc: '抖音 / 快手 / 竖屏短剧' }
+    ],
     /** 风格体系四轴清单（主进程给）：{ render:[], world:[], genre:[], tone:[], presets:[], default, defaultTriple, labels }。
      *  新建项目与项目配置里是**四组点选网格**（画面风格 / 世界设定 / 内容体裁 / 制作调性），
      *  存库的值是拼出来的 `render:world:genre:tone`；presets 只是给四元组起过名字的组合（向后兼容老值）。 */
@@ -472,6 +478,60 @@ export const useProject = defineStore('project', {
     const d = (this.tierOptions || []).find(t => t.default);
     return (d && d.key) || (this.tierOptions[0] || {}).key || 'balanced';
   },
+
+  /* ---------------- 视频比例 + 分辨率推荐（2026-10-15）----------------
+   * 「视频质量档位」与「视频比例」是两个上游输入，共同决定图片 / 视频 / 成片三个分辨率的推荐值。
+   * 🔴 推荐画布**不在前端硬编码** —— 它随档位表由主进程 tierCanvas 段一起下发（videoTiers.list() 的
+   *    canvas 字段）。硬编码的话改档位时两处必然漂，而这里错了会静默配出「加速模型 + 不匹配画布」
+   *    的组合 —— 2026-10-15 实测：那会让镜头构图直接漂到全景（见 2026-10-15.md §21）。
+   *    本地实测通过：864×480(79%) / 960×544(100%) / 1344×768(100%) 三档分别配三档 LoRA，画面均正常。 */
+
+  /** 该档位在该比例下的推荐画布；档位或比例没声明 → null */
+  recCanvas(tier, aspect) {
+    const t = (this.tierOptions || []).find(x => x.key === tier);
+    return (t && t.canvas && t.canvas[aspect]) || null;
+  },
+
+  /**
+   * 该档位**可接受**的画布清单（主进程 tierCanvas[档].accept）。
+   * 🔴 别拿「是否等于推荐值」当判据：同档位的两个候选画布像素量只差 26%（960×544 vs 864×480），
+   *    而该档挂的加速模型是 544p 训练的 —— 实测**两者都正常**。只有落到清单外才是真不匹配。
+   * @returns {string[]|null} null = 方案没声明 → 调用方当「不拦」处理
+   */
+  canvasAccept(tier) {
+    const t = (this.tierOptions || []).find(x => x.key === tier);
+    return (t && t.canvas && Array.isArray(t.canvas.accept)) ? t.canvas.accept : null;
+  },
+
+  /**
+   * 三个分辨率的推荐值。
+   *   图片 = 视频分辨率（Dragon 要求「图片分辨率与视频分辨率一致」；且图片档位已补齐 544p / 768p 两族）
+   *   成片 = 按比例取常见交付档（成片清单与模型无关，不参与档位）
+   * @returns {{img,vid,out}|null} 推荐画布取不到时返回 null（调用方回退到「不联动」）
+   */
+  recRes(tier, aspect) {
+    const vid = this.recCanvas(tier, aspect);
+    if (!vid) return null;
+    return { img: vid, vid, out: aspect === '9:16' ? '1080x1920' : '1920x1080' };
+  },
+
+  /** 下拉选项按比例过滤：只留与该比例同向的档位（w>h = 横版）。取不到比例时原样返回。 */
+  resOptsFor(kind, aspect) {
+    const list = (this.resOptions || {})[kind] || [];
+    if (!aspect) return list;
+    return list.filter(o => {
+      const m = /^(\d+)x(\d+)$/.exec(String(o && o.value || ''));
+      if (!m) return true;
+      return aspect === '9:16' ? (+m[2]) > (+m[1]) : (+m[1]) > (+m[2]);
+    });
+  },
+
+  /** 比例从分辨率宽高推断（新建项目弹窗的默认值；老项目后端已推断好，这里只兜底） */
+  aspectOfRes(res) {
+    const m = /^(\d+)x(\d+)$/.exec(String(res || ''));
+    if (!m) return '16:9';
+    return (+m[1]) > (+m[2]) ? '16:9' : '9:16';
+  },
   /** 改项目分辨率：只影响之后新建的剧集（主进程不回写已有剧集） */
   async setProjectRes(projectId, res) {
     const r = await window.studio.setProjectRes(projectId, res)
@@ -486,6 +546,21 @@ export const useProject = defineStore('project', {
       if (s && this.current && Number(this.current.projectId) === Number(projectId)) this.current.style = s
     } catch (_) { /* 刷新失败不影响「已保存」这个事实 */ }
     return r
+  },
+  /**
+   * 只改「单集目标时长」（项目级，秒）—— 双轨配时的输入（见 promptlib 的 pacingPlan：
+   * 镜数 N 由「目标时长 T × 画面单元数 B」推，而不是由字数推）。0 = 未设置，整层惰性。
+   * 🔴 刻意**不走 setProjectRes**：那条路会 refresh() 整棵树 + 作废风格缓存，
+   *    对一个数字输入来说太重，而且整树刷新可能扰动当前集正在编辑的分镜。
+   *    这里复用同一条 IPC（project:res:set），只就地把树上的值改掉。
+   */
+  async setProjectTargetSec(projectId, sec) {
+    try {
+      const r = await window.studio.setProjectRes(projectId, { targetSec: sec })
+      const p = (this.tree || []).find(x => x.id === Number(projectId))
+      if (p && p.res) p.res.targetSec = (r && r.targetSec) || 0
+      return r
+    } catch (e) { this.fail(e) }
   },
   /** 改当前集某一类分辨率（kind: img|vid|out），本集后续生成立即生效 */
   async setEpisodeRes(kind, value) {
