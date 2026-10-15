@@ -2,6 +2,8 @@
   <div>
     <div v-if="busy" class="progress"><div class="bar indeterminate"></div></div>
 
+    <llm-source-tag :stages="['library']" where="素材库提示词" />
+
     <div class="grp">
       <!-- 空库引导：不能只靠「没有卡就不渲染网格」——新增入口（虚线卡）在网格里，
            空库时把它一起藏掉就再也建不出条目了（树节点进来 → 空白页 → 死锁） -->
@@ -232,6 +234,8 @@ import { useProject as useProjectStore } from './stores/project.js'
 import { usePipeline, fmtMs } from './stores/pipeline.js'
 import { stepLog, secs } from './ulog.js'
 import { parseRes, resLabel, optsWith, joinPath } from './resutil.js'
+import LlmSourceTag from './LlmSourceTag.vue'
+import { overrideOf } from './llmSource.js'
 import {
   composeSystem, composeUser, readDefaultNegative, readEquipmentWords, readSceneKeeper,
   stripEquipmentWords, ensureSceneKeeper
@@ -276,6 +280,7 @@ function parsePcOut(text) {
 
 export default {
   name: 'StageLibrary',
+  components: { LlmSourceTag },
   data() {
     return {
       busy: false, _b64: {}, _dims: {}, askDel: null, askAdd: null, askBatch: null,
@@ -503,7 +508,7 @@ export default {
         })
         const text = await window.studio.llmChat([
           { role: 'system', content: system }, { role: 'user', content: user }
-        ], { temperature: 0.6, maxTokens: 1024, json: true, label: TAG })
+        ], { temperature: 0.6, maxTokens: 1024, json: true, stage: 'library', providerOverride: overrideOf('library'), label: TAG })
         const out = parsePcOut(text)
         if (!out.prompt) throw new Error('LLM 未返回正向提示词')
         await this.st.patchLibrary(pid, {

@@ -6,6 +6,8 @@
       <div v-if="busy" class="progress"><div class="bar indeterminate"></div></div>
     </Teleport>
     <!-- 脏标记（章节改过 → 建议重新改编）已统一显示在本模块标题后面，见 App.vue 的 stage-head -->
+    <llm-source-tag :stages="['adapt']" where="改编稿" />
+
     <textarea v-model="adapted" rows="12" :placeholder="chapter ? '点击「改编」，LLM 将基于本章内容生成改编稿' : '请先在左侧「原文输入」粘贴章节原文'"></textarea>
 
     <!-- 素材名单覆盖提示（2026-09-27，通用结构特征：标签+名单行）：
@@ -66,11 +68,14 @@ import { stepLog, dbgPrompt } from './ulog.js'
 import { composeSystem, composeUser } from './prompts.js'
 import { listCoverage } from './promptlib.js'
 import { revsOf, touchRevs } from './stale.js'
+import LlmSourceTag from './LlmSourceTag.vue'
+import { overrideOf } from './llmSource.js'
 
 // 🔴 提示词全部来自项目 prompts/adapt.md：角色与任务、规则、输出格式都写在那份 md 里，代码不再硬编码任何提示词片段
 
 export default {
   name: 'StageAdapt',
+  components: { LlmSourceTag },
   data() { return { adapted: '', busy: false, tpReady: false, askRegen: null } },
   computed: {
     st() { return useProjectStore() },
@@ -126,7 +131,7 @@ export default {
         const text = await window.studio.llmChat([
           { role: 'system', content: system },
           { role: 'user', content: user }
-        ], { temperature: 0.6, maxTokens: 12288, label: '阶段2 内容AI优化' })
+        ], { temperature: 0.6, maxTokens: 12288, stage: 'adapt', providerOverride: overrideOf('adapt'), label: '阶段2 内容AI优化' })
         this.adapted = text.trim()
         await this.st.saveArtifact('adapted', this.adapted)
         await this.recordChapterRev()   // 记录本次改编基于的章节版本（章节后再改才提示）

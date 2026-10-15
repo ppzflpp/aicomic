@@ -1,6 +1,8 @@
 <template>
   <div>
     <div v-if="busy || shotsGening" class="progress"><div class="bar indeterminate"></div></div>
+    <llm-source-tag :stages="['chars']" where="角色与场景档案" />
+
     <div v-if="!busy && !shotsGening && !cards.length" class="placeholder">确认分镜后，从分镜中自动提取角色与场景（含各自的档案与美术提示词）。</div>
 
     <!-- 单一网格：先摆角色、再摆场景，末尾常驻三张「新增入口」虚线卡；卡片左右结构（左：大图+档案 / 右：提示词 → 参数），无锁定随时可编辑
@@ -555,6 +557,8 @@ import {
   normalizeProfile, profileDirty, profileBrief, readEquipmentWords, stripEquipmentWords
 } from './prompts.js'
 import { sceneCardIssues } from './promptlib.js'
+import LlmSourceTag from './LlmSourceTag.vue'
+import { overrideOf } from './llmSource.js'
 
 // 🔴 生图环节的三份兜底（负向词表 / 空镜必备句 / 生图模板）全部来自项目规范 md
 //    —— chars.md 的「## 兜底默认」（主人公 / 配角 / 负向）与 scenes.md 的「## 兜底默认」/「## 空镜必备句」，
@@ -667,6 +671,7 @@ async function fallbackTemplates() {
 
 export default {
   name: 'StageChars',
+  components: { LlmSourceTag },
   data() {
     return {
       cards: [], busy: false, _b64: {}, _dims: {}, ask: null, _keeper: SCENE_KEEPER_DEFAULT,
@@ -1860,7 +1865,7 @@ export default {
         const text = await window.studio.llmChat([
           { role: 'system', content: system },
           { role: 'user', content: user }
-        ], { temperature: 0.6, maxTokens: 1024, json: true, label: TAG })
+        ], { temperature: 0.6, maxTokens: 1024, json: true, stage: 'chars', providerOverride: overrideOf('chars'), label: TAG })
         const out = parsePcOut(text)
         if (!out.prompt) throw new Error('LLM 未返回正向提示词')
         c.prompt = out.prompt

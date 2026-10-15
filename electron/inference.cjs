@@ -15,6 +15,7 @@ const models = require('./models.cjs');
 const videoTiers = require('./videoTiers.cjs');
 const profiles = require('./profiles.cjs');
 const projects = require('./projects.cjs');
+const llmProvider = require('./llmProvider.cjs');
 const logger = require('./logger.cjs');
 
 let db = null;
@@ -31,9 +32,24 @@ let ffmpegWarming = false;
    定为 7（单行字高约 34px / 占高 1.8%，且常见台词不再折行）。 */
 const SUBTITLE_FONT_SIZE = 7;
 
+/* 云端大模型的 max_tokens 上限兜底（超出会被判 400）。
+   ⚠️ 各家云厂商上限不同：DeepSeek V4.1 Flash / V4 Pro 是 384K（1M 上下文），这里取一个保守大值。
+   原值 8192 是 V3 时代的限制、已过时 —— 它会把各环节原本 12288 的输出预算硬压到 8192
+   （adapt / shots 首当其冲）。2026-10-15 由 8192 上调至 65536。
+   🔴 这里只是**上限兜底**，实际下发的仍是各调用点自己的 maxTokens（改上限 ≠ 改配额）。
+   本地不走这个限制 —— 每槽 32768 是 llama-server 的 -c。 */
+const CLOUD_MAX_TOKENS = 65536;
+
+/* 云端**思考模式**的最小输出预算（2026-10-15 实测）。
+   V4 系 thinking 默认 enabled，而思考链先于正文生成：配额不够时 reasoning_tokens 会把
+   max_tokens 100% 吃光 —— 正文 0 字、finish_reason=length（实测 8192/12288 配额下 6 环节 5 个失败）。
+   所以「开思考」的环节必须**同时给足预算**，否则等于白开。实测 32768 即可跑通，这里留足余量取 48K。 */
+const THINK_MIN_TOKENS = 49152;
+
 function init(dbRef) {
   db = dbRef;
   profiles.init(dbRef);   // 模型方案就位后，工作流路径 / 节点锚点 / 帧参数才有得读
+  llmProvider.init(dbRef);   // 大模型来源（本地 / 云端）配置；加解密由 ipc 层注入
   // 内置 ffmpeg 命中时这一步直接空转；只有内置缺失才真去查 PATH（那一步慢，必须异步）
   warmFfmpeg();
 }
@@ -88,55 +104,8 @@ async function health() {
 
 /* ---------------- LLM ---------------- */
 
-/** 单条消息的「文字长度」：content 可能是字符串，也可能是 OpenAI 多模态数组（只数 text 段） */
-function contentLen(c) {
-  if (Array.isArray(c)) return c.reduce((n, p) => n + (p && p.type === 'text' ? String(p.text || '').length : 0), 0);
-  return String(c || '').length;
-}
-
-/** 图片扩展名 → MIME（llama-server 的 image_url 只认 data URL / http URL，不认本地路径） */
-const IMG_MIME = {
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp'
-};
-/** 一次请求最多带几张图（H3 的参考图上限 4 张；再多对 9B 模型也只是浪费上下文） */
-const MAX_LLM_IMAGES = 4;
-/** 单张图上限 8MB（base64 后约 +33%；4K PNG 通常 3–6MB，够用） */
-const MAX_LLM_IMAGE_BYTES = 8 * 1024 * 1024;
-
-/**
- * 把「本地图片绝对路径」读成 data URL，挂到最后一条 user 消息上（OpenAI 多模态格式）。
- *
- * 为什么在这里做、而不是在 UI 侧读好再传：base64 体积是原图的 1.33 倍，走 IPC 传进主进程
- * 等于白搬一趟；而主进程本来就要把整个 body 序列化给 llama-server。传路径 → 这里读 → 直接进 body。
- * 读不到 / 超大 / 非图片一律**跳过**（不能因为一张坏图把整次请求废掉）。
- * 注意：只有 llama-server 带了 `--mmproj`（见 launcher.cjs 的 mmprojOf）才认得多模态 content，
- * 否则会直接报错 —— 所以 UI 侧只在引擎报告 vision=true 时才允许勾选。
- */
-function attachImages(messages, images) {
-  const list = (Array.isArray(images) ? images : [])
-    .filter(p => typeof p === 'string' && p && (() => { try { return fs.statSync(p).isFile(); } catch (_) { return false; } })());
-  if (!list.length) return { messages, used: [] };
-  const parts = [], used = [];
-  for (const p of list.slice(0, MAX_LLM_IMAGES)) {
-    let buf = null;
-    try { buf = fs.readFileSync(p); } catch (_) { continue; }
-    if (!buf.length || buf.length > MAX_LLM_IMAGE_BYTES) continue;
-    const mime = IMG_MIME[path.extname(p).toLowerCase()] || 'image/png';
-    parts.push({ type: 'image_url', image_url: { url: 'data:' + mime + ';base64,' + buf.toString('base64') } });
-    used.push(path.basename(p));
-  }
-  if (!parts.length) return { messages, used: [] };
-  const out = messages.map(m => ({ ...m }));
-  let idx = -1;
-  for (let i = out.length - 1; i >= 0; i--) { if (out[i].role === 'user') { idx = i; break; } }
-  if (idx < 0) return { messages, used: [] };
-  const text = Array.isArray(out[idx].content)
-    ? out[idx].content.filter(p => p && p.type === 'text').map(p => String(p.text || '')).join('\n')
-    : String(out[idx].content || '');
-  out[idx].content = [{ type: 'text', text }].concat(parts);
-  return { messages: out, used };
-}
+/** 单条消息的文字长度 */
+function contentLen(c) { return String(c || '').length; }
 
 /**
  * LLM 对话（OpenAI 兼容，llama-server）。
@@ -147,59 +116,106 @@ function attachImages(messages, images) {
  *    流式下响应头 ~180ms 就返回，且能持续读增量。
  * 2) 默认关闭思考模式（chat_template_kwargs.enable_thinking=false）。Qwen3.5 默认先吐
  *    大段 reasoning_content，content 为空；9B 模型仅 ~9 tok/s，开着思考会白烧几分钟。
- *
- * 多模态（2026-10-13）：opts.images = 本地图片绝对路径数组 → 自动挂到最后一条 user 消息上。
- * 需要 llama-server 启动时带了 --mmproj（launcher.cjs 自动探测），否则模型不认。
  */
-async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = false, thinking = false, timeoutMs = 900000, onDelta = null, images = null } = {}) {
+async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = false, thinking = false, timeoutMs = 900000, onDelta = null, stage = '', providerOverride = '' } = {}) {
   const t0 = Date.now();
-  const att = images ? attachImages(messages, images) : { messages, used: [] };
-  const msgs = att.messages;
+  // 本环节走本地还是云端：设置页是**唯一持久入口**（见 llmProvider.cjs 顶部约定）；
+  // providerOverride 是阶段页上的「本次运行」覆盖（纯内存，见 src/llmSource.js）。
+  const prov = llmProvider.resolve(stage, providerOverride);
+  const cloud = prov.kind === 'cloud';
+  const msgs = messages;
   const userLen = msgs.reduce((n, m) => n + contentLen(m.content), 0);
-  logger.detail('LLM 请求：输入约 ' + userLen + ' 字，max_tokens=' + maxTokens + (json ? '，JSON 模式' : '')
-    + (att.used.length ? '，附图 ' + att.used.length + ' 张（' + att.used.join('、') + '）' : ''));
+  logger.detail('LLM 请求（' + (cloud ? '云端 ' + prov.model : '本地') + '）：输入约 ' + userLen
+    + ' 字，max_tokens=' + maxTokens + (json ? '，JSON 模式' : ''));
   // 软护栏（2026-09-27）：按本机 Qwen3.5 实测换算率（1 中文字 ≈ 0.64 token）估算总量，
   // 接近每槽 -c 32768 上限时提前警告（输出预算会被压缩）——只提示、不拦截。
-  const estIn = Math.round(userLen * 0.64);
-  if (estIn + maxTokens > 30000) {
-    logger.warn('LLM 上下文吃紧：输入约 ' + userLen + ' 字（≈' + estIn + ' tok）+ max_tokens=' + maxTokens +
-      ' ≈ ' + (estIn + maxTokens) + ' tok，已接近单槽 32768 上限，建议精简规范或章节原文');
+  // 🔴 只对**本地**成立：云端上下文与计费口径不同，套这个换算没有意义。
+  if (!cloud) {
+    const estIn = Math.round(userLen * 0.64);
+    if (estIn + maxTokens > 30000) {
+      logger.warn('LLM 上下文吃紧：输入约 ' + userLen + ' 字（≈' + estIn + ' tok）+ max_tokens=' + maxTokens +
+        ' ≈ ' + (estIn + maxTokens) + ' tok，已接近单槽 32768 上限，建议精简规范或章节原文');
+    }
   }
-  // 先快速探活（1.5s），避免连接挂起时用户干等
-  let alive = false;
-  try { alive = (await fetchJson(endpoint('llm') + '/v1/models', {}, 1500)).ok; } catch (_) {}
-  if (!alive) throw new Error('LLM 服务不可达（' + endpoint('llm') + '）。软件会自动拉起 llama-server'
-    + '（引擎随软件内置，无需安装）；若反复起不来，看右下角「运行日志」里的服务日志。');
+  const base = cloud ? prov.baseUrl : endpoint('llm');
+  if (cloud) {
+    // 云端只校验「配没配密钥」——本地引擎起没起与它无关（也**不该**去拉起 llama-server）
+    if (!prov.apiKey) {
+      throw new Error('云端大模型未配置 API Key（环节：' + prov.stage + '）。'
+        + '请到「设置 → 大模型来源」填入密钥，或把该环节改回本地。');
+    }
+    // 思考模式要额外预算：思考链会先把配额吃光（见 THINK_MIN_TOKENS 注释）
+    if (thinking && maxTokens < THINK_MIN_TOKENS) {
+      logger.detail('云端思考模式：max_tokens 从 ' + maxTokens + ' 抬到 ' + THINK_MIN_TOKENS + '（思考链先吃配额）');
+      maxTokens = THINK_MIN_TOKENS;
+    }
+    // 各家云模型的 max_tokens 上限不同，超了直接 400
+    if (maxTokens > CLOUD_MAX_TOKENS) {
+      logger.detail('云端 max_tokens 从 ' + maxTokens + ' 压到 ' + CLOUD_MAX_TOKENS + '（云模型上限兜底）');
+      maxTokens = CLOUD_MAX_TOKENS;
+    }
+  } else {
+    // 先快速探活（1.5s），避免连接挂起时用户干等
+    let alive = false;
+    try { alive = (await fetchJson(base + '/v1/models', {}, 1500)).ok; } catch (_) {}
+    if (!alive) throw new Error('LLM 服务不可达（' + base + '）。软件会自动拉起 llama-server'
+      + '（引擎随软件内置，无需安装）；若反复起不来，看右下角「运行日志」里的服务日志。');
+  }
 
   const body = {
-    model: 'local',
     messages: msgs,
     temperature,
     max_tokens: maxTokens,
-    stream: true,
-    chat_template_kwargs: { enable_thinking: !!thinking }
+    stream: true
   };
+  if (cloud) {
+    body.model = prov.model;
+    // 思考模式开关（2026-10-15 实测）：DeepSeek V4 系 thinking **默认 enabled**，产品不显式
+    // 声明的话配额会被思考链吃光、正文 0 字（见 THINK_MIN_TOKENS 注释）。三种取值：
+    //   thinking 假            → 显式关（type:'disabled'）
+    //   thinking === true      → 开，强度吃官方默认（high）
+    //   'low' / 'high' / 'max' → 开 + 指定 reasoning_effort
+    if (thinking) {
+      body.thinking = { type: 'enabled' };
+      if (typeof thinking === 'string') body.reasoning_effort = thinking;
+    } else {
+      body.thinking = { type: 'disabled' };
+    }
+  } else {
+    // chat_template_kwargs 是 llama.cpp 专属（Qwen 的思考开关），云端不认识 → 只在本地路径下发。
+    // 🔴 只认**严格布尔** true：字符串强度（如 'low'，用于云端）不会误开本地思考 ——
+    //    实测 9B 本地开思考会白烧几分钟且交不出正文（思考吃光 32768 配额）。
+    //    产品各调用点恒定不传（= 关）；`true` 仅留给实验对照。
+    body.model = 'local';
+    body.chat_template_kwargs = { enable_thinking: thinking === true };
+  }
   if (json) body.response_format = { type: 'json_object' };
+
+  const headers = { 'Content-Type': 'application/json' };
+  if (cloud) headers.Authorization = 'Bearer ' + prov.apiKey;
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   let res;
   try {
-    res = await fetch(endpoint('llm') + '/v1/chat/completions', {
+    res = await fetch(base + '/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
       signal: ctrl.signal
     });
   } catch (e) {
     clearTimeout(timer);
-    throw new Error('LLM 请求失败（连接中断或超时）：' + (e && e.message || e));
+    throw new Error((cloud ? '云端大模型' : 'LLM') + '请求失败（连接中断或超时）：' + (e && e.message || e));
   }
   if (!res.ok) {
     clearTimeout(timer);
     let t = '';
     try { t = await res.text(); } catch (_) {}
-    throw new Error('LLM 返回错误 ' + res.status + ': ' + t.slice(0, 300));
+    // 🔴 云端失败**不回退本地**（用户口径 2026-10-15）：宁可停在原地让人看清原因，也不偷偷换模型。
+    throw new Error((cloud ? '云端大模型返回错误 ' : 'LLM 返回错误 ') + res.status
+      + (cloud ? '（本次不会自动改走本地：请检查密钥 / 余额 / 网络后重试，或把该环节改回本地）' : '')
+      + ': ' + t.slice(0, 300));
   }
 
   let content = '', reasoning = '', finishReason = '';
@@ -1740,6 +1756,6 @@ module.exports = {
   analyzeShot, probeDuration,
   // 导出仅为离线自测（test/h3-inject-check.cjs 直接验证连线，不需要显卡/ComfyUI）
   injectH3Media,
-  // 多模态纯函数（离线自测：把本地图读成 data URL 挂到 user 消息上）
-  attachImages, contentLen, IMG_MIME, MAX_LLM_IMAGES, MAX_LLM_IMAGE_BYTES
+  // 纯函数（离线自测用）
+  contentLen
 };

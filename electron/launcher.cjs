@@ -38,58 +38,6 @@ const COMFY_AUTO_KEY = 'comfyui.installDirAuto';
  */
 const DEFAULT_LLAMA_ARGS = '-ngl 99 -c 32768 -fa on -lm none --jinja';
 
-/**
- * 多模态视觉投影器（mmproj）自动挂载（2026-10-13）。
- *
- * 背景：本机的剧本大模型 Qwen3.5-9B 是**原生多模态**的，但 llama-server 只有带上
- * `--mmproj` 才会加载视觉塔 —— 不带就是纯文本。所以「看图写档案 / 看图写提示词」
- * 一直做不到，不是模型不行，是**引擎没开**。
- *
- * 🔴 自动挂载必须「宁可漏挂、不可错挂」：
- *    llama-server 拿到一个与主模型不匹配的 mmproj 会**直接起不来**（加载即失败），
- *    而「文本模型 + 同目录恰好躺着一个 mmproj」是真实场景（用户换主模型时残留）。
- *    所以先用主模型文件名做一次家族判定，命中才挂 —— 命不中 = 退回今天的行为，
- *    永远不会把原本能跑的引擎弄挂。
- *    用户想强制指定，直接在 llama.args 里自己写 `--mmproj xxx.gguf` 即可（以他为准）。
- */
-const VISION_LLM_RE = /qwen3\.5|qwen35|qwen3-vl|qwen3vl|qwen2\.5[-_]omni|gemma-?3|minicpm-v|internvl|llava|smolvlm|pixtral|mistral-small/i;
-
-/** 主模型是否属于「已知支持图像输入」的家族（按文件名判，命中不了就是不支持） */
-function visionCapable(modelPath) {
-  return !!modelPath && VISION_LLM_RE.test(path.basename(modelPath));
-}
-
-/**
- * 找主模型同目录下的视觉投影器。命中不到返回 ''。
- * 排序偏好：同家族名 > F16/BF16（体积与画质均衡）> 其它；F32 性价比最低排最后。
- */
-function findMmproj(modelPath) {
-  if (!modelPath || !isFile(modelPath)) return '';
-  const dir = path.dirname(modelPath);
-  let names = [];
-  try { names = fs.readdirSync(dir).filter(n => /^mmproj.*\.gguf$/i.test(n)); } catch (_) { return ''; }
-  if (!names.length) return '';
-  // 主模型名取前两段做家族前缀：Qwen3.5-9B-Q5_K_M → qwen3.5-9b
-  const fam = path.basename(modelPath, path.extname(modelPath)).split('-').slice(0, 2).join('-').toLowerCase();
-  const score = (n) => {
-    const s = String(n).toLowerCase();
-    let v = 0;
-    if (fam && s.includes(fam)) v += 100;      // 同家族名字最可信
-    if (/f16|bf16/i.test(s)) v += 10;
-    if (/q8/i.test(s)) v += 8;
-    if (/f32/i.test(s)) v -= 5;                // F32 体积翻倍，画质收益接近 0
-    return v;
-  };
-  names.sort((a, b) => score(b) - score(a) || a.localeCompare(b));
-  return path.join(dir, names[0]);
-}
-
-/** 实际生效的 mmproj 路径（家族不支持 / 没找到 → ''） */
-function mmprojOf(modelPath) {
-  if (!visionCapable(modelPath)) return '';
-  return findMmproj(modelPath);
-}
-
 function init(dbRef) {
   db = dbRef;
 }
@@ -219,7 +167,6 @@ function llamaInfo() {
   const modelDir = models.resolveDir('llm') || '';
   const modelFile = models.pick('llm');
   const modelPath = (modelFile && modelDir) ? path.join(modelDir, modelFile) : '';
-  const mmprojPath = mmprojOf(modelPath);
   return {
     installDir: dir || '',
     isCustom: !!db.getSetting(LLAMA_DIR_KEY),
@@ -231,11 +178,6 @@ function llamaInfo() {
     modelFile: modelFile || '',
     modelPath,
     modelOk: !!modelPath && isFile(modelPath),
-    // 视觉：主模型是同目录有 mmproj 的多模态家族时才算「可看图」
-    visionSupported: visionCapable(modelPath),
-    mmprojPath: mmprojPath || '',
-    mmprojFile: mmprojPath ? path.basename(mmprojPath) : '',
-    vision: !!mmprojPath,
     args: db.getSetting('llama.args') || DEFAULT_LLAMA_ARGS,
     endpoint: inference.endpoint('llm')
   };
@@ -256,21 +198,19 @@ function llamaDirWritable() {
  * 仅供「手动排查」使用：双击它会开一个控制台窗口、能看到实时输出、关窗即停。
  * 软件自身的启动按钮**不再用它**，走静默 spawnSilent（无窗口 + 日志落盘）。
  */
-function writeLlamaBat(exe, modelPath, port, args, mmprojPath) {
+function writeLlamaBat(exe, modelPath, port, args) {
   const tools = llamaDirWritable();
   if (!tools) return '';
   const file = path.join(tools, 'start-llm.bat');
-  const mp = mmprojPath ? ' --mmproj "' + mmprojPath + '"' : '';
   const body = [
     '@echo off',
     'chcp 65001 >nul',
     'echo Starting llama-server ...',
     'echo   model : ' + modelPath,
-    'echo   mmproj: ' + (mmprojPath || '(none - text only)'),
     'echo   endpoint: http://127.0.0.1:' + port,
     'echo   (close this window to stop the service)',
     'echo.',
-    '"' + exe + '" -m "' + modelPath + '"' + mp + ' --host 127.0.0.1 --port ' + port + ' ' + args,
+    '"' + exe + '" -m "' + modelPath + '" --host 127.0.0.1 --port ' + port + ' ' + args,
     'echo.',
     'echo llama-server exited.'
   ].join('\r\n') + '\r\n';
@@ -386,7 +326,7 @@ async function startLlama() {
 
   const port = portOf(info.endpoint, 8080);
   // 顺手更新一份 bat（只在用户手动双击排错时用；软件自身走静默启动，不弹窗）
-  writeLlamaBat(info.exe, info.modelPath, port, info.args, info.mmprojPath);
+  writeLlamaBat(info.exe, info.modelPath, port, info.args);
 
   // 记下发起的阶段标签：健康检查可能等满 60s，期间用户切块会改掉全局标签，
   // 延迟日志若不带 originTag 就会挂到别的阶段名下（2026-10-12 实测：阶段3 起的
@@ -395,11 +335,7 @@ async function startLlama() {
   const gen = ++_llamaGen;
 
   const extra = splitArgs(info.args);
-  // 视觉投影器：自动补在参数串最前（用户自己在 llama.args 里写了 --mmproj 时以他为准，不重复补）
-  const hasMmprojArg = extra.some(a => a === '--mmproj' || a === '-mmproj' || String(a).startsWith('--mmproj='));
-  if (info.mmprojPath && !hasMmprojArg) extra.unshift('--mmproj', info.mmprojPath);
   const args = ['-m', info.modelPath, '--host', '127.0.0.1', '--port', String(port)].concat(extra);
-  if (info.mmprojPath) logger.info('已挂载视觉投影器（可看图）：' + info.mmprojFile, originTag);
   const sp = spawnSilent(info.exe, args, { cwd: path.dirname(info.exe), logName: 'llama-server' });
   if (sp.error || !sp.pid) {
     const m = '无法启动 llama-server：' + (sp.error || '进程创建失败')
@@ -801,8 +737,6 @@ function serviceLogs() {
 module.exports = {
   init, llamaDir, llamaInfo, comfyInfo, startLlama, startComfy, comfyStartElapsedMs, setDir,
   getLlamaArgs, setLlamaArgs, findFile, DEFAULT_LLAMA_ARGS,
-  // 多模态视觉投影器（mmproj）探测：纯函数，测试可离线跑
-  mmprojOf, findMmproj, visionCapable, VISION_LLM_RE,
   vramUsed, waitVramBelow, stopLlama, stopLlamaSync, llamaRunning, unloadComfyModels, freeVramForComfy,
   waitHealth, llamaGen, spawnSilent, serviceLogPath, serviceLogs, tailFile, splitArgs, runCmd
 };

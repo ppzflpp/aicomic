@@ -75,12 +75,112 @@
         <button class="btn ghost sm" @click="releaseNow">立即释放显存</button>
       </div>
 
-      <!-- 本地大模型的视觉能力（2026-10-13）：剧本 / 分镜 / 提示词都走它。
-           挂上视觉投影器（mmproj）后，模型就能「看图写提示词」（分镜页每镜的「读图」开关）。 -->
-      <div class="env-group">本地大模型</div>
+    </div>
+
+    <!-- 大模型来源（本地 / 云端）：决定每个环节的文字由谁来写。
+         默认全部走本地（随软件内置的模型，不联网、不花钱）；想更快更稳就按环节切成云端。
+         🔴 这里是**唯一持久入口** —— 阶段页上那个「本次用云端」只影响本次打开，不落库
+         （见 src/llmSource.js）。切换粒度 = 环节，与 6 个 LLM 调用点一一对应（见 electron/llmProvider.cjs）。 -->
+    <div class="set-card">
+      <div class="set-head">
+        <h3>大模型来源</h3>
+        <button class="btn ghost sm" :disabled="llmBusy" @click="testCloud">测试云端连接</button>
+      </div>
+
+      <div style="font-size:12px; opacity:.72; line-height:1.75; margin-bottom:8px">
+        软件里的文字活儿（改编、分镜、角色档案、提示词）默认由随软件内置的本地模型来做：不联网、不额外花钱。
+        如果想让某个环节更快、更稳（尤其是长剧本、要求严格格式时），把它单独切成「云端」就行 ——
+        云端按量计费，费用在你的账号里结算，需要一个 API Key。
+      </div>
+
+      <div class="env-group">云端账号</div>
       <div class="env-row">
-        <span class="env-name">视觉理解（mmproj）</span>
-        <span :style="{ fontSize: '12.5px', color: visionOn ? '#7dd3fc' : 'inherit', opacity: visionOn ? 1 : .7 }">{{ visionText }}</span>
+        <span class="env-name">服务地址</span>
+        <input type="text" v-model="cloudBase" @change="saveCloud" placeholder="https://api.deepseek.com" />
+      </div>
+      <div class="env-row">
+        <span class="env-name">模型名</span>
+        <input type="text" v-model="cloudModel" @change="saveCloud" placeholder="deepseek-flash" />
+      </div>
+      <div class="env-row">
+        <span class="env-name">API Key</span>
+        <!-- 密钥框（2026-10-15 改版）：锁图标 + 输入 + 「已保存」徽标 + 显示/隐藏 + 清除，都收在一个盒子里。
+             ⚠️ 全局表单规则只覆盖 text/number/search 与「没写 type」的 input，password 不在其中 →
+             旧版密钥框其实是浏览器默认的**白底**样式。这里自带深色样式（.key-box 见 style.css）。 -->
+        <div class="key-box" :class="{ ok: cloudHasKey }">
+          <span class="key-lock" title="密钥经系统加密后存在本机，接口不会回显明文">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="10.5" width="16" height="10" rx="2.2" />
+              <path d="M8 10.5V7.3a4 4 0 0 1 8 0v3.2" />
+            </svg>
+          </span>
+          <input class="key-in" :type="keyShow ? 'text' : 'password'" v-model="cloudKeyIn"
+                 @change="saveCloud" :placeholder="keyPh" autocomplete="off" spellcheck="false" />
+          <span v-if="cloudHasKey && !cloudKeyIn" class="key-flag">已保存</span>
+          <button type="button" class="key-eye" :title="keyShow ? '隐藏' : '显示'"
+                  @click="keyShow = !keyShow">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+                 stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2.2 12S6 5.6 12 5.6 21.8 12 21.8 12 18 18.4 12 18.4 2.2 12 2.2 12z" />
+              <circle cx="12" cy="12" r="2.7" />
+              <line v-if="keyShow" x1="4" y1="20" x2="20" y2="4" />
+            </svg>
+          </button>
+          <button v-if="cloudHasKey" type="button" class="key-x" title="清除已保存的密钥"
+                  @click="clearKey">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
+                 stroke-width="1.9" stroke-linecap="round">
+              <line x1="6" y1="6" x2="18" y2="18" />
+              <line x1="18" y1="6" x2="6" y2="18" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <!-- 密钥读不出来的兜底提示（2026-10-15 实测发现）：safeStorage 的密钥与当前安装绑定，
+           换版本 / 重装 / 清过系统数据后旧密文就解不开了 —— 必须让用户知道「重填一次」 -->
+      <div v-if="cloudKeyBroken"
+           style="margin-top:8px; padding:8px 10px; border-radius:6px; background:rgba(226,75,74,.14); border:1px solid rgba(226,75,74,.4); font-size:12px; line-height:1.7">
+        ⚠ 之前保存的 API Key 现在读不出来了（换过安装版本 / 重装过软件 / 清理过系统数据都会这样）。
+        请把 Key 重新粘贴一次，填好点「测试云端连接」确认能通。
+      </div>
+      <div v-if="llmTestMsg" style="margin-top:8px; padding:7px 10px; border-radius:6px; font-size:12px; line-height:1.7"
+           :style="llmTestOk
+             ? 'background:rgba(34,197,94,.12); border:1px solid rgba(34,197,94,.35)'
+             : 'background:rgba(200,120,0,.14); border:1px solid rgba(200,120,0,.4)'">
+        {{ llmTestOk ? '✓ ' : '✕ ' }}{{ llmTestMsg }}
+      </div>
+
+      <!-- 环节开关（2026-10-15 改版）：原来是「本地/云端」二选下拉，现按用户口径改成**一个勾选框** ——
+           勾上 = 这个环节走云端；不勾 = 走本地内置模型（默认）。勾选态**不做 v-model 回写**，
+           每次渲染重新读 llmStages（主进程是真源），这样保存失败回滚也能立刻反映到框上。 -->
+      <div class="env-group">各环节用哪个</div>
+      <div style="font-size:12px; opacity:.66; margin:-2px 0 8px; line-height:1.7">
+        勾上「云端」就走上面填的云端账号；<b>不勾的一律走本地内置模型</b>（默认，不联网）。
+      </div>
+      <div class="env-row" v-for="s in stageMeta" :key="s.id">
+        <span class="env-name">{{ s.label }}</span>
+        <label class="llm-ck" :class="{ on: llmStages[s.id] === 'cloud', dis: llmBusy }">
+          <!-- ⚠️ 元素级 :key 必须跟着「真源的状态」走：用户点一下会先改 DOM，
+               若这次落库失败，llmStages 会回滚成原值，而 props 没变化时 Vue 不会 patch
+               回 :checked → 框就停在用户点出来的错误勾选态了。key 一变即重建元素，
+               DOM 强制与主进程的真源对齐。 -->
+          <input type="checkbox" :checked="llmStages[s.id] === 'cloud'" :key="'st:' + (llmStages[s.id] || 'local')" :disabled="llmBusy"
+                 @change="setStage(s.id, $event.target.checked ? 'cloud' : 'local')" />
+          <span class="llm-ck-txt">云端</span>
+        </label>
+        <span class="llm-ck-hint">{{ llmStages[s.id] === 'cloud' ? '用上面的云端账号' : '本地内置模型（不联网）' }}</span>
+      </div>
+
+      <div v-if="cloudStages.length && !cloudHasKey"
+           style="margin-top:8px; padding:8px 10px; border-radius:6px; background:rgba(200,120,0,.14); border:1px solid rgba(200,120,0,.4); font-size:12px; line-height:1.7">
+        ⚠ 「{{ cloudStageNames }}」已经选了云端，但还没填 API Key —— 这些环节在生成时不会偷偷改走本地，
+        而是直接停下并提示原因。填好 Key 再点一次「测试云端连接」确认能通。
+      </div>
+
+      <div style="margin-top:8px; font-size:12px; opacity:.7; line-height:1.75">
+        云端不通时不会自动退回本地（免得「这份稿子到底是哪个模型写的」说不清楚），
+        会报错停在原地。各阶段页右上角还有一个临时开关，只对本次打开有效，重启后回到这里的默认。
       </div>
     </div>
 
@@ -104,25 +204,37 @@ export default {
       imgProfile: '',
       vidProfile: '',
       profileErrs: [],
-      // 引擎信息里的 llama 段（只取「能不能看图」相关字段；engineInfo 只读目录，很便宜）
-      llama: null
+      // 大模型来源（本地 / 云端）：设置页是唯一持久入口
+      llmStages: {},        // { adapt|shots|chars|library|prompt|split: 'local'|'cloud' }
+      stageMeta: [],        // [{ id, label }] —— 展示顺序来自主进程，与调用点一一对应
+      cloudBase: '',        // 云端服务地址（默认 https://api.deepseek.com）
+      cloudModel: '',       // 云端模型名（默认 deepseek-flash）
+      cloudKeyIn: '',       // 用户**本次输入**的 Key（不回显已存的那个）
+      cloudHasKey: false,   // 库里存的 Key **能解开且非空**（解不开不算，见 cloudKeyBroken）
+      cloudKeyBroken: false,// 库里有密文但读不出来（换版本 / 重装 / 清过系统数据）→ 提示重填
+      keyMask: '',          // 已存 Key 的掩码（前 6 后 4），只用来做 placeholder
+      keyShow: false,       // 密钥框「显示/隐藏」开关（纯展示，与落库无关）
+      llmBusy: false,
+      llmTestMsg: '',
+      llmTestOk: false
     }
   },
   computed: {
     st() { return useProjectStore() },
-    visionOn() { return !!(this.llama && this.llama.vision) },
-    visionText() {
-      const l = this.llama
-      if (!l) return '—'
-      if (l.vision) return '已启用（' + (l.mmprojFile || 'mmproj') + '）—— 分镜页每镜可勾「读图」'
-      if (l.visionSupported) return '未安装：把 mmproj-*.gguf 放到模型同目录（' + (l.modelDir || '模型根\\text_encoders') + '）后重启软件'
-      return '当前模型不支持图像输入（' + (l.modelFile || '未找到模型') + '）'
+    /** 已选云端的环节 id 列表 */
+    cloudStages() { return this.stageMeta.filter(s => this.llmStages[s.id] === 'cloud').map(s => s.id) },
+    /** 同上，换成中文名（提示条里用） */
+    cloudStageNames() { return this.stageMeta.filter(s => this.llmStages[s.id] === 'cloud').map(s => s.label).join('、') },
+    /** 密钥框的 placeholder：已存则只显示掩码（「已保存」由绿色徽标承担，框里不必再啰嗦一遍） */
+    keyPh() {
+      if (!this.cloudHasKey) return '粘贴你的 API Key'
+      return (this.keyMask || '••••••••') + ' · 留空不改'
     }
   },
   async mounted() {
     await this.st.refreshEnv()
     await this.loadProfiles()
-    await this.loadLlama()
+    await this.loadLlm()
     try { this.autoOrch = await window.studio.getAutoOrchestrate() } catch (_) {}
   },
   methods: {
@@ -173,11 +285,67 @@ export default {
       await this.st.refreshEnv()
     },
     /* ---- 引擎状态：llama.cpp 与 ffmpeg 都随软件内置（tools\），这里只刷健康状态 ---- */
-    async recheck() { await this.st.refreshEnv(); await this.loadLlama() },
-    /** 只取引擎信息里的 llama 段（看图能力） */
-    async loadLlama() {
-      try { this.llama = (await window.studio.engineInfo()).llama } catch (_) { this.llama = null }
+    async recheck() { await this.st.refreshEnv() },
+
+    /* ---- 大模型来源（本地 / 云端）----
+       前端只在「用户主动改」时才落库；拉取回来的配置一律经 applyCfg 覆盖本地态。
+       密钥永远不回传明文（后端只给 hasKey + 掩码），所以输入框始终是空的。 */
+    /** 把后端配置铺到界面态 */
+    applyCfg(cfg) {
+      const c = cfg || {}
+      this.llmStages = c.stages || {}
+      this.stageMeta = c.stagesMeta || []
+      this.cloudBase = (c.cloud && c.cloud.baseUrl) || ''
+      this.cloudModel = (c.cloud && c.cloud.model) || ''
+      this.cloudHasKey = !!(c.cloud && c.cloud.hasKey)
+      this.cloudKeyBroken = !!(c.cloud && c.cloud.keyBroken)
+      this.keyMask = (c.cloud && c.cloud.keyMask) || ''
+      this.cloudKeyIn = ''            // 不清空会把刚输入的明文一直挂在输入框里
     },
+    async loadLlm() {
+      try { this.applyCfg(await window.studio.llmConfig()) } catch (_) { /* 拿不到就保持空态 */ }
+    },
+    /** 保存服务地址 / 模型名；密钥只在用户真输了新值时才提交（留空 = 不改） */
+    async saveCloud() {
+      const patch = { baseUrl: this.cloudBase, model: this.cloudModel }
+      if (this.cloudKeyIn) patch.apiKey = this.cloudKeyIn
+      this.llmBusy = true
+      try {
+        this.applyCfg(await window.studio.setLlmCloud(patch))
+        this.llmTestMsg = ''          // 账号改了 → 上次的连通结论作废
+        this.$root.toast('已保存云端配置')
+      } catch (e) { this.st.fail(e); await this.loadLlm() } finally { this.llmBusy = false }
+    },
+    async clearKey() {
+      this.llmBusy = true
+      try {
+        this.applyCfg(await window.studio.setLlmCloud({ apiKey: '' }))
+        this.llmTestMsg = ''
+        this.$root.toast('已清除云端 API Key')
+      } catch (e) { this.st.fail(e) } finally { this.llmBusy = false }
+    },
+    async setStage(id, provider) {
+      this.llmBusy = true
+      try {
+        this.applyCfg(await window.studio.setLlmStage(id, provider))
+        const lb = (this.stageMeta.find(s => s.id === id) || {}).label || id
+        this.$root.toast('「' + lb + '」已设为' + (provider === 'cloud' ? '云端' : '本地'))
+      } catch (e) { this.st.fail(e); await this.loadLlm() } finally { this.llmBusy = false }
+    },
+    async testCloud() {
+      this.llmBusy = true
+      this.llmTestMsg = '正在连接…'
+      this.llmTestOk = false
+      try {
+        const r = await window.studio.testLlm()
+        this.llmTestOk = !!(r && r.ok)
+        this.llmTestMsg = (r && r.message) || '没有返回结果'
+      } catch (e) {
+        this.llmTestOk = false
+        this.llmTestMsg = '测试失败：' + ((e && e.message) || e)
+      } finally { this.llmBusy = false }
+    },
+
     async chooseWs() {
       const ws = await window.studio.chooseWorkspace()
       if (ws) { this.st.workspace = ws; await this.st.refresh(); await this.st.refreshEnv() }

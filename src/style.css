@@ -1002,6 +1002,62 @@ input[type=search]:focus{
 /* 从属行（如 llama 启动参数）：向内缩进，弱化层级 */
 .env-row.sub{padding-top:0;}
 .env-row.sub .env-name{color:#8b97a8;}
+
+/* ================= 大模型来源（设置页 · 2026-10-15 改版） =================
+   ① 环节开关：用户口径是「不用下拉框，一个勾选框，勾上=云端、不勾=本地（默认）」。
+      勾选框做成胶囊，勾上后整颗变蓝并有内描边，右邻的状态小字也跟着变蓝 —— 一眼分清。
+   ② 密钥框：全局表单规则只覆盖 text/number/search 与「没写 type」的 input，
+      **password 不在其中** → 改版前那个密钥框其实是浏览器默认的**白底**样式。
+      这里自带整套深色样式，聚焦时整盒发光（用 :focus-within，不必额外加字段）。 */
+.llm-ck{
+  display:inline-flex; align-items:center; gap:7px; flex-shrink:0;
+  padding:5px 13px 5px 10px; border-radius:99px; cursor:pointer; user-select:none;
+  border:1px solid var(--line); background:rgba(255,255,255,.03);
+  transition:border-color .16s, background .16s, box-shadow .16s;
+}
+.llm-ck:hover{border-color:#2c3646; background:rgba(255,255,255,.055);}
+.llm-ck input{accent-color:#38bdf8; width:14px; height:14px; margin:0; cursor:pointer;}
+.llm-ck-txt{font-size:12.5px; color:#c3cddd; transition:color .16s;}
+.llm-ck.on{
+  border-color:rgba(56,189,248,.55); background:rgba(56,189,248,.13);
+  box-shadow:inset 0 0 0 1px rgba(56,189,248,.12);
+}
+.llm-ck.on .llm-ck-txt{color:#8fd0ff; font-weight:600;}
+.llm-ck.dis{opacity:.5; cursor:not-allowed;}
+.llm-ck-hint{font-size:12px; color:#7b8798;}
+.llm-ck.on + .llm-ck-hint{color:#8ab4f8;}
+
+.key-box{
+  flex:1; min-width:0; display:flex; align-items:center; gap:8px;
+  height:38px; padding:0 6px 0 11px;
+  background:#0e131c; border:1px solid var(--line); border-radius:var(--r-sm);
+  transition:border-color .16s, box-shadow .16s, background .16s;
+}
+.key-box:hover{border-color:#2c3646;}
+.key-box:focus-within{border-color:var(--blue); background:#0b1017; box-shadow:0 0 0 3px rgba(59,130,246,.16);}
+.key-box.ok{border-color:rgba(52,211,153,.4);}
+.key-box.ok .key-lock{color:#34d399;}
+.key-lock{display:flex; flex-shrink:0; color:#5b6a80; transition:color .16s;}
+/* 输入框本体：抹掉一切默认外观，只当「盒子里的文字」（选择器带 .key-in 提高特异性，
+   保证「显示/隐藏」把 type 切到 text 时也不会被全局 input[type=text] 规则改样） */
+.key-box input.key-in{
+  flex:1; min-width:0; width:auto; height:100%; margin:0; padding:0;
+  border:none; background:transparent; box-shadow:none;
+  font-size:13px; font-family:inherit; color:var(--text); letter-spacing:.02em;
+}
+.key-box input.key-in:focus{outline:none; border:none; background:transparent; box-shadow:none;}
+.key-flag{
+  flex-shrink:0; font-size:11px; padding:2px 7px; border-radius:99px;
+  color:#34d399; background:rgba(52,211,153,.13); border:1px solid rgba(52,211,153,.3);
+}
+.key-eye,.key-x{
+  flex-shrink:0; display:flex; align-items:center; justify-content:center;
+  width:24px; height:24px; padding:0; cursor:pointer;
+  border:none; border-radius:6px; background:transparent; color:#6b7789;
+  transition:color .14s, background .14s;
+}
+.key-eye:hover{color:#dbe6f5; background:rgba(255,255,255,.07);}
+.key-x:hover{color:#ff9b9b; background:rgba(226,75,74,.16);}
 .export-done{text-align:center; padding:24px 0;}
 
 /* ================= 标题栏实时指标（GPU 算力 / CPU / 显存 / 内存） =================
@@ -1213,18 +1269,6 @@ input[type=search]:focus{
   transition:border-color .14s, color .14s, background .14s;
 }
 .ref-add:hover{border-color:rgba(34,197,94,.6); color:#dcfce7; background:rgba(34,197,94,.13);}
-/* 「读图」开关（2026-10-13）：只在本地大模型挂了视觉投影器（mmproj）时出现。
-   中性青（非告警色）—— 关 = 虚线空框，开 = 实心青。
-   限定在 .ref-row 下：CSS 无作用域，裸类名会串到别的块。 */
-.ref-row .ref-eye{
-  flex-shrink:0; align-self:center; width:42px; height:34px; padding:0;
-  background:rgba(255,255,255,.04); border:1px dashed var(--line); border-radius:6px;
-  color:#9fb0c6; font-size:11px; cursor:pointer;
-  display:flex; align-items:center; justify-content:center;
-  transition:border-color .14s, color .14s, background .14s;
-}
-.ref-row .ref-eye:hover{border-color:rgba(125,211,252,.6); color:#dff2ff; background:rgba(125,211,252,.12);}
-.ref-row .ref-eye.on{border-style:solid; border-color:rgba(56,189,248,.75); color:#e6f7ff; background:rgba(56,189,248,.2);}
 /* 「+视频」添加按钮跟随视频框形状：4:3 横框 113×85，与参考视频缩略框同形 */
 .ref-add.wide{width:113px; aspect-ratio:4/3;}
 /* ================= 首帧接力（2026-10-09） ================= */

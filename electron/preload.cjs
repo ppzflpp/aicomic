@@ -144,6 +144,11 @@ contextBridge.exposeInMainWorld('studio', {
 
   inferHealth: () => ipcRenderer.invoke('infer:health'),
   llmChat: (messages, opts) => ipcRenderer.invoke('infer:llm', messages, opts),
+  // 大模型来源（本地 / 云端）：设置页是唯一持久入口；testLlm 只做一次连通性探测
+  llmConfig: () => ipcRenderer.invoke('llm:config:get'),
+  setLlmCloud: (patch) => ipcRenderer.invoke('llm:config:set', patch),
+  setLlmStage: (id, provider) => ipcRenderer.invoke('llm:stage:set', id, provider),
+  testLlm: () => ipcRenderer.invoke('llm:test'),
   comfyGenerate: (args) => ipcRenderer.invoke('comfy:generate', args),
   // 强制停止生成（2026-10-09）：中断当前任务 + 清排队 + 释放显存
   comfyCancel: () => ipcRenderer.invoke('comfy:cancel'),

@@ -2,6 +2,8 @@
   <div>
     <div v-if="busy || pBusy || vBusy" class="progress"><div class="bar indeterminate"></div></div>
 
+    <llm-source-tag :stages="['shots', 'prompt', 'split']" where="分镜页" />
+
     <div v-if="!shots.length && !adapted && !busy" class="placeholder" style="margin-bottom:8px">尚无分镜。先在第 2 块完成改编稿再点「生成分镜」，或直接手动添加镜头。</div>
 
     <!-- 分镜自检横幅（2026-10-09）：规范写了镜头量上限（广告 = 段落数 × 1.5 / 总时长 ±20%），
@@ -198,14 +200,6 @@
               </div>
               <button v-else-if="caps.lastFrame !== false" class="ref-add" title="选一张图作为尾帧（与首帧配合可做首尾帧过渡）" @click="pickFrame(i, 'last')">尾帧</button>
 
-              <!-- 读图（2026-10-13）：本地大模型挂了视觉投影器（mmproj）时才有这个开关。
-                   开了以后生成本镜提示词会把参考图/首尾帧**真的**发给模型「看」，
-                   而不是只让它读文件名。默认关；引擎没挂 mmproj 时按钮恒不出现（零影响）。 -->
-              <button v-if="llmVision && hasRefs(i)" class="ref-eye" :class="{ on: prompts[i].refs.vision }"
-                      :title="prompts[i].refs.vision
-                        ? ('本镜已开启「读图」——生成提示词时把 ' + refImages(i).length + ' 张图交给模型；点击关闭')
-                        : '让模型先看图、再写本镜提示词（默认只读文件名与角色档案）'"
-                      @click.stop="toggleRefVision(i)">读图</button>
             </div>
           </div>
 
@@ -487,6 +481,8 @@ import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, m
 import { parseRes, resLabel, optsWith, clampDur, seg, joinPath } from './resutil.js'
 import { baseOf, variantOf, groupProfiles } from './variant.js'
 import { touchRevs, sigEq } from './stale.js'
+import LlmSourceTag from './LlmSourceTag.vue'
+import { overrideOf } from './llmSource.js'
 
 // 🔴 提示词全部来自项目 prompts/ 下的规范 md：shots.md 承载任务身份与 JSON 输出契约，
 //    profile.md / chars.md / scenes.md 承载档案与提示词写法；代码不再硬编码任何提示词片段
@@ -506,6 +502,7 @@ const REFV_KEEP = 6
 
 export default {
   name: 'StageShots',
+  components: { LlmSourceTag },
   data() {
     return {
       shots: [], busy: false,
@@ -539,9 +536,6 @@ export default {
       // 单集目标时长（秒，项目级，见 db 的 projects.target_sec）：双轨配时的输入。
       // 0 = 未设置 → pacingPlan 整层惰性（行为与改造前逐字不变）
       targetSec: 0,
-      // 本地大模型是否「可看图」（llama-server 挂了 mmproj，见 launcher.mmprojOf）。
-      // 引擎没报告 vision 时：本镜的「读图」开关恒不出现 → 行为与从前逐字不变
-      llmVision: false,
       // 「整理镜头」确认弹窗（存量分镜按内容重算时长 + 拆分超限镜头）
       askTidy: false,
       // 正在 AI 重写的拆分组的 gid（'' = 空闲）——同一组的每一段都能据此显示「正在重写画面…」
@@ -735,14 +729,6 @@ export default {
       this.initVideos(ep)
       this.targetSec = this.projTargetSec     // 单集目标时长（项目级，双轨配时的输入）
       this.loadLimits()
-      this.loadVision()                       // 引擎是否挂了视觉投影器（mmproj）
-    },
-    /** 问主进程要一次引擎信息，只取「本地大模型能不能看图」这一个事实（便宜：只读目录） */
-    async loadVision() {
-      try {
-        const info = await window.studio.engineInfo()
-        this.llmVision = !!(info && info.llama && info.llama.vision)
-      } catch (_) { this.llmVision = false }
     },
     /** 读当前体裁声明的分镜自检参数（广告 = 段落数 × 1.5 / 时长 ±20%；剧集 = pacing 双轨配时）。
      *  风格包在 prompts.js 里按「项目|风格」缓存，所以这里每次切集调一次很便宜。 */
@@ -832,10 +818,13 @@ export default {
           pacingBlock: this.pacingBrief
         })
         dbgPrompt('阶段3 分镜脚本', '文字模型', [['system', system], ['user', user]])
+        // thinking:'low' —— **只对云端生效**（本地支路只认严格 true，见 inference.cjs）。
+        // 分镜是唯一实测有增益的环节（镜头数 15→21、跨镜变化点 2→4、画面主体组合 4→7）；
+        // 代价是云端首字要等 ~60s。其余环节开思考收益不可验证，保持关。
         const text = await window.studio.llmChat([
           { role: 'system', content: system },
           { role: 'user', content: user }
-        ], { temperature: 0.5, maxTokens: 12288, json: true, label: '阶段3 分镜脚本' })
+        ], { temperature: 0.5, maxTokens: 12288, json: true, stage: 'shots', providerOverride: overrideOf('shots'), label: '阶段3 分镜脚本', thinking: 'low' })
         const parsed = JSON.parse(require_json(text))
         const used = new Set()
         const shots = pickArr(parsed, ['shots', '镜头', '镜头列表'], used)
@@ -1427,12 +1416,6 @@ export default {
       this.prompts[i].refs[kind].splice(k, 1)
       await this.savePrompts()
     },
-    /* ---- 读图（2026-10-13）：让本地大模型**真的看一眼**本镜的参考素材 ---- */
-    /** 本镜有没有可选素材（决定「读图」小按钮出不出） */
-    hasRefs(i) {
-      const r = this.effRefs(i)
-      return !!((r.images && r.images.length) || (r.videos && r.videos.length) || r.first || r.last)
-    },
     /**
      * 本镜**实际生效**的参考素材 —— 与 UI 上挂的素材（prompts[i].refs）可能不同。
      * 🔴 2026-10-14（用户拍板）：按本镜 `chars` / `scene` 过滤 —— `chars` 里没写的主体，
@@ -1470,24 +1453,6 @@ export default {
     refTitle(i, kind, k, fallback) {
       if (!this.refUnused(i, kind, k)) return fallback
       return fallback + '\n\n⚠ 本镜未使用：分镜行「角色」里没有这个主体 —— 它不写进提示词，也不送去生成。'
-    },
-    /**
-     * 要下发给大模型的图片（绝对路径）。**只发图，不发视频** —— 视频要先抽帧才能进模型，
-     * 而抽帧用的 ffmpeg 与显存编排都在生图/生视频阶段，链路完全不同，不在这里硬凑。
-     * 顺序与提示词里的 <Picture N> 一致：参考图 → 首帧 → 尾帧。
-     */
-    refImages(i) {
-      const r = this.effRefs(i)
-      return [...(r.images || []), r.first, r.last].filter(x => typeof x === 'string' && x)
-    },
-    /** 开关本镜的「读图」—— 开了以后生成本镜提示词时把这些图一并交给模型 */
-    async toggleRefVision(i) {
-      const r = this.prompts[i].refs
-      r.vision = !r.vision
-      await this.savePrompts()
-      this.$root.toast(r.vision
-        ? '本镜已开启「读图」：生成提示词时会把 ' + this.refImages(i).length + ' 张参考图交给模型'
-        : '本镜已关闭「读图」')
     },
     /* ---- 参考图拖动排序（2026-10-08）----
        只在同一镜头的参考图之间排序（素材属于本镜头，不跨行搬运）。
@@ -1672,7 +1637,7 @@ export default {
       try {
         const refs = p.refs || {}
         // 🔴 2026-10-14：本镜**实际生效**的素材（按 chars / scene 过滤过）。
-        //    下面的 <Picture N> 清单、读图附图、说话人锁图，以及阶段 6 真正注入 ComfyUI 的素材，
+        //    下面的 <Picture N> 清单、说话人锁图，以及阶段 6 真正注入 ComfyUI 的素材，
         //    全部取自这一份，保证「提示词里的编号」与「实际附上的图」一致。
         //    这里显式传 `p.refs`（组件本地副本，编辑态）—— 与改造前 `p.refs` 同源。
         const eff = this.effRefs(i, p.refs)
@@ -1746,24 +1711,10 @@ export default {
           frames
         })
         dbgPrompt('阶段5 H3提示词', '文字模型 · 第' + (i + 1) + '镜 · ' + mode, [['system', system], ['user', user]])
-        // 读图（2026-10-13）：本镜开了「读图」且引擎确实挂了 mmproj 时，把参考图/首尾帧**当成图**
-        // 一起下发（而不是只让模型读文件名）。开关默认关 → 老行为逐字不变。
-        const visionImgs = (p.refs && p.refs.vision && this.llmVision) ? this.refImages(i) : null
-        // 🔴 读图的「越权」护栏（2026-10-13 实测得出）：参考图是**身份/场景参考**，它锁的是「这个人长什么样」，
-        //    不锁「这一镜穿什么、伤成什么样」。实测（.h3lora-test/ab-result.txt C2）：把图交给模型后，
-        //    它照图写「红喜服」，而本镜连续性写的是「青灰布裙」——图把档案顶掉了。
-        //    加上这句之后实测（vision-smoke-result.txt ③）模型会明确以本镜连续性为准。只在开读图时追加，
-        //    不开读图的路径一个字节都不变。
-        const userVision = (visionImgs && visionImgs.length)
-          ? user + '\n\n⚠ 关于上面附带的图像（本镜参考图/首尾帧）：它们**只**用来确认人物身份、长相与场景样貌；'
-            + '本镜人物的**服装、伤势、道具、时段**一律以「连续性」和档案为准——'
-            + '图像与档案冲突时，以档案为准，不要把图里的服装当成这一镜的服装。'
-          : user
-        if (visionImgs && visionImgs.length) L.start('第' + (i + 1) + '个镜头附带 ' + visionImgs.length + ' 张参考图给模型看图')
         const text = await window.studio.llmChat([
           { role: 'system', content: system },
-          { role: 'user', content: userVision }
-        ], { temperature: 0.6, maxTokens: 2048, label: '阶段5 H3提示词', images: visionImgs })
+          { role: 'user', content: user }
+        ], { temperature: 0.6, maxTokens: 2048, stage: 'prompt', providerOverride: overrideOf('prompt'), label: '阶段5 H3提示词' })
         p.text = text.trim()
         const ms = Date.now() - t0
         p.genMs = ms                  // 逐条耗时（持久化在 prompts.json，显示在该镜头行上）
@@ -2080,7 +2031,7 @@ export default {
         const text = await window.studio.llmChat([
           { role: 'system', content: system },
           { role: 'user', content: user }
-        ], { temperature: 0.7, maxTokens: 3072, json: true, label: '拆分镜头重写' })
+        ], { temperature: 0.7, maxTokens: 3072, json: true, stage: 'split', providerOverride: overrideOf('split'), label: '拆分镜头重写' })
         const parsed = JSON.parse(require_json(text))
         const list = Array.isArray(parsed) ? parsed : pickArr(parsed, ['shots', '镜头', '镜头列表'], new Set())
         if (!Array.isArray(list) || list.length !== idx.length) {
@@ -2506,7 +2457,7 @@ export default {
   }
 }
 
-function emptyRefs() { return { images: [], videos: [], first: null, last: null, vision: false } }
+function emptyRefs() { return { images: [], videos: [], first: null, last: null } }
 
 function require_json(text) {
   const m = text.match(/```(?:json)?\s*([\s\S]*?)```/)

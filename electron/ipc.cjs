@@ -1,5 +1,5 @@
 'use strict';
-const { ipcMain, dialog } = require('electron');
+const { ipcMain, dialog, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const projects = require('./projects.cjs');
@@ -17,7 +17,19 @@ const promptFiles = require('./prompts.cjs');
 const styles = require('./styles.cjs');
 const library = require('./library.cjs');
 const videoTiers = require('./videoTiers.cjs');
+const llmProvider = require('./llmProvider.cjs');
 const { writeUnique } = require('./assetStore.cjs');
+
+/** safeStorage 加解密包装（系统不支持时返回 null，llmProvider 会退化成 base64 存储） */
+function safeStorageCrypto() {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    return {
+      encrypt: (s) => safeStorage.encryptString(s).toString('base64'),
+      decrypt: (b) => safeStorage.decryptString(Buffer.from(b, 'base64'))
+    };
+  } catch (_) { return null; }
+}
 
 /** 注册全部 IPC。getWin 返回主窗口（用于目录选择对话框），测试环境可传 () => null。 */
 function registerIpc(db, getWin, fallbackWorkspace) {
@@ -28,6 +40,8 @@ function registerIpc(db, getWin, fallbackWorkspace) {
   session.init(db);
   orchestrator.init(db);
   styles.init();        // 风格包（项目级题材 / 画风）：内置 electron/styles/ + <项目>/styles/ 覆盖
+  // 大模型来源（本地 / 云端）：密钥用系统级 safeStorage 加密后再落库（拿不到就退化成 base64）
+  llmProvider.init(db, safeStorageCrypto());
   logger.info('主进程已就绪，IPC 注册完成');
   // 换工作区 = 落库 + 清掉 inference 里缓存的旧工作区
   // （不清的话工作流模板 / tools/ffmpeg.exe 会一直认着旧目录）
@@ -451,8 +465,40 @@ function registerIpc(db, getWin, fallbackWorkspace) {
   /* ---- 推理网关（带引擎守卫：调用前自动把对应引擎准备到正确状态） ---- */
   ipcMain.handle('infer:health', () => inference.health());
   ipcMain.handle('infer:llm', async (e, messages, opts) => {
-    await orchestrator.ensureLlm((opts && opts.label) || logger.tag());
-    return inference.llmChat(messages, opts || {});
+    const o = opts || {};
+    // 🔴 只有**本地**环节才去确保 / 拉起 llama-server：走云端的环节与本地引擎无关，
+    //    以前无条件 ensure，会把「只想用云」的用户强行拖起 10GB 的本地模型。
+    if (llmProvider.resolve(o.stage || o.label, o.providerOverride).kind === 'local') {
+      await orchestrator.ensureLlm(o.label || logger.tag());
+    }
+    return inference.llmChat(messages, o);
+  });
+
+  /* ---- 大模型来源（本地 / 云端）：设置页是唯一持久入口 ---- */
+  ipcMain.handle('llm:config:get', () => llmProvider.getConfig());
+  ipcMain.handle('llm:config:set', (e, patch) => llmProvider.setCloud(patch || {}));
+  ipcMain.handle('llm:stage:set', (e, id, provider) => llmProvider.setStage(id, provider));
+  // 连通性测试：用「设置里当前这份云端配置」直接发一次最小请求，只回通/不通 + 原因
+  ipcMain.handle('llm:test', async () => {
+    const c = llmProvider.resolveCloud();
+    if (!c.apiKey) return { ok: false, message: '还没填 API Key' };
+    try {
+      const r = await fetch(c.baseUrl + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + c.apiKey },
+        body: JSON.stringify({
+          model: c.model,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 4,
+          stream: false
+        })
+      });
+      const txt = await r.text();
+      if (!r.ok) return { ok: false, message: 'HTTP ' + r.status + '：' + txt.slice(0, 200) };
+      return { ok: true, message: '连接正常（' + c.model + '）' };
+    } catch (e) {
+      return { ok: false, message: '连接失败：' + ((e && e.message) || e) };
+    }
   });
   ipcMain.handle('comfy:generate', async (e, { templateKey, dir, baseName, params, label }) => {
     await orchestrator.ensureComfy(label || (templateKey === 'video' ? '阶段6 H3视频' : '阶段4 角色出图'));
