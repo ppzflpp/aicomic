@@ -25,6 +25,12 @@ let workspace = null;
 let ffmpegCache;
 let ffmpegWarming = false;
 
+/* 烧录字幕的字号（libass 的 FontSize，按视频高度等比缩放 → 一个值横竖版通用）。
+   不指定时用 libass 默认值：1080×1920 竖版上单行字高 79px（占高 4.1%），16 字台词
+   还要折成两行、整块高达 184px —— 观感过大。2026-10-15 用真实镜头做过 6 档对比实验，
+   定为 7（单行字高约 34px / 占高 1.8%，且常见台词不再折行）。 */
+const SUBTITLE_FONT_SIZE = 7;
+
 function init(dbRef) {
   db = dbRef;
   profiles.init(dbRef);   // 模型方案就位后，工作流路径 / 节点锚点 / 帧参数才有得读
@@ -1591,7 +1597,8 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
         // 解法：spawn 的 cwd 设为临时目录，滤镜里只写裸文件名 subs.srt，无冒号无空格。
         fs.writeFileSync(path.join(tmp, 'subs.srt'), srt, 'utf-8');
         // ---- pass2：把字幕烧到母片上（母片已是目标分辨率，不再 scale/pad）----
-        const r2 = await runFfmpeg(ffmpeg, ['-y', '-i', 'mute.mp4', '-vf', 'subtitles=subs.srt',
+        const r2 = await runFfmpeg(ffmpeg, ['-y', '-i', 'mute.mp4', '-vf',
+          `subtitles=subs.srt:force_style='FontSize=${SUBTITLE_FONT_SIZE}'`,
           '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-c:a', 'copy',
           '-movflags', '+faststart', finalPath], tmp);
         if (r2.code !== 0 || !fs.existsSync(finalPath)) throw new Error('ffmpeg 烧录字幕失败：' + r2.err.slice(-500));
