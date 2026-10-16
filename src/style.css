@@ -1750,6 +1750,18 @@ input[type=search]:focus{
 /* 派生视角卡弹窗（2026-10-08）：主体名前缀**固定不可改**（灰底胶囊），用户只填视角名 ——
    改名冲突（V9X--正面 撞车）从源头消失，用户也不需要知道双横杠这件事 */
 .dname{display:flex; align-items:stretch; margin:10px 0 0;}
+/* 派生弹窗的「变体类型」切换（2026-10-16）：视角变体 / 装扮变体 —— 两张等宽卡片，选中态与 .btn.ghost 同色系。
+   限定在 .modal 下（CSS 无作用域，.dkind 是通用词，别裸写选择器） */
+.modal .dkind{display:flex; gap:8px; margin:12px 0 0;}
+.modal .dkind button{
+  flex:1; display:flex; flex-direction:column; align-items:center; gap:2px;
+  padding:8px 10px; border-radius:8px; font-size:12.5px; font-weight:500; cursor:pointer;
+  background:rgba(255,255,255,.03); border:1px solid var(--line); color:#c3cddd;
+}
+.modal .dkind button span{font-size:11px; font-weight:400; color:var(--sub);}
+.modal .dkind button:hover{border-color:rgba(96,165,250,.6); background:rgba(59,130,246,.10);}
+.modal .dkind button.on{border-color:#3f6fb5; background:rgba(63,111,181,.20); color:#e8f1ff;}
+.modal .dkind button.on span{color:#9fb6d6;}
 .dname-fix{
   display:flex; align-items:center; padding:0 10px; white-space:nowrap;
   border-radius:8px 0 0 8px; font-size:13px; font-weight:600; color:#cbd5e1;
@@ -1758,6 +1770,35 @@ input[type=search]:focus{
 .modal .dname input[type=text]{border-radius:0 8px 8px 0; margin:0;}
 .dname-prev{margin-top:8px; font-size:12px; color:var(--sub);}
 .dname-prev b{color:var(--text); font-weight:600;}
+/* 装扮清单（2026-10-16）：卡片上的「识别装扮」入口行 + 识别结果面板。
+   入口行只出现在角色主体卡上（卡片左栏、档案区上方）；面板每行 = 勾选框 + 装扮名（可改）
+   + 装束描述（可改）+ 状态标注（将新建 / 已有卡 / 已有图 / 基线）。
+   🔴 一律限定在 .of-entry 与 .modal 下（CSS 无作用域，.of-* 是通用前缀，别裸写选择器） */
+.of-entry{display:flex; align-items:center; gap:8px; margin-top:8px;}
+.of-entry .of-hint{font-size:11px; color:var(--sub); line-height:1.5;}
+.modal.of-modal{width:min(640px,94vw);}
+.modal .of-busy{display:flex; align-items:center; gap:7px; font-size:12.5px; color:var(--sub); padding:10px 0;}
+.modal .of-list{max-height:46vh; overflow:auto; margin:10px 0 0; display:flex; flex-direction:column; gap:6px;}
+.modal .of-row{
+  display:flex; align-items:flex-start; gap:9px; padding:8px 10px; border-radius:8px;
+  border:1px solid var(--line-soft); background:rgba(255,255,255,.02);
+}
+.modal .of-row.base{border-color:rgba(148,163,184,.35); background:rgba(148,163,184,.06);}
+.modal .of-row .of-pick{margin-top:3px; flex-shrink:0;}
+.modal .of-row .of-main{flex:1; min-width:0; display:flex; flex-direction:column; gap:5px;}
+.modal .of-row .of-top{display:flex; align-items:center; gap:8px;}
+.modal .of-row .of-name{flex:0 0 120px; width:120px;}
+.modal .of-row .of-tag{
+  font-size:11px; padding:1px 7px; border-radius:999px; white-space:nowrap;
+  color:var(--sub); background:rgba(255,255,255,.05); border:1px solid var(--line-soft);
+}
+.modal .of-row .of-tag.ok{color:#7dd3a0; border-color:rgba(109,209,150,.4); background:rgba(34,139,84,.18);}
+.modal .of-row .of-tag.new{color:#8fb8ef; border-color:rgba(96,165,250,.4); background:rgba(59,130,246,.14);}
+.modal .of-row .of-desc{
+  width:100%; padding:6px 8px; border-radius:8px; font-size:12px; line-height:1.6; resize:vertical;
+  background:#0f141d; border:1px solid var(--line-soft); color:#e6edf7;
+}
+.modal .of-row .of-desc:focus{outline:none; border-color:#3f6fb5;}
 /* 从库导入 / 批量入库：条目列表 */
 .import-list{max-height:46vh; overflow:auto; margin-bottom:14px; display:flex; flex-direction:column; gap:4px;}
 .import-row{

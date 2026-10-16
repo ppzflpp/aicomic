@@ -925,6 +925,30 @@ function shareBigram(from, before) {
 }
 
 /**
+ * 解析一条 change 行（分镜的 `change` 字段，格式「主体·维度：旧值 → 新值（触发动作）」）。
+ * 2026-10-16：原来这段正则长在 contWarnings 里，装扮变体也要用同一个格式 → 抽出来共用一份，
+ * 免得两处各拿一份副本、以后改了一处另一处悄悄失配。
+ * 🔴 主体与维度的切分用**最后一个** `·`：分镜里的场景/主体名自己就含间隔号（「礼堂·内」），
+ *    取第一个会把主体名切掉一半（contWarnings 的 R4 原本就取第一个，那里只当软提示用，
+ *    这里要吃主体名，必须按末尾切）。
+ * @returns {{sub:string, dim:string, from:string, to:string, trig:string}|null} 不是变化行返回 null
+ */
+export function parseChange(line) {
+  const m = String(line || '').trim()
+    .match(/^([^：:]+)[：:]\s*(.+?)\s*(?:→|->|—>|变成|变为|改为)\s*(.+?)\s*(?:[（(]([^）)]*)[）)])?$/)
+  if (!m) return null
+  const head = m[1].trim()
+  const at = head.lastIndexOf('·')
+  return {
+    sub: (at > 0 ? head.slice(0, at) : '').trim(),
+    dim: (at > 0 ? head.slice(at + 1) : head).trim(),
+    from: m[2].trim(),
+    to: m[3].trim(),
+    trig: String(m[4] || '').trim()
+  }
+}
+
+/**
  * 分镜连续性软校验（纯函数）：
  *   R1 变化前就越界：change 的「新值」此前已经在快照里出现过 → 变化提前发生
  *   R2 凭空造物：action 里出现「移除动词 + 物」（摘/脱/解/扔…），但此前快照里从没有过该物
@@ -950,9 +974,9 @@ export function contWarnings(list) {
     // ---- 变化点（change 格式：主体·维度：旧值 → 新值（触发动作））----
     const chg = String(s.change || '').trim()
     if (chg) {
-      const m = chg.match(/^(.*?)[：:]\s*(.+?)\s*(?:→|->|—>|变成|变为|改为)\s*(.+?)\s*(?:[（(]([^）)]*)[）)])?$/)
-      if (m) {
-        const from = m[2].trim(), to = m[3].trim(), trig = String(m[4] || '').trim()
+      const p = parseChange(chg)
+      if (p) {
+        const from = p.from, to = p.to, trig = p.trig
         // R1：变化前就越界（新值 ≥3 字才判，避免「衣裳」这类通名误报）
         if (to.length >= 3) {
           const k = snap.slice(0, i).findIndex(t => t.indexOf(to) >= 0)
@@ -968,7 +992,7 @@ export function contWarnings(list) {
           if (k >= 0) res[k].push('状态回退：第 ' + (i + 1) + ' 镜已把「' + from + '」变成「' + to + '」，本镜又写回「' + from + '」')
         }
         // R4：后续没跟上（紧邻的下一镜有快照，却完全没提这次变化）
-        const sub = String(m[1] || '').split(/[·:：]/)[0].trim()
+        const sub = p.sub
         let k2 = i + 1
         while (k2 < n && !snap[k2]) k2++
         if (k2 < n && sub && snap[k2].indexOf(sub) < 0 && !shareBigram(to, snap[k2])) {
@@ -2084,4 +2108,307 @@ export function stripEquipmentWords(prompt, words) {
     return t && !ws.some(w => t.indexOf(w) >= 0)
   })
   return kept.length ? kept.join(sep) : s
+}
+
+// ---------------------------------------------------------------
+// 装扮变体 —— 逐镜装扮状态推导（2026-10-16）
+//   一个角色的「换装变体」（婚装 / 常服 / 夜行装…）从哪来？**不重新读剧本去猜** ——
+//   分镜抽取阶段本来就逐镜产出了两样东西：
+//     · shots[].continuity —— 本镜的状态快照，每行「主体·维度：值」，「服装」只是其中一个维度
+//     · shots[].change     —— 本镜**实际发生**的状态变化「主体·维度：旧值 → 新值（触发动作）」
+//   所以「谁在第几镜换了哪套衣服」是已有数据里的**显式事实**，本块只做推导与匹配：
+//     · dimEntries      —— 从 continuity/change 文本里筛出某主体某维度的条目
+//     · matchOutfit     —— 拿装扮清单的 kw 把一段描述归到某套装扮（最长关键词优先）
+//     · outfitStates    —— 逐镜推导「这一镜该穿哪套」（change 定换装点、continuity 校正）
+//     · shotHasChar     —— 这一镜的 chars 里有没有点名这个角色（精确优先，可选子串放宽）
+//     · outfitShotBrief —— 拼给大模型的「本集镜头记录」素材（只含该角色出现的镜头）
+//     · parseOutfitList —— 解析大模型返回的装扮清单（宽松，容忍字段缺失与脏名字）
+//     · outfitPlan      —— 「这一镜该填哪张装扮图」的逐镜计划（第 3 步：按装扮填全部镜头）
+//     · mergeOutfitList —— 把本集识别结果并进**项目级**清单（跨集继承：同名沿用，不另起名字）
+//     · outfitKnownBrief—— 把项目级已知装扮名单拼成 {{known}} 槽的文本（下发给模型让它沿用）
+//   全部是纯函数、不依赖 Vue 与 electron —— 可被裸 node 直接单测（test/outfit-state-check.mjs）。
+//   🔴 本文件必须保持**零 import**：测试会把它整份复制成 .mjs 单跑（见 test/outfit-state-check.cjs），
+//      任何相对导入都会在复制后断链。所以这里不 import variant.js 的 baseOf ——
+//      需要「主体名」的地方一律由调用方（StageChars 有 variant.js）算好再传进来。
+// ---------------------------------------------------------------
+
+/** 「服装类维度」的判据：维度名命中它才算换装相关（随身物 / 天气 / 时段 / 站位都不算） */
+const OUTFIT_DIM_RE = /(服装|衣|装束|服饰|穿着|装扮|配饰|头饰|冠|袍|裙)/
+
+/**
+ * 从 continuity / change 文本里筛出「某主体 + 某维度」的条目。
+ * 行格式「主体·维度：值」；主体名自己可能含间隔号（「礼堂·内」）→ 按**最后一个** `·` 切。
+ * 主体一列为空的行（模型偶尔漏写）也收 —— 单主体场景下它是合理的。
+ * @param {string} text continuity / change 原文（可多行）
+ * @param {string} subject 要筛的主体名（空 = 不过滤）
+ * @param {RegExp} dimRe 维度过滤（省略 = 不限维度）
+ * @returns {Array<{sub:string, dim:string, val:string}>}
+ */
+export function dimEntries(text, subject, dimRe) {
+  const out = []
+  for (const raw of String(text == null ? '' : text).split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line) continue
+    const m = line.match(/^([^：:]+)[：:]\s*(.+)$/)
+    if (!m) continue
+    const head = m[1].trim()
+    const at = head.lastIndexOf('·')
+    const sub = (at > 0 ? head.slice(0, at) : '').trim()
+    const dim = (at > 0 ? head.slice(at + 1) : head).trim()
+    if (dimRe && !dimRe.test(dim)) continue
+    if (subject && sub && charKey(sub) !== charKey(subject)) continue
+    out.push({ sub, dim, val: m[2].trim() })
+  }
+  return out
+}
+
+/**
+ * 拿装扮清单的 kw 把一段描述归到某套装扮（**最长关键词优先**）。
+ * 关键词短于 2 字的一律不用（「衣」「红」这种会到处误命中）；装扮名本身也当关键词参与匹配。
+ * @returns {string} 命中的装扮名；一个都没命中返回空串
+ */
+export function matchOutfit(text, outfits) {
+  const t = String(text == null ? '' : text)
+  if (!t) return ''
+  const list = Array.isArray(outfits) ? outfits : []
+  let best = '', bestLen = 0
+  for (const o of list) {
+    const nm = String((o && o.name) || '').trim()
+    if (!nm) continue
+    const words = [nm].concat(Array.isArray(o && o.kw) ? o.kw : [])
+    for (const w of words) {
+      const k = String(w == null ? '' : w).trim()
+      if (k.length < 2) continue
+      if (t.indexOf(k) >= 0 && k.length > bestLen) { best = nm; bestLen = k.length }
+    }
+  }
+  return best
+}
+
+/**
+ * 逐镜推导「这一镜该穿哪套」（纯函数）。
+ * 规则（顺序即优先级）：
+ *   ① 用 continuity 的快照校正当前值（命中装扮清单的某个关键词才动）
+ *   ② 再用 change 的换装点覆盖 —— 它写的是「本镜实际发生的变化」，换完之后的样子才算数
+ * 两块都命中不到 → 保持上一镜的状态（**绝不猜**）。基线装扮 = 清单里标 `base` 的那条（没有就取第一条）。
+ * 返回值一律给值、与 shots 等长：调用方自己判「这一镜该角色有没有出现」（不出现的镜头填了也无害）。
+ * @param {Array} shots 镜头数组
+ * @param {string} name 角色名（主体名）
+ * @param {Array} outfits 装扮清单 [{name, desc, base, kw}]
+ * @returns {string[]} 每个镜头该穿的装扮名
+ */
+export function outfitStates(shots, name, outfits) {
+  const arr = (Array.isArray(shots) ? shots : []).map(s => s || {})
+  const list = Array.isArray(outfits) ? outfits : []
+  const baseObj = list.find(o => o && o.base) || list[0] || null
+  let cur = baseObj ? String(baseObj.name || '').trim() : ''
+  const out = []
+  for (const s of arr) {
+    for (const e of dimEntries(s.continuity, name, OUTFIT_DIM_RE)) {
+      const hit = matchOutfit(e.val, list)
+      if (hit) cur = hit
+    }
+    for (const e of dimEntries(s.change, name, OUTFIT_DIM_RE)) {
+      const p = parseChange(e.dim + '：' + e.val)
+      const hit = matchOutfit(p ? p.to : e.val, list)
+      if (hit) cur = hit
+    }
+    out.push(cur)
+  }
+  return out
+}
+
+/**
+ * 这一镜的 `chars` 里有没有点名这个角色（纯函数）。
+ * 为什么单拎出来（2026-10-16）：出场判据在**三处**都要用（识别素材 / 逐镜装扮计划 / 一键填充），
+ *   而且每处对「宽严」的要求不同，写在三个地方迟早会分叉。
+ * 🔴 精确与宽松的差别是**真事故**：子串匹配会让「苏锦瑟」命中「小苏锦瑟」——
+ *   一个镜头里明明只有小苏锦瑟，却因为名字里带着「苏锦瑟」三个字被算成她在场，
+ *   于是把她的参考图/装扮填进这一镜。所以**精确比较是默认**（按 `[、,，/]` 切分后逐项比对，
+ *   比对走 charKey —— 剥掉「（主角）」这类定位标签、忽略空白与大小写）。
+ * loose=true 才额外放宽成整串子串匹配：留给「素材本来就写得不规范」的场景
+ *   （chars 用空格分隔、或只有半截名字），调用方自己权衡。
+ * @param {string} chars 镜头的 shots[].chars 原文
+ * @param {string} name 角色名（可以是卡片名，也可以是主体名 —— 由调用方决定）
+ * @param {boolean} [loose] 是否在精确比对失败后再用整串子串兜底
+ * @returns {boolean}
+ */
+export function shotHasChar(chars, name, loose) {
+  const raw = String(chars == null ? '' : chars)
+  const key = charKey(name)
+  if (!raw || !key) return false
+  const parts = raw.split(/[、,，/]/).map(x => charKey(x)).filter(Boolean)
+  if (parts.indexOf(key) >= 0) return true
+  return loose ? charKey(raw).indexOf(key) >= 0 : false
+}
+
+/**
+ * 拼给大模型的「本集镜头记录」素材：只含**该角色出现**（chars 里点名）的镜头，
+ * 逐镜带上他的服装状态与换装点。与 continuity 原文的区别：这里只留服装维度的行 ——
+ * 其它维度（随身物 / 伤势 / 天气 / 站位）对这个任务是纯噪音，会挤占小模型的注意力。
+ * 出场判据走 shotHasChar(…, loose=true)：**优先精确**，精确不中时才退回子串兜底 ——
+ *   识别的原料是给人看的分镜记录，宁可多给一镜（噪音）也不要漏一镜（漏了模型就少认一套装扮）。
+ */
+export function outfitShotBrief(shots, name) {
+  const arr = (Array.isArray(shots) ? shots : []).map(s => s || {})
+  const out = []
+  arr.forEach((s, i) => {
+    if (name && !shotHasChar(s.chars, name, true)) return
+    const scene = String(s.scene || '').trim()
+    const act = String(s.action || '').replace(/\s+/g, ' ').trim().slice(0, 80)
+    const snaps = dimEntries(s.continuity, name, OUTFIT_DIM_RE).map(e => e.dim + '：' + e.val)
+    const chgs = dimEntries(s.change, name, OUTFIT_DIM_RE).map(e => e.dim + '：' + e.val)
+    out.push('#' + (i + 1) + ' 【' + (scene || '未标场景') + '】' + (act || '（无动作描述）') +
+      (snaps.length ? '\n  现在穿着：' + snaps.join('；') : '') +
+      '\n  本镜换装：' + (chgs.length ? chgs.join('；') : '（无）'))
+  })
+  return out.join('\n')
+}
+
+/**
+ * 清洗装束描述，让它能安全地填进换装指令的 `{装束}` 槽位。
+ * 为什么需要它（2026-10-16 端到端实测两次踩到）：
+ *   指令模板形如「…更换为「婚装」：{装束}，换装后衣料质感…」—— 槽位两侧写死了逗号与后续句子，
+ *   所以槽里的内容**必须是一串逗号分隔的短语**，不能是自成句的句子：
+ *     ① 句子以「。」结尾 → 拼出「…束发。，换装后…」（尾部标点，第一次踩到）；
+ *     ② 更隐蔽的是**句中**带句号（模型把描述写成「…无配饰，黑发以素色布带束于顶。」中间又断句）
+ *        → 只去尾部治不了，会在句子中间拼出「。。」→「。，」（第二次踩到）。
+ *   所以这里不「只去尾部」，而是**把所有句末标点一律降级为逗号**：信息一个字不丢，只是不再断句。
+ * 另外做三件事：去花括号（它是槽位语法，绝不能进正文，否则被护栏拦下）；
+ *   名字/顿号/半角逗号统一成中文逗号并折叠连续分隔符；去首尾多余分隔符（避免「：，」）。
+ * @param {string} s 大模型给出的（或用户手改的）装束描述
+ * @returns {string} 单行、逗号分隔、无花括号的装束短语串
+ */
+export function tidyOutfitDesc(s) {
+  return String(s == null ? '' : s)
+    .replace(/[{}]/g, '')
+    .replace(/(?<!\d)\.(?!\d)/g, '，')          // 半角句点降级（避开 2.5 这类小数）
+    .replace(/[。．；;！!？?]/g, '，')
+    .replace(/[，,、]/g, '，')
+    .replace(/，{2,}/g, '，')
+    .replace(/\s*，\s*/g, '，')
+    .replace(/^[\s，：:]+|[\s，：:]+$/g, '')
+}
+
+/**
+ * 解析大模型返回的装扮清单（宽松）。
+ * 容错：整篇 JSON → 抓第一段 `{}`；清单挂在 outfits / 装扮 / 装扮清单 / list 任一键上；
+ *   名字里的横杠一律剥掉（横杠是卡名 `主体--装扮` 的保留分隔符，写进去会把卡名切错）；
+ *   描述走 `tidyOutfitDesc`（去花括号 + 句末标点降级，描述要填进换装指令的槽位）；
+ *   kw 里补上装扮名本身；重名与超长名直接丢掉。
+ * 兜底：**恰好一条 base** —— 模型没标 base 时把第一条当基线（宁可标错，也不要整个清单不可用）。
+ * @returns {Array<{name:string, desc:string, base:boolean, kw:string[]}>}
+ */
+export function parseOutfitList(text) {
+  const raw = String(text == null ? '' : text)
+  let obj = null
+  try { obj = JSON.parse(raw) } catch (_) { obj = null }
+  if (!obj) {
+    const m = raw.match(/\{[\s\S]*\}/)
+    if (m) { try { obj = JSON.parse(m[0]) } catch (_) { obj = null } }
+  }
+  let arr = []
+  if (obj) {
+    for (const k of ['outfits', '装扮', '装扮清单', 'list']) {
+      if (Array.isArray(obj[k])) { arr = obj[k]; break }
+    }
+  }
+  const out = []
+  const seen = new Set()
+  for (const o of arr) {
+    const name = String((o && o.name) || '').trim()
+      .replace(/[-\uFF0D\u2013\u2014\uFE63\u2212]/g, '').replace(/\s+/g, '').trim()
+    if (!name || name.length > 16 || seen.has(name)) continue
+    seen.add(name)
+    const desc = tidyOutfitDesc((o && o.desc) || '')
+    const kw = (Array.isArray(o && o.kw) ? o.kw : [])
+      .map(x => String(x == null ? '' : x).trim()).filter(Boolean)
+    if (kw.indexOf(name) < 0) kw.push(name)
+    out.push({ name, desc, base: !!(o && o.base), kw })
+  }
+  if (out.length && !out.some(o => o.base)) out[0].base = true
+  return out
+}
+
+/**
+ * 逐镜装扮计划（纯函数）：这个角色出现的每一镜，该填**哪张装扮图**。
+ * 用于第 3 步「按装扮填全部镜头」—— 把「识别出来的装扮」真正落到每一镜的参考图区。
+ * @param {Array} shots 镜头数组
+ * @param {string} name 角色名（主体名；调用方给，本文件不算 baseOf —— 见块首注释）
+ * @param {Array} outfits 装扮清单 [{name, desc, base, kw}]
+ * @returns {Array<{i:number, outfit:string}>} 只含**该角色出现**且推导出了装扮的镜头，按镜号升序
+ */
+export function outfitPlan(shots, name, outfits) {
+  const arr = (Array.isArray(shots) ? shots : []).map(s => s || {})
+  const st = outfitStates(arr, name, outfits)
+  const out = []
+  arr.forEach((s, i) => {
+    // 🔴 出场判据这里必须**精确**（loose 不传 = false）：本函数的产物会被写进参考图区，
+    //    子串放宽容错会把别人的图填到这一镜里（「苏锦瑟」命中「小苏锦瑟」）——
+    //    「多填一张」在生成时是实打实的错误输入，比「少填一镜」严重得多。
+    if (!shotHasChar(s.chars, name, false)) return
+    const o = String(st[i] || '').trim()
+    if (!o) return
+    out.push({ i, outfit: o })
+  })
+  return out
+}
+
+/** 装扮条目归一化（mergeOutfitList 用）：名字去空白、描述走 tidyOutfitDesc、kw 去重、base 布尔化 */
+function normOutfitOne(o) {
+  const name = String((o && o.name) || '').trim()
+  const kw = (Array.isArray(o && o.kw) ? o.kw : []).map(x => String(x == null ? '' : x).trim()).filter(Boolean)
+  if (kw.indexOf(name) < 0 && name) kw.push(name)     // 装扮名本身永远是关键词（matchOutfit 也这么算）
+  return { name, desc: tidyOutfitDesc((o && o.desc) || ''), kw: kw, base: !!(o && o.base) }
+}
+
+/**
+ * 把一个角色的「本集识别结果」并进**项目级**装扮清单（跨集继承的核心，纯函数）。
+ * 为什么需要：装扮是**人物属性**，不是某一集的私事。第 1 集识别出「苏锦瑟--婚装」，
+ *   第 3 集若不知道这名字已存在，模型会另起一个（「苏锦瑟--大红嫁衣」）→ 同一套装扮长出两张卡、
+ *   两套图，跨集参考图彻底错位。所以每次识别后都要把结果并回项目清单，下次识别再当「已知」下发。
+ * 规则（顺序即优先级）：
+ *   · **同名（精确字符串）合并成一条**：名字沿用旧的（先到先得 —— 跨集稳定优先于本集叫法）；
+ *     描述取新的（本次识别更新鲜），新的为空则留旧的；kw 取**并集**。
+ *   · 新名字追加到末尾（旧的在前面 → 卡片顺序稳定，不会因为重识别把老装扮挤到后面）。
+ *   · 🔴 **基线归属沿用旧清单**：旧清单里标 `base` 的那条继续当基线（模型每集都可能把 base 标在
+ *     不同条上，跟着它漂移会让基线装扮逐集换成不同的衣服）。旧清单没有 base 时才采用新的。
+ *   · 兜底与 parseOutfitList 一致：非空清单恰好一条 base（都没有就第一条）。
+ * @param {Array} oldList 项目清单里该主体已有的装扮（可为空/未定义）
+ * @param {Array} curList 本次识别的结果（parseOutfitList 的产物）
+ * @returns {Array} 合并后的清单（新数组，不改动入参）
+ */
+export function mergeOutfitList(oldList, curList) {
+  const olds = (Array.isArray(oldList) ? oldList : []).map(normOutfitOne).filter(o => o.name)
+  const curs = (Array.isArray(curList) ? curList : []).map(normOutfitOne).filter(o => o.name)
+  const out = []
+  const at = new Map()
+  for (const o of olds) { at.set(o.name, out.length); out.push(o) }
+  for (const c of curs) {
+    const i = at.get(c.name)
+    if (i == null) { at.set(c.name, out.length); out.push(c); continue }
+    const o = out[i]
+    const kw = o.kw.slice()
+    for (const w of c.kw) if (kw.indexOf(w) < 0) kw.push(w)
+    out[i] = { name: o.name, desc: c.desc || o.desc, kw, base: o.base }
+  }
+  if (!out.length) return out
+  const oldBase = olds.find(o => o.base)
+  const curBase = curs.find(c => c.base)
+  const baseName = (oldBase || curBase || out[0]).name
+  return out.map(o => ({ name: o.name, desc: o.desc, kw: o.kw, base: o.name === baseName }))
+}
+
+/**
+ * 把项目级已知装扮名单拼成 `outfits.md` 的 `{{known}}` 槽文本（下发给模型，让它优先沿用旧名字）。
+ * 只给名字 + 一句描述：模型要的是「这个名字指哪套装束」，不需要 kw（那是程序匹配用的）。
+ * 空清单返回 `（暂无）` 而不是空串 —— 模板里这行后面紧跟着镜头记录，留空会让模型以为素材缺了一段。
+ * @param {Array} list 该项目里该主体已有的装扮
+ * @returns {string}
+ */
+export function outfitKnownBrief(list) {
+  const arr = (Array.isArray(list) ? list : []).map(normOutfitOne).filter(o => o.name)
+  if (!arr.length) return '（暂无）'
+  return arr.map(o => '- ' + o.name + (o.base ? '（基线装扮）' : '') + '：' +
+    (o.desc ? o.desc.slice(0, 60) : '（无描述）')).join('\n')
 }

@@ -16,6 +16,8 @@ const orchestrator = require('./orchestrator.cjs');
 const promptFiles = require('./prompts.cjs');
 const styles = require('./styles.cjs');
 const library = require('./library.cjs');
+const outfits = require('./outfits.cjs');
+const filesig = require('./filesig.cjs');
 const videoTiers = require('./videoTiers.cjs');
 const llmProvider = require('./llmProvider.cjs');
 const { writeUnique } = require('./assetStore.cjs');
@@ -164,9 +166,22 @@ function registerIpc(db, getWin, fallbackWorkspace) {
   ipcMain.handle('library:swap', (e, workspace, projectId, episodeId, kind, oldName, newName, newId) =>
     library.renameInEpisode(db, workspace, projectId, episodeId, kind, oldName, newName, newId));
 
+  /* ---- 项目级装扮清单（<项目>/assets/outfits.json）----
+     装扮 = 人物属性，不是某一集的私事：清单挂项目，识别时把已知装扮名下发给模型让它沿用，
+     识别完把结果并回去（并集）→ 同一个装扮在第 3 集不会长成第二个名字、第二张卡。
+     只有读 / 整份写两个动作，合并口径在渲染层纯函数（promptlib.mergeOutfitList）。 */
+  ipcMain.handle('outfits:read', (e, workspace, projectId) => outfits.readOutfits(db, workspace, projectId));
+  ipcMain.handle('outfits:put', (e, workspace, projectId, book) => outfits.putOutfits(db, workspace, projectId, book));
+
   // 素材目录复制（只增不删、不删源）：本集私有的图 ↔ 库条目目录之间的同步
   //   入库时「集 → 库」（让库条目拿到这份素材）、按库更新时「库 → 集」（把库的最新图拉进本集）
   ipcMain.handle('assets:copyDir', (e, from, to) => assetStore.copyDir(from, to));
+
+  /* ---- 素材文件指纹（files:sig，2026-10-16）----
+     分镜页的脏标记要知道「参考图还是生成提示词时那张吗」。以前只看「出自哪张卡的哪一版」，
+     用户手工换图（覆盖同名文件）时那个数字不动 → 提示词过期了却不提示。这里按绝对路径回
+     一个 `大小:修改时间` 指纹，渲染层把「参考图顺序 + 各自指纹」写进签名，换图即标脏。 */
+  ipcMain.handle('files:sig', (e, files) => filesig.sigMany(files));
 
   // 从本地导入一张图当卡片参考图（2026-10-08）：复制进该卡的素材目录 + 按卡名唯一命名，
   // 返回实际文件名。用户自带图（下载/拍摄）不必经过模型抽卡；源文件之后移动/删除都不影响。

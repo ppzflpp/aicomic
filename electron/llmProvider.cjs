@@ -7,10 +7,11 @@
  * 本地 llama-server 与云端（DeepSeek 等）都是 OpenAI 兼容，所以「换后端」本质上
  * 只是换 baseUrl + apiKey + model —— 抽象层可以很薄。
  *
- * 粒度 = 环节（stage），共 6 个，与调用点一一对应：
+ * 粒度 = 环节（stage），共 7 个，与调用点一一对应：
  *   adapt   阶段2 内容AI优化（改编稿）      StageAdapt.vue
  *   shots   阶段3 分镜脚本                StageShots.vue
  *   chars   阶段4 角色&场景档案            StageChars.vue
+ *   outfits 阶段4 装扮清单（换装识别）      StageChars.vue（2026-10-16 新增）
  *   library 阶段4 素材库提示词（单条）      StageLibrary.vue
  *   prompt  阶段5 H3提示词                StageShots.vue
  *   split   拆分镜头重写                  StageShots.vue
@@ -22,11 +23,12 @@
  *      离线自测时可只跑纯函数）。
  */
 
-/** 6 个环节（顺序即设置页展示顺序） */
+/** 7 个环节（顺序即设置页展示顺序） */
 const STAGES = [
   { id: 'adapt', label: '剧本改编' },
   { id: 'shots', label: '分镜脚本' },
   { id: 'chars', label: '角色与场景档案' },
+  { id: 'outfits', label: '装扮清单' },
   { id: 'library', label: '素材库提示词' },
   { id: 'prompt', label: '分镜提示词' },
   { id: 'split', label: '拆分镜头重写' }
@@ -60,6 +62,7 @@ function normalizeStage(v) {
   if (STAGE_IDS.includes(s)) return s;
   if (/阶段2|改编/.test(s)) return 'adapt';
   if (/阶段3|分镜脚本/.test(s)) return 'shots';
+  if (/装扮/.test(s)) return 'outfits';
   if (/阶段4|角色|素材/.test(s)) return 'chars';
   if (/拆分/.test(s)) return 'split';
   if (/阶段5|提示词/.test(s)) return 'prompt';

@@ -31,6 +31,7 @@ export { stripHeader, parseSections, section, sectionRaw, parseFallbacks, pickFa
 export const TASKS = [
   { id: 'adapt', label: '剧本改编', desc: '章节原文 → 剧本稿', kind: '', specs: ['adapt.md'], mustHave: ['## 输出格式'] },
   { id: 'shots', label: '分镜脚本', desc: '剧本稿 → 分镜 + 角色 / 场景档案', kind: 'image', specs: ['shots.md', 'profile.md', 'chars.md', 'scenes.md'], mustHave: ['"shots"', '"characters"', '"scenes"'] },
+  { id: 'outfits', label: '装扮清单', desc: '角色档案 + 分镜服装记录 → 装扮变体清单', kind: 'image', specs: ['outfits.md', 'profile.md'], mustHave: ['"outfits"'] },
   { id: 'char', label: '角色提示词', desc: '角色档案 → 生图提示词', kind: 'image', specs: ['promptgen.md', 'profile.md', 'chars.md'], mustHave: ['"prompt"', '"negative"'] },
   { id: 'scene', label: '场景提示词', desc: '场景档案 → 生图提示词', kind: 'image', specs: ['promptgen.md', 'profile.md', 'scenes.md'], mustHave: ['"prompt"', '"negative"'] },
   { id: 'video-base', label: '视频提示词 · 基础', desc: '分镜 → 视频提示词（文字 / 首尾帧）', kind: 'video', specs: ['h3.md'], mustHave: ['## 输出格式'], dyn: 'video.base' },
@@ -380,21 +381,45 @@ export async function composeSystem({ specs = [], mustHave = [], kind = '', task
   // 「每 1000 字 8-15 个镜头」那条 —— 它对广告是反向指令）。没声明就是空表。
   const drop = (pack && pack.drop) || {}
   const bodies = []
+  // 🔴 同一份规范在一次组装里**只下发一次**（2026-10-16）：
+  //    以前同一个文件被拼两遍是完全可能的 —— specs 里两个逻辑名被体裁映射到同一个文件、
+  //    模型专属规范与通用规范指向同一份、风格说明与正文本就重复……一旦发生，模型收到的
+  //    是同一段规则的两份拷贝：白烧 token，更糟的是**重复的规则会被当成「重点强调」**，
+  //    而重复段落里的用词漂移（比如两份「档案字段表」差一个字段）会让模型无所适从。
+  //    这里按两道闸拦：① 已经拼过的**文件名**跳过；② 正文一字不差的块跳过。
+  //    于是「profile.md 拼两次」这类事在结构上不可能发生，用户不需要为此手工做成品覆写。
+  const seenFiles = new Set()
+  const seenBodies = new Set()
+  /** @returns {'pushed'|'dup'|'empty'} 三种结局都要能区分：只有「真的空」才算读不到 */
+  const pushBody = (text) => {
+    if (!text) return 'empty'
+    if (seenBodies.has(text)) return 'dup'
+    seenBodies.add(text)
+    bodies.push(text)
+    return 'pushed'
+  }
   for (const name of specs) {
     // 🔴 换的只是「读哪个文件」，不换身份：下面的模型专属规范与风格说明仍按**逻辑名**挂载，
     //    所以换体裁不会让 zimage 那类模型事实掉链子。
     const real = (Array.isArray(alias[name]) && alias[name].length) ? alias[name] : [name]
-    let got = 0
+    let got = 0, skipped = 0, dup = 0
     for (const rn of real) {
+      // 这一份本轮已经拼过了（两个逻辑名指向同一个文件）→ 跳过
+      if (seenFiles.has(rn)) { skipped++; continue }
+      seenFiles.add(rn)
       // 去掉 frontmatter 与「程序用途小节」（兜底默认 / 素材格式 / 维护说明），其余整篇下发。
       // readPrompt 已经做过风格替换 —— 这里拿到的正文对当前风格就是「成品」。
       // 再按体裁裁剪表删掉与本体裁冲突的行（dropLines 对没配的文件原样返回）。
       const body = dropLines(stripProgramSections(stripHeader(await readPrompt(rn, pid))).trim(), drop[rn]).trim()
-      if (body) { bodies.push(body); got++ }
+      const how = pushBody(body)
+      if (how === 'pushed') got++
+      else if (how === 'dup') dup++
     }
     // 映射指向的文件一份都读不到 → 当场报错。静默跳过等于「用户明明选了广告体裁，
     // 改编环节却收到一篇空规范」，那比报错难查得多。
-    if (!got && alias[name]) {
+    // ⚠️ 「被去重跳过」与「正文与前面某份一字不差」都**不算**读不到 —— 否则
+    //    「两个逻辑名指向同一文件」「基座与增量正好同文」这些正常配置会在第二个名字上误报。
+    if (!got && !skipped && !dup && alias[name]) {
       throw new Error('「' + name + '」在本项目体裁下要读 ' + real.join(' / ') +
         '，但它们都读不到内容 —— 请到「提示词配置中心 → 通用规范」确认这些文件是否存在' +
         '（若这些文件被本体裁的裁剪规则整篇删空，请查风格包里的 prompt.drop）')
@@ -403,13 +428,13 @@ export async function composeSystem({ specs = [], mustHave = [], kind = '', task
     for (const text of (extras[name] || [])) {
       // 模型专属规范也要过一遍风格替换（model-zimage.md 里同样有题材相关的举例）
       const ex = applyStyle(stripProgramSections(stripHeader(text)).trim(), svars)
-      if (ex) bodies.push(ex)
+      if (ex) pushBody(ex)
     }
   }
   // 风格包自己的说明：追加在正文之后，一次性下发（不逐份重复，省 token）
   if (pack && pack.text && (pack.append || []).some(n => specs.includes(n))) {
     const t = applyStyle(stripProgramSections(stripHeader(pack.text)).trim(), svars)
-    if (t) bodies.push(t)
+    if (t) pushBody(t)
   }
   const text = joinSystem({ specs: bodies, mustHave })
   // 🔴 兜底闸门：规范正文本该被替换干净，若还留着 {{S.x}}（风格包缺键 / 键名拼错），

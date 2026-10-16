@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { usePipeline } from './pipeline.js'
-import { unfoldProfileLine } from '../promptlib.js'
+import { unfoldProfileLine, mergeOutfitList } from '../promptlib.js'
 
 /** 打开某一集时把档案里「模型偷懒写成的一整行」拆回多行（2026-10-12）：
  *  磁盘上的旧数据（V9X-4 等）profile 是 0 换行的一坨，重生成才会修好 ——
@@ -59,6 +59,10 @@ export const useProject = defineStore('project', {
     media: {},
     /** 项目角色场景库（跨集共享的角色/场景条目）：{ [projectId]: {rev, entries, busy} } */
     library: {},
+    /** 项目级装扮清单（跨集继承）：{ [projectId]: {rev, items, busy} }。
+     *  items 形如 `{ 苏锦瑟: [{name, desc, kw, base}] }`（基础名分组，见 electron/outfits.cjs）。
+     *  用途：识别装扮时把已知名字下发给模型（让它沿用，不另起名字），识别完把结果并回去。 */
+    outfitBook: {},
     /** 库编辑区当前打开的目标（不属于任何一集）：{projectId, id} | null */
     libTarget: null,
     /** 提示词配置中心当前打开的项目：{ projectId } | null（同样不属于任何一集）。
@@ -122,6 +126,9 @@ export const useProject = defineStore('project', {
         this.current = ep
         this.view = 'dash'
         usePipeline().load(ep.done, ep.activeStage, ep.stageMeta, ep.id)
+        // 装扮清单是**项目级**的（跨集继承）：打开集数就连带拉一次。
+        // 识别装扮时要拿它当「已知名字」下发（见 StageChars.runOutfits），点按钮才拉就太晚了。
+        await this.loadOutfitBook(ep.projectId)
       } catch (e) { this.fail(e) }
     },
     /** 打开库条目编辑区（第 6 块；不属于任何一集，右侧不再要求 st.current） */
@@ -321,6 +328,60 @@ export const useProject = defineStore('project', {
   libEntries(projectId) {
     const s = projectId != null ? this.library[projectId] : null
     return (s && s.entries) || []
+  },
+  /* ---- 项目级装扮清单（跨集继承）----
+     与 library 的区别：库是**用户主动入库**的产物，装扮清单是**识别时自动累积**的副产物；
+     所以这里没有 add/remove/rename，只有「拉到本地」与「整份写回」两个动作。 */
+  /**
+   * 拉项目装扮清单。文件还没生成（本项目从未识别过装扮）→ 主进程回空清单，不抛。
+   * 打开某一集时自动加载；识别装扮前会 force 重拉一次（可能刚在别的集里识别过）。
+   */
+  async loadOutfitBook(projectId, force) {
+    if (!projectId) return null
+    const cur = this.outfitBook[projectId]
+    if (!force && cur && !cur.busy) return cur
+    if (cur && cur.busy) return cur
+    this.outfitBook[projectId] = { rev: cur ? cur.rev : 1, items: (cur && cur.items) || {}, busy: true }
+    try {
+      const r = await window.studio.outfitsRead(this.workspace, projectId)
+      this.outfitBook[projectId] = { rev: (r && r.rev) || 1, items: (r && r.items) || {}, busy: false }
+    } catch (e) {
+      this.fail(e)
+      if (this.outfitBook[projectId]) this.outfitBook[projectId].busy = false
+    }
+    return this.outfitBook[projectId]
+  },
+  /** 某主体在项目清单里已有的装扮（同步读取；空数组 = 还没识别过 / 本项目新装扮） */
+  outfitsOf(projectId, base) {
+    const s = projectId != null ? this.outfitBook[projectId] : null
+    const items = (s && s.items) || {}
+    return Array.isArray(items[base]) ? items[base] : []
+  },
+  /**
+   * 整份写回项目装扮清单（rev 由主进程 +1）。
+   * 🔴 **不做「读-改-写」的乐观合并**：清单是低频写入（每次识别一次），
+   *    重拉一次的成本远低于并发写互相覆盖的代价 —— 写完直接用返回值刷新本地缓存。
+   */
+  async putOutfits(projectId, items) {
+    if (!projectId) return null
+    const r = await window.studio.outfitsPut(this.workspace, projectId, { rev: 1, items: items || {} })
+    if (r) this.outfitBook[projectId] = { rev: r.rev || 1, items: r.items || {}, busy: false }
+    return r
+  },
+  /**
+   * 把一次识别结果记进项目装扮清单（读-改-写在这里一次做完）。
+   * 🔴 **必须先 force 重拉**：写盘是**整份覆盖**的，若本地缓存是空的（打开集数那次读取失败过、
+   *    或刚换了工作区），拿缓存当底稿就会把**别的角色**的装扮名整片抹掉。
+   *    读失败时 loadOutfitBook 会保留上一次的 items（不清空），所以退一步也不会误删。
+   * @param {string} base 主体名（基础名）
+   * @param {Array} list 本次识别结果（parseOutfitList 的产物）
+   */
+  async recordOutfits(projectId, base, list) {
+    if (!projectId || !base) return null
+    const book = await this.loadOutfitBook(projectId, true)
+    const items = Object.assign({}, (book && book.items) || {})
+    items[base] = mergeOutfitList(items[base], list)
+    return this.putOutfits(projectId, items)
   },
   /** 入库：payload 带 updateId 则覆盖更新，不带则新建（撞名自动加「 (2)」，返回值里 renamed 标记会告诉前端） */
   async saveLibrary(projectId, payload) {

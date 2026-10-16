@@ -33,8 +33,13 @@ contextBridge.exposeInMainWorld('studio', {
   libraryUsageAll: (ws, projectId) => ipcRenderer.invoke('library:usageAll', ws, projectId),
   librarySwap: (ws, projectId, episodeId, kind, oldName, newName, newId) =>
     ipcRenderer.invoke('library:swap', ws, projectId, episodeId, kind, oldName, newName, newId),
+  // 项目级装扮清单（跨集继承）：读回已知装扮名单，识别后把新的并回去
+  outfitsRead: (ws, projectId) => ipcRenderer.invoke('outfits:read', ws, projectId),
+  outfitsPut: (ws, projectId, book) => ipcRenderer.invoke('outfits:put', ws, projectId, book),
   // 素材目录复制（只增不删）：本集私有图 ↔ 库条目目录，入库 / 按库更新时同步
   copyDir: (from, to) => ipcRenderer.invoke('assets:copyDir', from, to),
+  // 素材文件指纹（绝对路径数组 → {路径: "大小:修改时间"}）：脏标记靠它发现「参考图被换掉了」
+  fileSigs: (files) => ipcRenderer.invoke('files:sig', files),
   // 从本地选一张图导入该卡素材目录（复制 + 按卡名唯一命名），返回实际文件名
   importImage: (dir, baseName, src) => ipcRenderer.invoke('assets:importImage', dir, baseName, src),
   // 归档「重新生成分镜后不再出现的角色/场景」的图（移到 _trash/<时间戳>/，不删）

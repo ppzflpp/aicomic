@@ -132,7 +132,7 @@
             <span v-if="genTextP(i)" class="gen-ms" :class="{ live: prompts[i] && prompts[i]._genAt }">{{ genTextP(i) }}</span>
             <span style="flex:1"></span>
             <span v-if="promptStale(i)" class="stale" @click="ackPrompt(i)" title="点击消除提示">
-              分镜/素材已变化 · <b>生成</b>后消失
+              {{ staleWhatPrompt(i) }} · <b>生成</b>后消失
             </span>
           </div>
           <!-- 2026-10-10（Dragon）：本区标题下方的文案整块移除 ——
@@ -282,7 +282,7 @@
           <div class="vmeta">
             <!-- 脏标记：提示词/分镜/素材图在上次视频生成之后又变了 -->
             <div v-if="videoStale(i)" class="stale" style="margin-top:4px" @click="ackVideo(i)" title="点击消除提示">
-              上游已更新 · <b>生成视频</b>后消失
+              {{ staleWhatVideo(i) }} · <b>生成视频</b>后消失
             </div>
           </div>
         </div>
@@ -480,7 +480,7 @@ import { composeSystem, composeUser, normalizeProfile, currentStyleLimits } from
 import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, mergeShotPair, mergeAllShots, fitDurs, fitShotCount, pacingPlan, shotCheck, storyUnits, sceneKey, sceneAlign, sceneCardIssues, sceneDeclIssues, charAlign, stripTailEnNote, profileBrief, splitShot, splitAll, splitTag, auditModelArchive } from './promptlib.js'
 import { parseRes, resLabel, optsWith, clampDur, seg, joinPath } from './resutil.js'
 import { baseOf, variantOf, groupProfiles } from './variant.js'
-import { touchRevs, sigEq } from './stale.js'
+import { touchRevs, sigStale, staleReason, refOrderSig, SIG_V } from './stale.js'
 import LlmSourceTag from './LlmSourceTag.vue'
 import { overrideOf } from './llmSource.js'
 
@@ -547,7 +547,11 @@ export default {
       // 有生成在跑时 = 该次生成所属的集 id；切集时改置 'SWITCHED'（收尾写库守卫据此丢弃，防旧集数据写进新集）
       _busyEpId: null,
       // 当前点选高亮的镜头行（点击行内任意空白处高亮，点其他行切换）
-      sel: -1
+      sel: -1,
+      // 🔴 素材文件指纹（2026-10-16）：{ 绝对路径: "大小:修改时间" }，主进程现算（见 electron/filesig.cjs）。
+      //    脏标记靠它发现「参考图被换掉了」—— 没有它，用户手工换图（覆盖同名文件）时
+      //    提示词/视频明明过期了却一个字都不提示。见 stale.js 的「素材签名 v2」。
+      asig: {}, asigReady: false
     }
   },
   computed: {
@@ -680,14 +684,20 @@ export default {
         this._busyEpId = 'SWITCHED'
         this.$root.toast('已切换剧集：当前镜头完成后批量停止，剩余任务丢弃')
       }
-      if (ep) this.initAll(ep)
+      if (ep) { this.initAll(ep); this.refreshAsig() }
     },
     // 别块（角色&场景的「一键填充」）写过 prompts 工件 → 用最新工件重建本块表单，
     // 否则本块的本地副本会在下次保存时把那次填充覆盖回去（同引用，watch('st.current') 不触发）
-    'st.current.promptsSyncAt'() { if (this.st.current && !this.pBusy) this.initPrompts(this.st.current) },
+    'st.current.promptsSyncAt'() {
+      if (this.st.current && !this.pBusy) this.initPrompts(this.st.current)
+      // 参考素材被别块改过（角色&场景的「按装扮填镜头」「一键填充」）→ 指纹也要跟着更新
+      this.refreshAsig()
+    },
     // 别块（角色&场景的「写入镜头」/「切换变体」改名）写过 shots 工件 → 按最新工件重建分镜列表，
     // 否则本块的本地副本会在下次保存时把那次改动覆盖回去（同引用，watch('st.current') 不触发）
     'st.current.shotsSyncAt'() { if (this.st.current && !this.pBusy && !this.vBusy && !this.batchP && !this.batchV) this.initShots(this.st.current) },
+    /** 卡片图重出 / 素材归档过（mediaSyncAt）→ 被引用的文件可能已经换了内容，指纹重取 */
+    'st.current.mediaSyncAt'() { this.refreshAsig() },
     'shots.length'() { /* 分镜数量变化时同步提示词/视频槽位（保持每行三区对齐） */ this.syncSlots() },
     // 第 2 块点「生成分镜」进来 → 不需要任何操作直接开始生成
     'pl.autoShots'(v) { if (v) { this.pl.autoShots = false; this.tryAutoShots() } },
@@ -716,9 +726,17 @@ export default {
   /** 🔴 批量按钮的 Teleport 延迟挂载：mounted 后 DOM 才真正插入文档，#shots-batch 此时才可被 querySelector 命中 */
   mounted() {
     this.$nextTick(() => { this.tpReady = true })
+    // 素材指纹：进页面取一次；窗口重新获得焦点时再取一次 —— 用户最常见的「手工换图」
+    // 就是在资源管理器里把图覆盖掉、再切回软件，这一下正好把新指纹收进来（否则要等别处的同步事件）
+    this.refreshAsig()
+    this._onFocus = () => { this.refreshAsig() }
+    window.addEventListener('focus', this._onFocus)
   },
   /** 卸载时立刻释放视频 base64，避免常驻内存（视频是重内存块） */
-  beforeUnmount() { this._b64 = {}; this._refv = {} },
+  beforeUnmount() {
+    this._b64 = {}; this._refv = {}
+    if (this._onFocus) { window.removeEventListener('focus', this._onFocus); this._onFocus = null }
+  },
   methods: {
     clampDur,   // 模板里 @change 夹取用
     resLabel,
@@ -1199,7 +1217,7 @@ export default {
       add(this.scenes, 'scenes')
       return m
     },
-    /** 本行当前引用的素材的版本签名 */
+    /** 本行当前引用的素材的版本签名（老字段：路径 → 该卡的第几版图） */
     sigAssets(refs) {
       const map = this.assetRevMap()
       const out = {}
@@ -1208,23 +1226,63 @@ export default {
       }
       return out
     },
-    /** 提示词「应该」匹配的上游签名（分镜版本 + 素材版本 + 素材构成） */
+    /**
+     * 本集需要指纹的素材路径（所有镜头 refs 里的参考图/参考视频/首帧/尾帧，去重）。
+     * 只统计**被引用**的（不是卡片候选池的全部）：签名只需回答「这一镜现在用的这几张还是原来那几张吗」。
+     */
+    refPathsAll() {
+      const set = new Set()
+      for (const p of this.prompts || []) {
+        const r = (p && p.refs) || {}
+        for (const kind of ['images', 'videos']) for (const f of (r[kind] || [])) if (f) set.add(f)
+        for (const k of ['first', 'last']) if (r[k]) set.add(r[k])
+      }
+      return [...set]
+    },
+    /**
+     * 刷新素材指纹（走主进程 files:sig；只 stat 不读内容，很便宜）。
+     * 🔴 失败时**不置 asigReady**：宁可让内容维度「比不出来」（不算变、不放假 ⚠），
+     *    也不能拿一堆空指纹去比 → 会把自己刚生成的签名比成过期，全屏假警报。
+     */
+    async refreshAsig() {
+      const paths = this.refPathsAll()
+      if (!paths.length) { this.asig = {}; this.asigReady = true; return }
+      try {
+        const r = await window.studio.fileSigs(paths)
+        this.asig = (r && typeof r === 'object') ? r : {}
+        this.asigReady = true
+      } catch (_) { /* 保持 asigReady=false：这一轮不做内容维度的判定 */ }
+    },
+    /** 素材绝对路径 → 文件指纹（指纹表里没有 → 空串，签名里以「无指纹」参与比较） */
+    asigOf(p) { return (p && this.asig[p]) || '' },
+    /** 提示词「应该」匹配的上游签名（分镜版本 + 素材版本 + 素材构成 + 素材顺序/内容，见 stale.js） */
     curPromptSig(i) {
       const refs = (this.prompts[i] && this.prompts[i].refs) || {}
       return {
+        v: SIG_V,
         shotRev: (this.shots[i] && this.shots[i]._rev) || 1,
         assets: this.sigAssets(refs),
         // 素材构成（数量/有无）决定官方任务类型与规范文件 → 变了提示词就过期
-        refs: { img: (refs.images || []).length, vid: (refs.videos || []).length, first: refs.first ? 1 : 0, last: refs.last ? 1 : 0 }
+        refs: { img: (refs.images || []).length, vid: (refs.videos || []).length, first: refs.first ? 1 : 0, last: refs.last ? 1 : 0 },
+        // 素材顺序 + 文件内容（v2 新增）：拖动排序、换图、素材被删都算「变了」。
+        // 指纹还没取回来 → null（sigSame 见到 null 就不比这一项，绝不放假 ⚠）
+        order: this.asigReady ? refOrderSig(refs, p => this.asigOf(p)) : null
       }
     },
     /** 提示词是否过期：生成后分镜/素材变过，且用户没有点掉提示 */
     promptStale(i) {
       const p = this.prompts[i]
       if (!p || !p._sig || !p.text || !p.text.trim()) return false
-      const cur = this.curPromptSig(i)
-      if (sigEq(p._sig, cur)) return false
-      return !p._ack || !sigEq(p._ack, cur)
+      return sigStale(p._sig, this.curPromptSig(i), p._ack)
+    },
+    /** ⚠ 里说清哪里变了（分镜 / 参考素材 / 都有）—— 只在确实要显示提示时取值 */
+    staleWhatPrompt(i) {
+      const p = this.prompts[i]
+      return staleReason(p && p._sig, this.curPromptSig(i))
+    },
+    staleWhatVideo(i) {
+      const v = this.vstate[i]
+      return staleReason(v && v._sig, this.curVideoSig(i))
     },
     async ackPrompt(i) {
       const p = this.prompts[i]
@@ -1238,21 +1296,22 @@ export default {
       p._rev = (p._rev || 1) + 1
       await this.savePrompts()
     },
-    /** 视频「应该」匹配的上游签名（提示词版本 + 分镜版本 + 素材版本） */
+    /** 视频「应该」匹配的上游签名（提示词版本 + 分镜版本 + 素材版本 + 素材顺序/内容） */
     curVideoSig(i) {
       const p = this.prompts[i] || {}
+      const refs = p.refs || {}
       return {
+        v: SIG_V,
         promptRev: p._rev || 1,
         shotRev: (this.shots[i] && this.shots[i]._rev) || 1,
-        assets: this.sigAssets(p.refs || {})
+        assets: this.sigAssets(refs),
+        order: this.asigReady ? refOrderSig(refs, x => this.asigOf(x)) : null
       }
     },
     videoStale(i) {
       const v = this.vstate[i]
       if (!v || !v._sig || !v.files.length) return false
-      const cur = this.curVideoSig(i)
-      if (sigEq(v._sig, cur)) return false
-      return !v._ack || !sigEq(v._ack, cur)
+      return sigStale(v._sig, this.curVideoSig(i), v._ack)
     },
     async ackVideo(i) {
       const v = this.vstate[i]
@@ -1719,7 +1778,10 @@ export default {
         const ms = Date.now() - t0
         p.genMs = ms                  // 逐条耗时（持久化在 prompts.json，显示在该镜头行上）
         p._rev = (p._rev || 1) + 1    // 内容变了：已生成的视频随之标 ⚠
-        p._sig = this.curPromptSig(i) // 记录生成时的上游签名（分镜版本 + 素材版本）
+        // 🔴 记签名前先取一次最新指纹：签名要留的是「生成这一版时磁盘上那几张图」，
+        //    拿一份可能过时的指纹表去写，等于给未来埋一个查不出来的假阴性。
+        await this.refreshAsig()
+        p._sig = this.curPromptSig(i) // 记录生成时的上游签名（分镜 + 素材版本 + 素材顺序/内容）
         delete p._genAt
         await this.savePrompts()
         this.pl.markGen(4, ms)
@@ -2376,7 +2438,9 @@ export default {
         this.vstate[i].genMs = ms             // 整镜头「最近一次」的耗时（videos.json 持久化）
         // 素材快照：把「这一版视频实际用了哪些参考素材」记下来，行上直接可见
         this.vstate[i].refsUsed = { mode, images: refImages.slice(), videos: refVideos.slice(), first: firstFrame, last: lastFrame }
-        this.vstate[i]._sig = this.curVideoSig(i)   // 记录生成时的上游签名（提示词/分镜/素材版本）
+        // 🔴 记签名前先取一次最新指纹（同提示词的道理）：这一版视频到底用了磁盘上哪几张图
+        await this.refreshAsig()
+        this.vstate[i]._sig = this.curVideoSig(i)   // 记录生成时的上游签名（提示词/分镜/素材版本 + 顺序/内容）
         this.vstate[i]._ack = null                  // 重新生成即视为已处理
         delete this.vstate[i]._genAt
         this.pruneB64()                      // 只在非渲染时机清缓存（防渲染死循环）
