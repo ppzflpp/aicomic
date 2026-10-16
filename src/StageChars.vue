@@ -138,26 +138,10 @@
               <button class="btn ghost xs" :disabled="busy" @click="makeParent(it.c)">建主体卡</button>
             </div>
 
-            <!-- 装扮识别入口（2026-10-16，Dragon）：只出现在角色**主体卡**上（装扮卡自己不再往下派生）。
-                 点它 → 立刻把本集分镜里的服装记录交给大模型识别装扮，用户一个字都不用写。
-                 🔴 为什么放在档案区上方、而不是底部那排操作按钮里：`.ops-row button` 是 verify3
-                    用来精确数按钮个数的选择器（那条断言的本意是拦住「把三视图开关写成 button」），
-                    往那里加按钮会打红它。
-                 🔴 本集还没有分镜时不显示 —— 装扮是从分镜的服装记录里读出来的，没有分镜就没有原料。 -->
-            <div v-if="canOutfit(it.c)" class="f of-entry">
-              <button class="btn ghost xs" :disabled="busy" @click.stop="openOutfits(it.c)">识别装扮</button>
-              <span class="of-hint">读本集分镜里记着的服装状态与换装点，自动建卡并填好指令</span>
-            </div>
-
-            <!-- 「按装扮填全部镜头」（第 3 步，2026-10-16）：把上面识别出来的装扮**落到每一镜的参考图区**。
-                 逐镜读分镜里记着的服装状态与换装点 → 判断这一镜该穿哪套 → 把那张装扮图写进这一镜的参考图。
-                 主体卡的定妆图负责「基线装束」的那些镜（穿常服的那些镜）。
-                 🔴 只在**有装扮卡**时出现（没卡就没图可填，先走上面的「识别装扮」）；
-                    同样放在档案区上方，不进 `.ops-row`（那里被 verify3 精确数按钮个数）。 -->
-            <div v-if="canFillByOutfit(it.c)" class="f of-entry">
-              <button class="btn ghost xs" :disabled="busy" @click.stop="fillByOutfits(idxOf(it.c))">按装扮填镜头</button>
-              <span class="of-hint">按分镜里的换装点，把每套装扮的图填进该穿它的那些镜头（基线用本卡定妆图）</span>
-            </div>
+            <!-- 🔴 装扮不再有任何手动入口（2026-10-16 二次拍板，Dragon：「不需要用户点识别装扮」）。
+                 识别装扮 → 建派生卡 是**生成分镜那一下自动做的**（见 runAuto），
+                 「哪一镜穿哪套」是**点「一键填充」时自动判的**（见 fillRefs）。
+                 原来的「识别装扮」「按装扮填镜头」两行与整个识别面板已删除 —— 装扮现在是数据，不是功能。 -->
 
             <!-- 档案（提示词的唯一依据，可手改）：与大预览同列（图下）；
                  改动 → 脏标记「档案已改 · 提示词待更新」→ 点标题右侧的刷新图标按新档案重算。
@@ -258,8 +242,8 @@
               <!-- 父卡 → 整组一次填充；视角变体卡无此按钮（2026-10-08） -->
               <button v-if="!isVariantCard(sc)" class="btn sec sm" :disabled="busy || !selFile(sc)"
                       :title="grpSize(sc) > 1
-                        ? '把「' + sc.name + '」整组的 ' + grpSize(sc) + ' 张图（父卡 + 全部视角变体）一次填到所有包含「' + vBase(sc.name) + '」的镜头的参考图区（只填参考图，不动首尾帧）'
-                        : '把当前选中的这张图填到所有包含「' + vBase(sc.name) + '」的镜头的参考图区（只填参考图，不动首尾帧）。视角变体卡按主体名匹配，所以分镜里不必写「' + sc.name + '」'"
+                        ? '把「' + sc.name + '」整组的 ' + grpSize(sc) + ' 张图（父卡 + 全部视角变体）一次填到所有包含「' + vBase(sc.name) + '」的镜头的参考图区（只填参考图，不动首尾帧）。本集识别过这个角色的装扮时，改为按镜头逐镜填那一镜该穿的那套'
+                        : '把当前选中的这张图填到所有包含「' + vBase(sc.name) + '」的镜头的参考图区（只填参考图，不动首尾帧）。视角变体卡按主体名匹配，所以分镜里不必写「' + sc.name + '」。本集识别过这个角色的装扮时，改为按镜头逐镜填那一镜该穿的那套'"
                       @click="fillRefs(idxOf(sc))">
                 {{ grpSize(sc) > 1 ? '一键填充整组' : '一键填充' }}
               </button>
@@ -426,7 +410,7 @@
             派生后卡上会预填一条**换装指令**（来自 views.md：只说换衣服，其余一律保持原样）：把里面的
             「{装束}」补成这套装扮的服装 / 配饰 / 头饰描述（可从角色档案的「服装」字段抄），再点「<b>重出这一装扮</b>」——
             它会拿主体卡当前的图当参考，走编辑通道**只换衣服**（脸、背景、光线、构图都不变）。
-            <b>不想手写就别走这里</b>：直接点主体卡上的「<b>识别装扮</b>」——大模型会从本集分镜的服装记录里读出这个角色的全部装扮，自动建卡并把这句描述填好。
+            <b>这里只在补一张特例卡时才用</b>：正常路子上装扮卡由「生成分镜」自动识别并建好（指令里已经填好装束描述）。
           </div>
           <div v-else style="margin-top:6px">新卡会自动与主体卡相邻摆放、**共用同一个背景框与档案**（发给视频模型时只发主体卡那一份），分镜里也只需写主体名。</div>
         </div>
@@ -446,50 +430,9 @@
       </div>
     </div>
 
-    <!-- 装扮清单（2026-10-16，Dragon）：从本集分镜的服装记录里识别这个角色的全部装扮。
-         用户不写任何提示词 —— 大模型读分镜里逐镜记着的服装状态与换装点（契约见 outfits.md），
-         归并措辞、起短名、写装束描述；勾选后程序自动建 `主体--装扮名` 卡，并把描述填进换装指令的
-         `{装束}` 槽 —— 卡建出来就是可直接出图的完整指令，没有花括号残留。
-         基线那套不派生：它就是主体卡现在这张定妆图。 -->
-    <div v-if="askOutfits" class="modal-mask" @click.self="askOutfits = null">
-      <div class="modal of-modal">
-        <div class="modal-title">识别「{{ askOutfits.base }}」的装扮</div>
-        <div class="modal-note">
-          <div>素材 = 这个角色的档案 + 本集分镜里他出现过的镜头（逐镜记着的服装状态与换装点）。大模型只做三件事：把措辞不同的同一套装扮并成一条、给每套起个短名、写一句装束描述。</div>
-          <div style="margin-top:6px">识别时会带上这个人物在<b>别的集</b>里已经识别出的装扮名，让它沿用同一个名字（同一套装扮不会一集一个名）；建卡后这套名单也会记到项目上，下一集继续沿用。</div>
-          <div style="margin-top:6px">名字与描述都可以直接改；改完勾上要建的，点「建卡并出图」——出图走编辑通道，以主体卡当前的定妆图为参考，只换衣服。</div>
-        </div>
-        <div v-if="askOutfits.busy" class="of-busy"><i class="spin"></i>正在从分镜的服装记录里识别…</div>
-        <div v-else-if="askOutfits.err" class="modal-err">{{ askOutfits.err }}</div>
-        <div v-if="askOutfits.done" class="of-list">
-          <div v-for="(o, i) in askOutfits.list" :key="i" class="of-row" :class="{ base: o.base }">
-            <input class="of-pick" type="checkbox" :disabled="!!o.base"
-                   :checked="askOutfits.picked.indexOf(o.name) >= 0"
-                   @change="toggleOutfitPick(o.name, $event.target.checked)" />
-            <div class="of-main">
-              <div class="of-top">
-                <input class="of-name" type="text" :value="o.name" @change="renameOutfit(i, $event.target.value)" />
-                <span v-if="o.base" class="of-tag">基线装束 · 不派生</span>
-                <span v-else-if="outfitRowTag(o.name)" class="of-tag" :class="{ ok: outfitRowTag(o.name) === '已有图' }">{{ outfitRowTag(o.name) }}</span>
-                <span v-else class="of-tag new">将新建</span>
-              </div>
-              <textarea class="of-desc" rows="2" v-model="o.desc"
-                        placeholder="这套装扮的服装 / 配饰 / 头饰（款式、颜色、材质）—— 会被直接填进换装指令"></textarea>
-            </div>
-          </div>
-          <div v-if="!askOutfits.list.length" class="muted" style="padding:8px 0">没有识别到装扮。</div>
-        </div>
-        <div class="modal-ops">
-          <span style="flex:1"></span>
-          <button class="btn ghost" @click="askOutfits = null">关闭</button>
-          <button class="btn ghost" :disabled="askOutfits.busy" @click="runOutfits">重新识别</button>
-          <button class="btn ghost" :disabled="askOutfits.busy || !askOutfits.done || !askOutfits.picked.length"
-                  @click="deriveOutfits(false)">只建卡</button>
-          <button class="btn" :disabled="askOutfits.busy || !askOutfits.done || !askOutfits.picked.length"
-                  @click="deriveOutfits(true)">建卡并出图</button>
-        </div>
-      </div>
-    </div>
+    <!-- 装扮清单的识别面板已删除（2026-10-16 二次拍板，Dragon：「不需要用户点识别装扮」）：
+         识别 → 建 `主体--装扮名` 派生卡 全程由「生成分镜」那一下自动完成（见 runAuto），
+         卡片上的换装指令与装束描述可以直接改 —— 这就是唯一的编辑出口。 -->
 
     <!-- 从项目库导入：列出库里该类型、本集还没有的条目，导入为只读副本 -->
     <div v-if="askImport" class="modal-mask" @click.self="askImport = null">
@@ -628,6 +571,7 @@
             <div><b>只补还没有图的</b> —— 仅给还没有图片的条目出图；已有图的全部跳过（想重出某一张，用该卡片右下角的「生图 / 图生图」按钮）。</div>
             <div style="margin-top:6px"><b>全部重新生成</b> —— 所有条目都重新出一张图，完成后<b>自动选中新版本</b>（旧版本保留，可随时切回）。</div>
             <div style="margin-top:6px">当前共 {{ askBatch.total }} 个条目：已有图 <b>{{ askBatch.have }}</b> 个、还没有图 <b>{{ askBatch.miss }}</b> 个。</div>
+            <div style="margin-top:6px">条目 = 角色 / 场景<b>主体卡 + 它们的装扮卡</b>（装扮卡以主体卡的图为参考、只换衣服；视角卡不在其中）。装扮卡要等主体卡先有图，所以「只补还没有图的」会先出主体卡、再出装扮卡。</div>
           </div>
           <div class="modal-ops">
             <button class="btn" @click="askBatchImgMissing">只补还没有图的</button>
@@ -794,7 +738,7 @@ export default {
       batchI: false, batchIStop: false, batchIN: 0, batchITotal: 0,
       askBatch: null,
       // 项目角色场景库相关的四个弹窗：手动新增 / 从库导入 / 写入镜头 / 批量入库
-      askAdd: null, askImport: null, askWrite: null, askLibSave: null, askDerive: null, askOutfits: null,
+      askAdd: null, askImport: null, askWrite: null, askLibSave: null, askDerive: null,
       // 删除整张卡片的确认弹窗（与「删图」区分：删卡删档案与提示词，图片文件留在磁盘）
       askCard: null,
       // 「本集新增卡片是否入库」的询问去重键（同一个集的同一批卡片只问一次，避免每次重建都弹）
@@ -806,7 +750,7 @@ export default {
        * 只在内存里（刷新即消失）—— 它描述的是「此刻跑到第几步」，不是需要持久化的事实。
        * 卡片上方那条进度条读它；`stop` 由进度条上的「停止」按钮置位（与批量按钮的停止同口径）。
        */
-      auto: { on: false, step: '', detail: '', n: 0, total: 5, stop: false },
+      auto: { on: false, step: '', detail: '', n: 0, total: 2, stop: false },
       // 🔴 Teleport 延迟挂载开关：切集时 <section :key> 整棵重建，mounted 前 #chars-batch 不在文档里
       tpReady: false
     }
@@ -935,8 +879,8 @@ export default {
     'st.current.chars'() { this.rebuildSoon() },
     'st.current.scenes'() { this.rebuildSoon() },
     'st.current.shots'() { this.rebuildSoon() },
-    // 🔴 一条龙（2026-10-16 · Dragon「我要的所有的自动化」）：分镜生成完会置一张票
-    //    （`st.requestAuto`），这里收到就自己把「提示词 → 出图 → 识别装扮 → 派生卡 → 装扮图 → 填镜头」
+    // 🔴 自动流程（2026-10-16 · Dragon「不需要用户点识别装扮；你自动识别出来并且建卡」）：
+    //    分镜生成完会置一张票（`st.requestAuto`），这里收到就自己把「图片提示词 → 识别装扮 → 建派生卡」
     //    跑完 —— 用户只需要点那一次「生成分镜」。票走 store 中转的理由见 project.js 的 requestAuto。
     'st.autoReq'(v) { this.onAutoReq(v) },
     'pl.active'(v) {
@@ -1237,16 +1181,17 @@ export default {
         res: (parent && parent.res) || defRes, genMs: 0,
         _imgRev: 1, libId: '', libRevAt: 0, libReadonly: false, _libAck: 0, _libRevNow: 0,
         _manual: true,
-        // 'outfit' = 装扮变体（不进「一键填充整组」的整组名单；单卡填充时按主体组整体替换）
+        // 'outfit' = 装扮变体（不进「一键填充整组」的整组名单；主体卡的「一键填充」在本集识别过装扮时
+        //            会按镜头逐镜填对的那张，见 fillByOutfits）
         // 'view'   = 视角变体（三视图派生，一切行为与改造前逐字一致）
         _varKind: a.outfit ? 'outfit' : 'view',
         // 手动派生这条路没有装束描述（用户自己在右栏把 `{装束}` 补进指令里）；
-        // 走「识别装扮」自动派生的那条路会把识别出的描述一并写进来
+        // 生成分镜时自动识别装扮的那条路会把识别出的描述一并写进来
         _varDesc: ''
       })
       await this.saveAll()
       this.$root.toast(a.outfit
-        ? '已派生装扮卡「' + name + '」：右栏指令里的「{装束}」补上这套装扮的服装与配饰（可从档案的「服装」字段抄，或直接用主体卡上的「识别装扮」自动填好），再点「重出这一装扮」——它会拿主体卡当前的图当参考，只换衣服'
+        ? '已派生装扮卡「' + name + '」：右栏指令里的「{装束}」补上这套装扮的服装与配饰（可从档案的「服装」字段抄），再点「重出这一装扮」——它会拿主体卡当前的图当参考，只换衣服'
         : '已派生「' + name + '」（' + suffix + ' 视角）：点小预览图区的「+」导入这一视角的图，' +
           '再点主体卡的「一键填充整组」把它写进镜头')
     },
@@ -1274,16 +1219,17 @@ export default {
       if (d) s = s.replace('{装束}', d)
       return [s, VIEW_TPL.outTail].filter(Boolean).join('，')
     },
-    /* ================= 装扮清单：从分镜的服装记录里识别装扮并自动派生（2026-10-16，Dragon） =================
-       出发点：**用户不该写提示词**。而装扮的原料早就在库里 —— 分镜抽取时本来就逐镜产出了
-       continuity（本镜状态快照，「服装」只是其中一个维度）与 change（本镜实际发生的换装「旧 → 新」）。
-       所以「这个角色在本集穿了几套、第几镜换的」是**已有数据里的显式事实**，不需要重新读剧本去猜。
-       本块做三件事，全部在同一个面板里、用户只点按钮：
-         ① runOutfits    —— 把该角色的镜头服装记录丢给大模型，让它归并措辞、起名、写装束描述
-         ② deriveOutfits —— 按结果幂等派生 `主体--装扮名` 卡，并把描述填进换装指令的 `{装束}` 槽
-                            （→ 卡建出来就是可直接出图的完整指令，没有花括号）
-         ③ genOutfitCards —— 逐张走编辑通道出图（每张单独 try，失败不拦下一张）
-       🔴 与「一键填充整组」的分工：这里只产卡与产图；「哪一镜该穿哪套」是分镜侧的事（按装扮填全部镜头）。
+    /* ================= 装扮清单：从分镜的服装记录里识别装扮并自动建派生卡（2026-10-16，Dragon） =================
+       出发点：**用户不该写提示词、也不该点任何「识别」按钮**（二次拍板原话：
+       「不需要用户点『识别装扮』；你自动识别出来并且建卡……把这个按钮去掉」）。
+       原料早就在库里 —— 分镜抽取时本来就逐镜产出了 continuity（本镜状态快照，「服装」只是其中一个维度）
+       与 change（本镜实际发生的换装「旧 → 新」）。所以「这个角色在本集穿了几套、第几镜换的」
+       是**已有数据里的显式事实**，不需要重新读剧本去猜。
+       🔴 两个纯函数段（面板时代留下的分层，现在只由自动流程调用）：
+         · identifyOutfitsOf —— 把该角色的镜头服装记录丢给大模型，让它归并措辞、起名、写装束描述
+         · deriveOutfitCards —— 幂等派生 `主体--装扮名` 卡，把描述填进换装指令的 `{装束}` 槽
+                               （→ 卡建出来就是可直接出图的完整指令，没有花括号）
+       🔴 调用点只有一处：`runAuto`（生成分镜之后）。出图走「生成图片」批量、填镜头走「一键填充」。
        🔴 幂等：同名卡已存在就**不覆盖**它的指令（重跑识别不该毁掉用户手工调过的句子），只在指令为空时补。 */
     /**
      * 本集已有的装扮卡 → 装扮条目。卡上只存指令与 `_varDesc`（装束描述），**不存 kw**，
@@ -1324,27 +1270,11 @@ export default {
       return list
     },
     /**
-     * 打开「识别装扮」面板并**立刻开始识别**（入口 = 角色主体卡上的按钮）。
-     * 入口只做三件预检：是不是主体卡、本集有没有分镜、分镜里有没有这个角色 —— 任一不满足就地提示。
-     */
-    async openOutfits(c) {
-      const card = this.liveCard(c)
-      if (!card) return
-      if (card.kind !== 'character') { this.$root.toast('只有角色有装扮（场景的变体恒为视角）'); return }
-      if (!this.isParentCard(card)) { this.$root.toast('只有主体卡能识别装扮：装扮卡自己不再往下派生'); return }
-      const shots = (this.ep && this.ep.shots) || []
-      if (!shots.length) { this.$root.toast('本集还没有分镜：先在第 3 步生成分镜 —— 装扮是从分镜的服装记录里读出来的'); return }
-      if (!outfitShotBrief(shots, card.name)) { this.$root.toast('本集分镜里没有「' + card.name + '」的镜头，识别不到装扮'); return }
-      this.askOutfits = { base: card.name, kind: card.kind, list: [], picked: [], busy: false, done: false, err: '' }
-      await this.runOutfits()
-    },
-    /**
-     * 识别某个角色在本集的装扮清单 —— **纯 IO 段**，不依赖「识别装扮」面板
-     * （手动面板与自动流水线共用这一份；面板只负责把结果画出来）。
+     * 识别某个角色在本集的装扮清单 —— **纯 IO 段**（唯一调用点是 runAuto）。
      *
      * 原料 = 分镜里该角色出现过的镜头 + 他的服装状态与换装点（`outfitShotBrief`），不重读剧本。
      * 返回 `[{name,desc,kw,base}]`；该角色在本集没有镜头 → 返回 null（这不是错误）。
-     * 其余失败一律 throw，由调用方决定「显示在面板里」还是「记进流水线日志」。
+     * 其余失败一律 throw，由调用方记进流水线日志（每个角色单独 try，一个失败不拦其余）。
      */
     async identifyOutfitsOf(card) {
       const shots = (this.ep && this.ep.shots) || []
@@ -1366,100 +1296,27 @@ export default {
       return list
     },
     /**
-     * 把「本集该角色出现过的镜头 + 他的服装状态与换装点」交给大模型，产出装扮清单。
-     * stage = outfits（设置页「大模型来源」里那一行独立配置）；云端失败**不回退本地**（与其它环节同口径），
-     * 错误就地显示在面板里、不关面板 —— 用户改完 Key 可以直接再点一次「重新识别」。
-     */
-    async runOutfits() {
-      const a = this.askOutfits
-      if (!a || a.busy) return
-      const card = this.cards.find(c => c.kind === a.kind && c.name === a.base)
-      if (!card) { this.$root.toast('找不到主体卡「' + a.base + '」'); return }
-      const shots = (this.ep && this.ep.shots) || []
-      if (!outfitShotBrief(shots, card.name)) { a.err = '本集分镜里没有「' + card.name + '」的镜头'; return }
-      a.busy = true; a.err = ''; a.done = false
-      const t0 = Date.now()
-      const L = stepLog(TAG)
-      L.start('正在从本集分镜的服装记录里识别「' + card.name + '」的装扮…')
-      try {
-        const list = await this.identifyOutfitsOf(card)
-        if (!list) throw new Error('本集分镜里没有「' + card.name + '」的镜头')
-        if (this.askOutfits !== a) return          // 期间用户关了面板 → 丢弃结果（日志里仍留痕）
-        a.list = list
-        // 默认勾上「本集还没有卡」的那几套；基线装扮不派生（它就是主体卡现有的定妆图）
-        a.picked = list.filter(o => !o.base && !this.cards.some(c => c.kind === a.kind && c.name === a.base + '--' + o.name))
-          .map(o => o.name)
-        a.done = true
-        L.done('装扮识别完成：「' + card.name + '」共 ' + list.length + ' 套（换装变体 ' +
-          list.filter(o => !o.base).length + ' 套）', Date.now() - t0)
-      } catch (e) {
-        if (this.askOutfits === a) a.err = String((e && e.message) || e)
-        L.fail('装扮识别失败：「' + card.name + '」', Date.now() - t0, e)
-      } finally {
-        if (this.askOutfits === a) a.busy = false
-      }
-    },
-    /** 面板里某套装扮在本集已有的卡（没有则 null）—— 「已有卡 / 已有图」标注读它 */
-    outfitCardOf(name) {
-      const a = this.askOutfits
-      if (!a) return null
-      return this.cards.find(c => c.kind === a.kind && c.name === a.base + '--' + name) || null
-    },
-    /** 面板行右侧的状态标注：''=要新建 / '已有卡'=卡在但没图 / '已有图'=连图都有了 */
-    outfitRowTag(name) {
-      const c = this.outfitCardOf(name)
-      if (!c) return ''
-      return (c.candidates && c.candidates.length) ? '已有图' : '已有卡'
-    },
-    /**
-     * 面板里改装扮名：同步勾选状态（picked 里存的是名字，改名不同步就会「勾着却没被派生」），
-     * 并把非法字符挡掉（横杠是卡名 `主体--装扮` 的保留分隔符；空格/空名一律退回原名）。
-     */
-    renameOutfit(i, val) {
-      const a = this.askOutfits
-      if (!a || !a.list[i]) return
-      const o = a.list[i]
-      const old = String(o.name || '')
-      const name = String(val == null ? '' : val).trim()
-        .replace(/[-\uFF0D\u2013\u2014\uFE63\u2212]/g, '').replace(/\s+/g, '')
-      if (!name) { o.name = old; return }              // 空名 → 退回
-      o.name = name
-      const at = a.picked.indexOf(old)
-      if (at >= 0 && name !== old) a.picked[at] = name
-      if (a.list.filter(x => x.name === name).length > 1) this.$root.toast('「' + name + '」重复了，请改一个别的名字')
-    },
-    /** 这张卡上能不能识别装扮：仅「角色 + 主体卡 + 非只读 + 本集已有分镜」 */
-    canOutfit(c) {
-      return !!c && c.kind === 'character' && this.isParentCard(c) && !this.isLibRo(c)
-        && !!((this.ep && this.ep.shots) || []).length
-    },
-    toggleOutfitPick(name, on) {
-      const a = this.askOutfits
-      if (!a) return
-      const at = a.picked.indexOf(name)
-      if (on && at < 0) a.picked.push(name)
-      if (!on && at >= 0) a.picked.splice(at, 1)
-    },
-    /**
-     * 派生装扮卡（**核心段**，不依赖「识别装扮」面板 —— 面板与自动流水线共用这一份）。
+     * 派生装扮卡（**核心段**，唯一调用点是 runAuto 的第 ② 步）。
      *
      * 指令 = views.md 的换装行（`{装扮}` ← 装扮名、`{装束}` ← 识别出的描述）+ 换装约束 —— 两个槽都填满，
      * 所以卡建出来**没有花括号残留**、可以直接出图，用户一个字都不用写。
      * 幂等：同名卡已存在 → 保留它的指令（可能是用户手工调过的），只在指令空缺时补全。
      *
+     * 🔴 只建卡、**不出图**（2026-10-16 二次拍板）：出图统一走「生成图片」（装扮卡排在它的主体卡之后，
+     *    拿主体卡的定妆图当参考走编辑通道）。所以这里不再返回「要不要顺手出图」这种参数。
+     *
      * @param {string} baseName 主体名（基础名）
      * @param {string} kind     'character' | 'scene'
-     * @param {Array}  list     识别结果（parseOutfitList 的产物，可能被用户在面板里改过名/描述）
+     * @param {Array}  list     识别结果（parseOutfitList 的产物）
      * @param {string[]} picked 要派生的装扮名（不含基线）
-     * @param {boolean} alsoGen 派生完是否立刻逐张出图
-     * @returns {{created:string[],reused:string[],kept:string[],todo:string[],gen:{ok:number,total:number}|null}}
+     * @returns {{created:string[],reused:string[],kept:string[],todo:string[]}} todo = 派生完还没有图的卡名
      */
-    async deriveOutfitCards(baseName, kind, list, picked, alsoGen) {
-      const empty = { created: [], reused: [], kept: [], todo: [], gen: null }
+    async deriveOutfitCards(baseName, kind, list, picked) {
+      const empty = { created: [], reused: [], kept: [], todo: [] }
       const card = this.cards.find(c => c.kind === kind && c.name === baseName)
       if (!card) { this.$root.toast('找不到主体卡「' + baseName + '」'); return empty }
       const picks = (list || []).filter(o => !o.base && (picked || []).indexOf(o.name) >= 0)
-      if (!picks.length) { this.$root.toast('先勾选要派生的装扮'); return empty }
+      if (!picks.length) return empty
       const created = [], reused = []
       for (const o of picks) {
         const name = baseName + '--' + o.name
@@ -1487,7 +1344,6 @@ export default {
       }
       await this.saveAll()
       // 🔴 跨集继承：把本次结果并进**项目级**装扮清单（同名沿用旧名、描述取新、kw 取并集）。
-      //    这里写而不是识别成功时就写：用户在面板里可能把名字/描述改过，点「建卡」才是他认可的结果。
       //    落盘失败只影响下一次识别的「已知名字」（大不了模型重起一个名字），不能拦掉已经建好的卡。
       const pid = this.ep && this.ep.projectId
       const seenBefore = new Set((this.st.outfitsOf(pid, baseName) || []).map(o => o.name))
@@ -1496,45 +1352,7 @@ export default {
       const all = picks.map(o => baseName + '--' + o.name)
       // 需要出图的 = 建出来的 + 已存在但还没图的（`saveAll` 之后 this.cards 已重建，按名字现查）
       const todo = all.filter(n => { const c = this.cards.find(x => x.name === n); return c && !(c.candidates || []).length })
-      const r = { created, reused, kept, todo, gen: null }
-      if (alsoGen && todo.length) r.gen = await this.genOutfitCards(todo)
-      return r
-    },
-    /**
-     * 面板上的「建卡 / 建卡并出图」：薄壳，只负责「关面板 + 说话」，干活的是 `deriveOutfitCards`。
-     * @param {boolean} alsoGen 派生完是否立刻排队出图
-     */
-    async deriveOutfits(alsoGen) {
-      const a = this.askOutfits
-      if (!a || a.busy) return
-      const r = await this.deriveOutfitCards(a.base, a.kind, a.list, a.picked, false)
-      if (!r.created.length && !r.reused.length) return
-      this.askOutfits = null
-      this.$root.toast('已派生 ' + r.created.length + ' 张装扮卡' +
-        (r.reused.length ? '（另有 ' + r.reused.length + ' 张已存在，保留原样）' : '') +
-        (r.kept.length ? '；「' + r.kept.join('、') + '」沿用本项目已有的装扮名' : '') +
-        (alsoGen ? '；开始逐张出图…' : '：点每张卡上的「重出这一装扮」出图'))
-      if (!alsoGen) return
-      if (!r.todo.length) { this.$root.toast('这些装扮卡都已经有图了，没有需要重出的'); return }
-      await this.genOutfitCards(r.todo)
-    },
-    /**
-     * 逐张出装扮图：串行调 `regenView`（走 Qwen-Image 2.1 原生编辑通道的 1024 快档，以主体卡定妆图为参考）。
-     * 每张单独 try —— 一张失败不拦下一张；每轮开头查切集哨兵，切集后剩余一律丢弃（同 genViews 的守卫）。
-     */
-    async genOutfitCards(names) {
-      const L = stepLog(TAG)
-      let ok = 0, bad = 0
-      for (let k = 0; k < names.length; k++) {
-        if (this._busyEpId === 'SWITCHED') break
-        const card = this.cards.find(c => c.name === names[k])
-        if (!card) continue
-        L.start('装扮出图 ' + (k + 1) + '/' + names.length + '：' + names[k])
-        const r = await this.regenView(card)
-        if (r) ok++; else bad++
-      }
-      this.$root.toast('装扮出图完成：成功 ' + ok + '/' + names.length + (bad ? '（' + bad + ' 张失败，见日志）' : ''))
-      return { ok, total: names.length }
+      return { created, reused, kept, todo }
     },
     /* ================= 三视图（2026-10-13，Dragon） ================= */
     /**
@@ -1664,7 +1482,7 @@ export default {
       // 🔴 装扮变体的指令里有 `{…}` 槽（要用户补这套装扮的服装描述）：还留着花括号就=把模板原样
       //    发给生图模型（出来的是「没换装」或乱画的图）→ 拦在提交前，并说清要补什么。
       if (/[{}]/.test(instr)) {
-        this.$root.toast('指令里还留着「{装束}」占位符：请先把这套装扮的服装 / 配饰 / 头饰描述补进去（或改用主体卡上的「识别装扮」自动填），再点「重出这一装扮」')
+        this.$root.toast('指令里还留着「{装束}」占位符：请先把这套装扮的服装 / 配饰 / 头饰描述补进去，再点「重出这一装扮」')
         return
       }
       this.busy = true
@@ -2360,7 +2178,7 @@ export default {
       //    放在这里而不是后面：不用先置 busy / _gen / beginGen 再回滚。ctx.quiet 供批量与一条龙静默调用。
       if (!this.genReady(c)) {
         const m = '「' + c.name + '」还没有提示词，本次跳过了出图 —— 先按档案生成提示词：' +
-          '卡片右上角的刷新按钮 / 模块标题行的「批量生成提示词」/（生成分镜后的一条龙会自动做第一步）'
+          '卡片右上角的刷新按钮 / 模块标题行的「批量生成提示词」（生成分镜时会自动做这一步）'
         stepLog(TAG).warn(m)
         if (!ctx || ctx.quiet !== true) this.$root.toast('⚠ ' + m)
         return false
@@ -2479,9 +2297,9 @@ export default {
       if (this.batchI) { this.batchIStop = true; this.$root.toast('停止中：当前条目完成后停止，剩余条目不再执行'); return }
       if (this.batchP) { this.$root.toast('提示词批量进行中，请先等它结束或停止'); return }
       if (!this.cards.length) { this.$root.toast('还没有角色/场景，先点「生成分镜」'); return }
-      // 🔴 视角卡不参与图片批量（见 runBatchI）：弹框里的「已有图 / 还没有图 / 共」也要按同一口径数，
-      //    否则这三个数字跟批量实际会做的事对不上。
-      const subj = this.cards.filter(c => !this.isVariantCard(c))
+      // 🔴 弹框里的「已有图 / 还没有图 / 共」必须与 runBatchI 的条目口径**完全一致**（2026-10-16）：
+      //    现在是「主体卡 + 装扮卡、不含视角卡」—— 数字对不上就等于骗人。
+      const subj = this.cards.filter(c => !this.isVariantCard(c) || this.isOutfitVar(c))
       const have = subj.filter(c => c.candidates.length).length
       this.askBatch = { kind: 'images', have, miss: subj.length - have, total: subj.length }
     },
@@ -2537,16 +2355,41 @@ export default {
       }
       return { okN, badN, stopped, total: idx.length }
     },
-    /** 批量生成图片：all=false 只补还没有图的条目（已有图的跳过）；all=true 全部重出一张（完成自动选中新版） */
+    /**
+     * 装扮卡**能不能出图**（编辑通道的三个前提）：主体卡在、主体卡有图、本卡指令非空且没有残留花括号。
+     * @returns {string} '' = 可以出图；否则返回一句原因（批量里用它把这类卡计入「跳过」而不是「失败」）
+     */
+    outfitGenIssue(c) {
+      if (!c) return '卡片不存在'
+      const base = baseOf(c.name)
+      const parent = this.cards.find(x => x.name === base)
+      if (!parent) return '找不到主体卡「' + base + '」'
+      if (!(this.selFile(parent) || (parent.candidates || []).length)) return '主体卡「' + parent.name + '」还没有图（先给它出一张）'
+      const instr = String(c.prompt || '').trim()
+      if (!instr) return '变体指令是空的'
+      if (/[{}]/.test(instr)) return '指令里还留着花括号（装束描述没填全）'
+      return ''
+    },
+    /**
+     * 批量生成图片：all=false 只补还没有图的条目（已有图的跳过）；all=true 全部重出一张（完成自动选中新版）。
+     *
+     * 🔴 2026-10-16 二次拍板：条目集合 = **所有角色/场景主体卡 + 全部装扮派生卡**。
+     *    · 装扮卡走**编辑通道**（`regenView`：以主体卡定妆图为参考、只换衣服）—— 它没有独立外形，
+     *      拿去文生图会出来一张不相干的新人像（这正是以前整批跳过它的原因）。
+     *    · 卡片顺序天然满足依赖：装扮卡紧跟它的主体卡之后 → 轮到它时主体卡刚出好图、参考图现成。
+     *    · 视角卡（三视图）**仍不参与**（2026-10-13 的口径不变）：它收在主体卡的视角条里、默认不展开，
+     *      属于「看不见的卡被批量刷成错图」。
+     */
     async runBatchI(all) {
       const L = stepLog(TAG)
       const idx = []
       for (let i = 0; i < this.cards.length; i++) {
-        // 🔴 视角卡不参与批量（2026-10-13，Dragon）：它没有独立外形，图只能由编辑通道以主体卡为参考
-        //    生成；批量若把它当普通条目，会拿主体提示词出一张完全不相干的新人像。而且它现在收在
-        //    主体卡的视角条里、默认不展开 —— 属于「看不见的卡被批量刷成错图」，必须排除。
-        if (this.isVariantCard(this.cards[i])) continue
-        if (all || !this.cards[i].candidates.length) idx.push(i)
+        // 🔴 **视角卡**不参与批量（2026-10-13 口径不变）：它没有独立外形、收在主体卡的视角条里、
+        //    默认不展开 —— 属于「看不见的卡被批量刷成错图」。
+        //    ⚠️ 装扮卡**要参与**（2026-10-16 二次拍板）：那是用户明确要的换装图（走编辑通道，见方法头）。
+        const c0 = this.cards[i]
+        if (this.isVariantCard(c0) && !this.isOutfitVar(c0)) continue
+        if (all || !c0.candidates.length) idx.push(i)
       }
       if (!idx.length) {
         this.$root.toast('没有需要生成的条目')
@@ -2555,7 +2398,7 @@ export default {
       this.batchI = true; this.batchIStop = false; this.busy = true
       this.batchIN = 0; this.batchITotal = idx.length
       L.start('开始批量生成图片（' + (all ? '全部重新生成，完成后自动选中新版本' : '只补还没有图的，跳过已有图') + '）：待生成 ' +
-        idx.length + ' 个（共 ' + this.cards.length + ' 个角色/场景）；可随时点「停止批量」，当前条目跑完后停止')
+        idx.length + ' 个（共 ' + this.cards.length + ' 张卡，含装扮卡）；可随时点「停止批量」，当前条目跑完后停止')
       const tAll = Date.now()
       // skipN（2026-10-16）：还没有提示词的条目 —— 出图必被主进程占位符护栏拦下（见 genReady），
       // 所以在这里先筛掉并计数，末尾如实汇报。否则它们会以 gen() 返回 false 的身份混进「失败」里。
@@ -2565,9 +2408,19 @@ export default {
           if (this.batchIStop || this._busyEpId === 'SWITCHED') { stopped = true; break }
           this.batchIN = k + 1
           const card = this.cards[idx[k]]
+          if (!card) { skipN++; continue }
+          // 🔴 装扮卡走**编辑通道**（以主体卡定妆图为参考、只换衣服）：它没有独立外形，不能文生图。
+          //    前提是主体卡已经有图 —— 卡片顺序保证主体卡先跑（装扮卡紧跟主体卡之后）。
+          if (this.isOutfitVar(card)) {
+            const issue = this.outfitGenIssue(card)
+            if (issue) { skipN++; L.warn('跳过装扮卡「' + card.name + '」：' + issue); continue }
+            const okImg = await this.regenView(card)
+            okImg ? okN++ : badN++
+            continue
+          }
           if (!this.genReady(card)) {
             skipN++
-            L.warn('跳过「' + (card && card.name) + '」：还没有提示词 —— 先按档案生成提示词（刷新按钮 / 批量生成提示词），再回来出图')
+            L.warn('跳过「' + card.name + '」：还没有提示词 —— 先按档案生成提示词（刷新按钮 / 批量生成提示词），再回来出图')
             continue
           }
           const okFlag = await this.gen(idx[k], { n: k + 1, total: idx.length })
@@ -2576,7 +2429,7 @@ export default {
         const left = idx.length - okN - badN - skipN
         const sum = (stopped ? '批量生成图片已停止' : '批量生成图片结束') +
           '：成功 ' + okN + ' 个' + (badN ? '，失败 ' + badN + ' 个' : '') +
-          (skipN ? '，跳过 ' + skipN + ' 个（还没有提示词）' : '') +
+          (skipN ? '，跳过 ' + skipN + ' 个（提示词没就绪 / 装扮缺参考图，见日志）' : '') +
           (stopped && left > 0 ? '，剩余 ' + left + ' 个未执行' : '') + '，总耗时 ' + secs(Date.now() - tAll)
         if (badN && !okN && !skipN) L.fail(sum, null, new Error('全部失败，请到日志面板看各自失败原因'))
         else if (badN || stopped || skipN) L.warn(sum)
@@ -2589,18 +2442,19 @@ export default {
       return { okN, badN, stopped, total: idx.length }
     },
 
-    /* ================= 一条龙：生成分镜之后自动跑完整条链（2026-10-16 · Dragon 拍板） =================
-     * 「我要的所有的自动化；不需要这种手动识别的」——分镜是整条链的原料，所以票由分镜环节置
+    /* ================= 自动流程：生成分镜之后自动建卡（2026-10-16 · Dragon 拍板） =================
+     * 「不需要用户点『识别装扮』；你自动识别出来并且建卡」—— 分镜是原料，所以票由分镜环节置
      * （StageShots.generate 末尾 `st.requestAuto`），执行落在这里：两个阶段是两个组件，票走 store 中转。
-     * 手动按钮全部保留（重跑 / 单跑用），自动流程只是把「原来必须挨个点的五步」串起来。 */
-    /** 自动流水线该不该停：用户点了「停止」/ 切了集 */
+     * 🔴 只做**建卡链**（图片提示词 → 识别装扮 → 建派生卡）；出图与填镜头是用户手点的两个按钮
+     *    （「生成图片」「一键填充」）—— 这是 2026-10-16 二次拍板的收缩结果，上一版的五步一条龙已作废。 */
+    /** 自动流程该不该停：用户点了「停止」/ 切了集 */
     _autoStop() {
       return this.auto.stop === true || this._busyEpId === 'SWITCHED'
     },
     /**
-     * 「停止」按钮：除了自己的标记，还要置**批量停止位** —— 流程内部就是靠 `runBatchP` /
-     * `runBatchI` 那两位在「当前条目跑完」的边界收尾的，只置 auto.stop 的话它不会看一眼，
-     * 用户得等整批跑完（N 次模型调用）。（当前那一次调用本身没法中断，这是模型侧的限制。）
+     * 「停止」按钮：除了自己的标记，还要置**批量停止位** —— 流程内部就是靠 `runBatchP` 那位在
+     * 「当前条目跑完」的边界收尾的，只置 auto.stop 的话它不会看一眼，用户得等整批跑完（N 次模型调用）。
+     * （当前那一次调用本身没法中断，这是模型侧的限制。）
      */
     stopAuto() {
       this.auto.stop = true
@@ -2615,17 +2469,17 @@ export default {
       await this.runAuto()
     },
     /**
-     * 五步一条龙（**顺序不能换**）：
-     *   ① 按档案生成提示词 —— 只补「还没有 / 档案已改」的条目，已有且最新的绝不覆盖
-     *   ② 角色图 / 场景图 —— 装扮出图要拿主体卡定妆图当参考，所以必须排在 ③ 之前
-     *   ③ 识别装扮 → 派生装扮卡 —— 原料是分镜的 `continuity` / `change`（「谁在第几镜换了哪套」是**已有事实**）
-     *   ④ 装扮卡出图 —— 走 Qwen-Image 2.1 编辑通道，以主体卡定妆图为参考
-     *   ⑤ 按装扮把对应的图填进各镜头的参考图区
+     * 自动流程（**两步**，顺序不能换）：
+     *   ① 按档案生成**图片提示词** —— 只补「还没有 / 档案已改」的条目，已有且最新的绝不覆盖
+     *   ② 逐角色：从本集分镜的服装记录里识别装扮 → 幂等派生 `主体--装扮名` 卡
+     *      （原料是分镜的 `continuity` / `change`：「谁在第几镜换了哪套」是**已有事实**，不重读剧本）
      *
-     * 🔴 随时可打断：切集（`_busyEpId === 'SWITCHED'`）或点「停止批量」就地收尾，已完成的部分全部保留
+     * 🔴 到此为止 —— **不出图、不填镜头**：那两件事由用户在「生成图片」「一键填充」里做
+     *    （2026-10-16 二次拍板；装扮卡在「生成图片」里排在它的主体卡之后，天然拿得到定妆图当参考）。
+     * 🔴 随时可打断：切集（`_busyEpId === 'SWITCHED'`）或点「停止」就地收尾，已完成的部分全部保留
      *    （每一步都是逐卡落盘的）。切集那条路会让 `_busyEpId` 变成哨兵，后面的循环逐个查它。
-     * 🔴 提示词**一张都没生成成功**时直接停在原地：后面四步全是「按提示词出图 / 按档案匹配」，
-     *    提示词是空的时候往下跑只会批量产出废图（还白烧显存），报出原因比硬跑有用。
+     * 🔴 提示词**一张都没生成成功**时直接停在原地：后面的识别全靠「按档案」匹配，没有提示词说明
+     *    模型 / Key 那边有问题，报出原因比硬跑有用。
      */
     async runAuto() {
       if (this.auto.on) return
@@ -2633,33 +2487,27 @@ export default {
       if (!ep || !this.cards.length || !(ep.shots || []).length) return
       const L = stepLog(TAG)
       const tAll = Date.now()
-      this.auto = { on: true, step: '准备中', detail: '', n: 0, total: 5, stop: false }
-      const r = { prompts: null, imgs: null, bases: 0, cards: 0, outfitImgs: null, filled: 0, fail: 0 }
-      const todoImgs = []
-      L.start('分镜已生成 → 自动流程开始：按档案生成提示词 → 角色/场景出图 → 识别装扮 → 派生装扮卡 → 装扮出图 → 按装扮填镜头（中途可点进度条上的「停止」，切集也会停）')
+      this.auto = { on: true, step: '准备中', detail: '', n: 0, total: 2, stop: false }
+      const r = { prompts: null, bases: 0, cards: 0, todo: 0, fail: 0 }
+      L.start('分镜已生成 → 自动流程开始：按档案生成图片提示词 → 识别装扮并建派生卡（中途可点进度条上的「停止」，切集也会停）')
       try {
         // 🔴 先按**最新工件**重建卡片：分镜刚写完 chars / scenes，组件里的 cards 可能还是旧的
         //    （`st.current.chars` 的 watcher 有 150ms 防抖，票完全可能先到）—— 不重建就会漏掉本集新出现的角色。
         await this.init(ep)
         if (this._autoStop()) return
 
-        // ---- ① 提示词 ----
-        this.auto.n = 1; this.auto.step = '按档案生成提示词'; this.auto.detail = ''
+        // ---- ① 图片提示词 ----
+        this.auto.n = 1; this.auto.step = '按档案生成图片提示词'; this.auto.detail = ''
         r.prompts = await this.runBatchP(false)
         if (this._autoStop()) return
         if (r.prompts.total && !r.prompts.okN) {
-          L.warn('自动流程：提示词一张都没生成成功 → 后面的出图与装扮步骤已跳过（先解决提示词生成的问题，见上面各条的失败原因）')
+          L.warn('自动流程：图片提示词一张都没生成成功 → 装扮识别已跳过（先解决提示词生成的问题，见上面各条的失败原因）')
           this.$root.toast('⚠ 提示词全部生成失败，自动流程停在原地（原因见日志面板）')
           return
         }
 
-        // ---- ② 主体卡出图 ----
-        this.auto.n = 2; this.auto.step = '生成角色图 / 场景图'
-        r.imgs = await this.runBatchI(false)
-        if (this._autoStop()) return
-
-        // ---- ③ 识别装扮 → 派生装扮卡 ----
-        this.auto.n = 3; this.auto.step = '识别装扮并派生变体卡'
+        // ---- ② 识别装扮 → 派生装扮卡 ----
+        this.auto.n = 2; this.auto.step = '识别装扮并建派生卡'
         // 只处理「角色 + 主体卡」（视角/装扮变体卡不再往下派生；库只读副本不改本集）
         const bases = this.cards
           .filter(c => c.kind === 'character' && this.isParentCard(c) && !this.isLibRo(c))
@@ -2684,28 +2532,12 @@ export default {
             && !this.cards.some(c => c.kind === 'character' && c.name === base + '--' + o.name))
             .map(o => o.name)
           if (!picks.length) continue
-          const d = await this.deriveOutfitCards(base, 'character', list, picks, false)
+          const d = await this.deriveOutfitCards(base, 'character', list, picks)
           r.cards += d.created.length
-          for (const n of d.todo) if (todoImgs.indexOf(n) < 0) todoImgs.push(n)
+          r.todo += d.todo.length
           if (d.created.length) {
             L.info('自动流程：为「' + base + '」派生 ' + d.created.length + ' 张装扮卡（' + d.created.join('、') + '）')
           }
-        }
-        if (this._autoStop()) return
-
-        // ---- ④ 装扮卡出图 ----
-        this.auto.n = 4; this.auto.step = '生成装扮图'; this.auto.detail = ''
-        if (todoImgs.length) r.outfitImgs = await this.genOutfitCards(todoImgs)
-        if (this._autoStop()) return
-
-        // ---- ⑤ 按装扮填镜头 ----
-        this.auto.n = 5; this.auto.step = '按装扮填镜头'
-        for (const base of bases) {
-          if (this._autoStop()) break
-          const i = this.cards.findIndex(c => c.kind === 'character' && c.name === base)
-          if (i < 0) continue
-          this.auto.detail = '「' + base + '」'
-          r.filled += await this.fillByOutfits(i, true)   // true = 静默：不弹逐条的 toast，只由本流程汇总
         }
       } catch (e) {
         r.fail++
@@ -2713,13 +2545,12 @@ export default {
         this.st.fail(e)
       } finally {
         this.auto.on = false; this.auto.stop = false; this.auto.detail = ''
-        const sum = '自动流程结束：提示词 ' + (r.prompts ? r.prompts.okN + '/' + r.prompts.total : '-') +
-          ' · 角色图 ' + (r.imgs ? r.imgs.okN + '/' + r.imgs.total : '-') +
-          ' · 识别装扮 ' + r.bases + ' 个角色（新建卡 ' + r.cards + ' 张）' +
-          ' · 装扮图 ' + (r.outfitImgs ? r.outfitImgs.ok + '/' + r.outfitImgs.total : '0') +
-          ' · 填镜头 ' + r.filled + ' 处' +
+        const sum = '自动流程结束：图片提示词 ' + (r.prompts ? r.prompts.okN + '/' + r.prompts.total : '-') +
+          ' · 识别装扮 ' + r.bases + ' 个角色（新建装扮卡 ' + r.cards + ' 张' +
+          (r.todo ? '，其中 ' + r.todo + ' 张还没出图' : '') + '）' +
           (r.fail ? ' · 失败 ' + r.fail + ' 处（见日志）' : '') +
-          '，总耗时 ' + secs(Date.now() - tAll)
+          '，总耗时 ' + secs(Date.now() - tAll) +
+          '；出图与填镜头请在「生成图片」「一键填充」里执行'
         if (r.fail) L.warn(sum); else L.done(sum, null)
         this.$root.toast(sum)
       }
@@ -2904,7 +2735,7 @@ export default {
       return items.map(o => o.c).filter(Boolean)
     },
     /**
-     * 把**一张图**写进某个镜头的参考图数组（「一键填充」与「按装扮填镜头」共用这一段）。
+     * 把**一张图**写进某个镜头的参考图数组（「一键填充」的整组口径与逐镜口径、变体卡的「填到镜头」共用这一段）。
      * 抽出来的理由：两处的判重口径必须完全一致 —— 一旦分叉，同一张图经两个入口填进去的结果不一样，
      * 用户看到的「填了却又多出一张」永远解释不清。
      * 规则：
@@ -2936,19 +2767,19 @@ export default {
       r.added++
       return r
     },
-    async fillRefs(i) {
-      const c = this.liveCard(this.cards[i])
-      if (!c) return
-      // 🔴 整组填充只挂在**父卡**按钮上（2026-10-08 Dragon 拍板）：
-      //    父卡（名字正好等于主体名，如「魏牌 V9X」）的「一键填充整组」把**整组**的图一次写入
-      //    —— 父卡自己那张 + 全部视角变体，父卡排第一（与 ordered() 显示顺序、<Picture N> 编号一致）；
-      //    视角变体卡（「魏牌 V9X--正面」）的按钮仍是单卡单图，用于单独替换某一个视角。
-      //    独立主体（名字里没有 `--`，如「驾驶者」）组内只有自己 → 行为与改造前**逐字一致**。
-      const isParent = this.isParentCard(c)
+    /**
+     * 一个主体的**整组参考图**（父卡 + 各视角卡；装扮变体不在其中）→ `applyRef` 的 pick 列表。
+     *
+     * 🔴 抽出来的理由（2026-10-16 二次拍板）：「一键填充」与「按装扮填镜头」的**基线镜**用的是同一份名单 ——
+     *    分叉就会让「穿常服的那些镜」经两个入口填出不一样的结果，用户看到的「填了却又多一张」永远解释不清。
+     * @param {object} c 主体卡（父卡）；传入变体卡 → 按「单卡填充」返回它自己那一个坑位
+     * @returns {{picks:Array, noImg:number, sameName:number}} noImg = 没选图的卡数；sameName = 图名重复被折叠的卡数
+     */
+    refPicksOf(c) {
       const picks = []
       const seen = []
       let noImg = 0, sameName = 0
-      for (const m of (isParent ? this.groupMembers(c) : [c])) {
+      for (const m of (this.isParentCard(c) ? this.groupMembers(c) : [c])) {
         const f = this.selFile(m)
         if (!f) { noImg++; continue }              // 纯档案卡（比如父卡还没出图）→ 跳过，不报错
         const abs = this.absOf(m, f)
@@ -2959,10 +2790,27 @@ export default {
         // 组内先按文件名键去重：两张卡放了同名图时，后者会**覆盖**前者 → 静默少一张。
         if (seen.indexOf(keys[0]) >= 0) { sameName++; continue }
         seen.push(keys[0])
-        // 🔴 装扮变体（2026-10-16）：wipe = 主体名 —— 命中该主体的**任何**变体图（父卡 / 各视角，
-        //    按 baseOf 归类，全角横杠也认）都算同一个坑位，折叠成这一张（见方法头的说明）。
+        // 🔴 装扮变体单卡填（2026-10-16）：wipe = 主体名 —— 命中该主体的**任何**变体图（父卡 / 各视角，
+        //    按 baseOf 归类，全角横杠也认）都算同一个坑位，折叠成这一张（见 applyRef 的说明）。
         picks.push({ keys: keys, abs: abs, wipe: this.isOutfitVar(m) ? baseOf(m.name) : '' })
       }
+      return { picks, noImg, sameName }
+    },
+    async fillRefs(i) {
+      const c = this.liveCard(this.cards[i])
+      if (!c) return
+      // 🔴 2026-10-16 二次拍板（Dragon）：**主体卡 + 本集已识别过装扮** → 「一键填充」改走**逐镜**口径
+      //    —— 穿常服的镜填主体卡整组图、换装的镜填那套装扮卡（见 fillByOutfits）。
+      //    没有装扮清单 / 点的是变体卡的单卡填充 → 走下面的原整组/单卡逻辑，行为与改造前逐字一致。
+      if (this.isParentCard(c) && this.outfitListOf(baseOf(c.name)).length) return this.fillByOutfits(i)
+      // 🔴 整组填充只挂在**父卡**按钮上（2026-10-08 Dragon 拍板）：
+      //    父卡（名字正好等于主体名，如「魏牌 V9X」）的「一键填充整组」把**整组**的图一次写入
+      //    —— 父卡自己那张 + 全部视角变体，父卡排第一（与 ordered() 显示顺序、<Picture N> 编号一致）；
+      //    视角变体卡（「魏牌 V9X--正面」）的按钮仍是单卡单图，用于单独替换某一个视角。
+      //    独立主体（名字里没有 `--`，如「驾驶者」）组内只有自己 → 行为与改造前**逐字一致**。
+      const g = this.refPicksOf(c)
+      const picks = g.picks
+      const noImg = g.noImg, sameName = g.sameName
       if (!picks.length) { this.$root.toast('请先在小预览图里选中一张，再点「一键填充」'); return }
       const ep = this.ep
       const shots = (ep && ep.shots) || []
@@ -3013,60 +2861,59 @@ export default {
       this.$root.toast('已把' + who + '写入参考图区（' + what.join('、') + '）' +
         (skip.length ? '，跳过 ' + skip.join('、') : '') + '；相关镜头提示词已标 ⚠，记得重新生成')
     },
-    /* ================= 第 3 步：按装扮把参考图填进每一镜（2026-10-16，Dragon） =================
-       第 1+2 步解决的是「有哪几套装扮、每套长什么样」，这一步解决「哪一镜穿哪套」。
-       用户在一张**主体卡**上点一次，程序按分镜里记着的服装状态逐镜判断该穿哪套，
-       再把那套装扮的图写进那一镜的参考图区 —— 换装剧不用再一镜一镜手挑参考图。
-       基线装束的那些镜用**主体卡自己的定妆图**（「穿常服」的镜头本来就该看定妆图）。 */
-    /** 这个主体能不能「按装扮填镜头」：主体卡（非只读）+ 有分镜 + 本集有装扮卡（没卡就没图可填） */
-    canFillByOutfit(c) {
-      if (!c || c.kind !== 'character' || !this.isParentCard(c) || this.isLibRo(c)) return false
-      if (!((this.ep && this.ep.shots) || []).length) return false
-      return this.outfitCardsOf(c.name).length > 0
-    },
+    /* ================= 按装扮把参考图填进每一镜（2026-10-16，Dragon） =================
+       「有哪几套装扮、每套长什么样」由生成分镜时的自动识别解决；这一块解决「哪一镜穿哪套」。
+       🔴 唯一入口是**主体卡上的「一键填充」**（2026-10-16 二次拍板：不再有独立的「按装扮填镜头」按钮 ——
+          fillRefs 判断「主体卡 + 本集有装扮清单」就转到这里）。变体卡的单卡填充仍走原整组口径。
+       逐镜口径：按分镜里记着的服装状态判断该穿哪套，再把那套装扮的图写进那一镜的参考图区。
+       基线装束的那些镜用**主体卡的整组图**（定妆图 + 各视角，即原来的整组口径 —— 多视角参考不误伤）。 */
     /**
      * 按装扮逐镜填参考图。三段：
      *   ① `outfitListOf(主体名)` —— 项目清单（带 kw）+ 本集装扮卡；kw 是判「这一镜穿哪套」的唯一依据
      *   ② `outfitPlan(shots, 主体名, 清单)` —— 逐镜得出该穿哪套（只含他出现的镜；change 定换装点、continuity 校正）
      *   ③ 每镜取那套装扮卡当前选中的图 → 走 `applyRef`（与「一键填充」同一套判重/上限/同组折叠口径）
      * 该装扮还没建卡或还没出图 → 跳过该装扮的镜头，并在 toast 里**如实报出来**（不静默）。
+     * @returns {number} 填充到的镜数（0 = 一处都没填）
      */
-    async fillByOutfits(i, quiet) {
-      /** 静默模式（自动流水线）只汇总，不逐条弹 toast —— 自动跑五步时 toast 会刷屏 */
-      const say = (m) => { if (!quiet) this.$root.toast(m) }
+    async fillByOutfits(i) {
+      const say = (m) => this.$root.toast(m)
       const root = this.liveCard(this.cards[i])
       if (!root) return 0
       const base = baseOf(root.name)
       const outfits = this.outfitListOf(base)
       if (!outfits.length) {
-        say('还没识别过装扮：先点「识别装扮」把这个人物在本集的装扮认出来，再按装扮填镜头')
+        say('这个人物在本集还没有装扮清单（分镜里没读出他换过装）—— 生成分镜时会自动识别')
         return 0
       }
       // 基线装束没有卡 —— 它就是主体卡那张定妆图。所以清单里必须标得出基线（识别过的项目一定有）。
       const baseName = (outfits.find(o => o.base) || {}).name || ''
-      if (!baseName) { say('装扮清单里没有标出基线装束，请先点「识别装扮」重跑一次'); return 0 }
+      if (!baseName) { say('装扮清单里没有标出基线装束（重新生成分镜会自动补齐）'); return 0 }
       const ep = this.ep
       const shots = (ep && ep.shots) || []
-      if (!shots.length) { say('还没有镜头；先在第 3 步生成分镜再填充'); return 0 }
+      if (!shots.length) { say('还没有镜头；先在第 3 块生成分镜再填充'); return 0 }
       const plan = outfitPlan(shots, base, outfits)
       if (!plan.length) { say('分镜里没有「' + base + '」的镜头，或没读出这些镜头该穿哪套'); return 0 }
-      // 装扮名 → 那张卡的当前选中图（基线 → 主体卡自己）
+      // 装扮名 → 要填进该镜的图（**一律是数组**：基线那套是多张 —— 主体卡 + 各视角，即原来的整组口径）
       const picks = new Map()
       const noCard = [], noImg = []
       for (const nm of new Set(plan.map(p => p.outfit))) {
-        const card = nm === baseName
-          ? root
-          : this.cards.find(c => c.kind === 'character' && c.name === base + '--' + nm)
+        if (nm === baseName) continue                     // 基线单独处理（见下面 refPicksOf 那一段）
+        const card = this.cards.find(c => c.kind === 'character' && c.name === base + '--' + nm)
         if (!card) { noCard.push(nm); continue }
         const f = this.selFile(card)
         if (!f) { noImg.push(nm); continue }
         const abs = this.absOf(card, f)
         // wipe = 主体名：同一镜里这个主体的其它图（定妆照 / 各视角 / 别的装扮）全部折叠成这一张 ——
         // 一个镜头里他只能穿一套，同镜挂两套 = 参考图自相矛盾（H3 还会并进同一个 <Subject N>）。
-        picks.set(nm, { keys: [this.refBaseOf(abs), card.name], abs: abs, wipe: base })
+        picks.set(nm, [{ keys: [this.refBaseOf(abs), card.name], abs: abs, wipe: base }])
       }
+      // 🔴 基线镜（穿常服的那些）走**原来的一键填充整组口径**：主体卡 + 各视角卡都填（多视角参考不误伤）；
+      //    换装的镜只填那一套（上面那条），同一镜里该主体的其它图靠 wipe 折叠掉。
+      const g = this.refPicksOf(root)
+      picks.set(baseName, g.picks)
+      if (!g.picks.length) noImg.push(baseName)
       const mkName = nm => (nm === baseName ? '基线装束（本卡定妆图）' : nm)
-      if (!picks.size) {
+      if (![...picks.values()].some(a => a.length)) {
         const why = []
         if (noCard.length) why.push(noCard.map(mkName).join('、') + ' 还没建卡')
         if (noImg.length) why.push(noImg.map(mkName).join('、') + ' 还没出图')
@@ -3079,16 +2926,21 @@ export default {
       const stat = { covered: 0, added: 0, cleaned: 0, dup: 0, full: 0, filled: 0, skipped: 0 }
       const per = {}
       for (const pl of plan) {
-        const pk = picks.get(pl.outfit)
-        if (!pk) { stat.skipped++; continue }
+        const pkList = picks.get(pl.outfit) || []
+        if (!pkList.length) { stat.skipped++; continue }    // 这套还没图（原因已记进上面 noCard / noImg）
         if (!prompts[pl.i]) prompts[pl.i] = { text: '', refs: EMPTY_REFS() }
         const p = prompts[pl.i]
         if (!p.refs) p.refs = EMPTY_REFS()
         if (!Array.isArray(p.refs.images)) p.refs.images = []
-        const r = this.applyRef(p.refs.images, pk)
-        stat.covered += r.covered; stat.added += r.added; stat.cleaned += r.cleaned
-        stat.dup += r.dup; stat.full += r.full
-        if (r.covered || r.added || r.cleaned) {
+        // 一套可能是多张（基线 = 主体卡 + 各视角）→ 按顺序逐张写入，<Picture N> 的次序就是这里的次序
+        let hit = 0
+        for (const pk of pkList) {
+          const r = this.applyRef(p.refs.images, pk)
+          stat.covered += r.covered; stat.added += r.added; stat.cleaned += r.cleaned
+          stat.dup += r.dup; stat.full += r.full
+          hit += r.covered + r.added + r.cleaned
+        }
+        if (hit) {
           stat.filled++
           per[pl.outfit] = (per[pl.outfit] || 0) + 1
         }

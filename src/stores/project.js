@@ -68,7 +68,7 @@ export const useProject = defineStore('project', {
      *
      * 为什么用 store 中转而不是组件直调：分镜环节在 `StageShots.vue`、角色环节在 `StageChars.vue`，
      * 两个组件互不认识。两端都常驻挂载（App.vue 的 dash 视图里 4 个卡片一起渲染），所以
-     * 「分镜生成完 → 置票 → StageChars 的 watcher 收到 → 自己跑完整条链」是**不改架构**的做法。
+     * 「分镜生成完 → 置票 → StageChars 的 watcher 收到 → 自己跑完建卡链」是**不改架构**的做法。
      *
      * 形状 `{ epId, at }`：`at` 让「同一集再点一次生成分镜」也能触发（对象引用每次都换新）。
      * 只置票、不在这里执行 —— 执行要动 cards / busy / 出图，那些都是组件的事。
@@ -395,10 +395,10 @@ export const useProject = defineStore('project', {
     return this.putOutfits(projectId, items)
   },
   /**
-   * 置一张「一条龙」票据：分镜生成完之后由 StageShots 调，StageChars 收到后自己跑
-   * 「按档案生成提示词 → 识别装扮 → 派生装扮卡 → 批量出图 → 按装扮填镜头」。
+   * 置一张「自动建卡」票据：分镜生成完之后由 StageShots 调，StageChars 收到后自己跑
+   * 「按档案生成图片提示词 → 识别装扮 → 建派生卡」（出图与填镜头仍是用户手点的两个按钮）。
    *
-   * 🔴 只置票、不执行（执行要动 cards / busy / 出图，都是组件的事）。
+   * 🔴 只置票、不执行（执行要动 cards / busy，都是组件的事）。
    * 🔴 `at` 每次都换新值：用户对**同一集**再点一次「生成分镜」，对象引用必须变，
    *    否则 watcher 不会触发，第二次就不跑了。
    */

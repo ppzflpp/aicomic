@@ -1785,35 +1785,8 @@ input[type=search]:focus{
 .modal .dname input[type=text]{border-radius:0 8px 8px 0; margin:0;}
 .dname-prev{margin-top:8px; font-size:12px; color:var(--sub);}
 .dname-prev b{color:var(--text); font-weight:600;}
-/* 装扮清单（2026-10-16）：卡片上的「识别装扮」入口行 + 识别结果面板。
-   入口行只出现在角色主体卡上（卡片左栏、档案区上方）；面板每行 = 勾选框 + 装扮名（可改）
-   + 装束描述（可改）+ 状态标注（将新建 / 已有卡 / 已有图 / 基线）。
-   🔴 一律限定在 .of-entry 与 .modal 下（CSS 无作用域，.of-* 是通用前缀，别裸写选择器） */
-.of-entry{display:flex; align-items:center; gap:8px; margin-top:8px;}
-.of-entry .of-hint{font-size:11px; color:var(--sub); line-height:1.5;}
-.modal.of-modal{width:min(640px,94vw);}
-.modal .of-busy{display:flex; align-items:center; gap:7px; font-size:12.5px; color:var(--sub); padding:10px 0;}
-.modal .of-list{max-height:46vh; overflow:auto; margin:10px 0 0; display:flex; flex-direction:column; gap:6px;}
-.modal .of-row{
-  display:flex; align-items:flex-start; gap:9px; padding:8px 10px; border-radius:8px;
-  border:1px solid var(--line-soft); background:rgba(255,255,255,.02);
-}
-.modal .of-row.base{border-color:rgba(148,163,184,.35); background:rgba(148,163,184,.06);}
-.modal .of-row .of-pick{margin-top:3px; flex-shrink:0;}
-.modal .of-row .of-main{flex:1; min-width:0; display:flex; flex-direction:column; gap:5px;}
-.modal .of-row .of-top{display:flex; align-items:center; gap:8px;}
-.modal .of-row .of-name{flex:0 0 120px; width:120px;}
-.modal .of-row .of-tag{
-  font-size:11px; padding:1px 7px; border-radius:999px; white-space:nowrap;
-  color:var(--sub); background:rgba(255,255,255,.05); border:1px solid var(--line-soft);
-}
-.modal .of-row .of-tag.ok{color:#7dd3a0; border-color:rgba(109,209,150,.4); background:rgba(34,139,84,.18);}
-.modal .of-row .of-tag.new{color:#8fb8ef; border-color:rgba(96,165,250,.4); background:rgba(59,130,246,.14);}
-.modal .of-row .of-desc{
-  width:100%; padding:6px 8px; border-radius:8px; font-size:12px; line-height:1.6; resize:vertical;
-  background:#0f141d; border:1px solid var(--line-soft); color:#e6edf7;
-}
-.modal .of-row .of-desc:focus{outline:none; border-color:#3f6fb5;}
+/* 装扮清单（2026-10-16）：识别面板已删（装扮改成生成分镜时自动识别、自动建卡，见 StageChars.runAuto），
+   那批 .of-* 样式随面板一起删干净 —— 卡片上不再有任何装扮入口行。 */
 /* 从库导入 / 批量入库：条目列表 */
 .import-list{max-height:46vh; overflow:auto; margin-bottom:14px; display:flex; flex-direction:column; gap:4px;}
 .import-row{
