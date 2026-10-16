@@ -1016,6 +1016,13 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   const optionalPH = optionalPlaceholders();
   const left = findPlaceholders(filled).filter(x => !optionalPH.has(x));
   if (left.length) {
+    // 🔴 2026-10-16：空提示词会掉进这里 —— `applyParams` 对空串是 `continue`（跳过替换），模板里的
+    //    `"__PROMPT__"` 就留下来被当成「模型缺失」报出去，用户会被引到「模型管家」白找一圈。
+    //    （渲染层 `genReady` 已就地拦住这条路；这里是主进程侧的兜底文案，脚本/别处调用也能看懂。）
+    if (left.includes('__PROMPT__')) {
+      throw new Error('提示词为空：这张卡还没有生成提示词 —— 先按角色档案生成提示词（卡片刷新按钮 / 批量生成提示词）再出图。'
+        + '（工作流模板里的 __PROMPT__ 占位符没被替换，与模型配置无关）');
+    }
     const TIPS = phTips();
     const tips = left.map(x => {
       const k = x.replace(/^__|__$/g, '').toLowerCase();

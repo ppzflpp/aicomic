@@ -1068,6 +1068,14 @@ export default {
           L.warn('分镜自检不通过：' + why)
           this.$root.toast('⚠ 分镜自检：' + why)
         }
+
+        // 🔴 2026-10-16（Dragon：「我要的所有的自动化；不需要这种手动识别的」）：
+        //    分镜是整条链的原料，生成完就地**置票**，后面的
+        //    「按档案生成提示词 → 识别装扮 → 派生装扮卡 → 批量出图 → 按装扮填镜头」
+        //    由常驻挂载的角色&场景块收到票之后自己跑完 —— 用户只需要点这一次「生成分镜」。
+        //    位置必须在自检 / 自动合并**之后**：自动流程读的是**最终**的镜头列表（合并会改 shots）。
+        //    ⚠️ 只置票不执行：两个阶段是两个组件，执行那部分要动 cards / busy / 出图，是 StageChars 的事。
+        this.st.requestAuto(this.st.current && this.st.current.id)
       } catch (e) {
         L.fail('分镜生成失败', Date.now() - t0, e)
         this.st.fail(e)
