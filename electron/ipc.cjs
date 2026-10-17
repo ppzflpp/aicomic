@@ -535,10 +535,11 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     logger.setTag('停止生成');
     return inference.cancelComfy();
   });
-  ipcMain.handle('export:video', async (e, { outDir, outName, videos, subtitles, width, height, scope }) => {
+  ipcMain.handle('export:video', async (e, { outDir, outName, videos, subtitles, width, height, scope, normalize }) => {
     logger.setTag('阶段7 组装成片');
     await orchestrator.ensure(6);
-    return inference.exportVideo(outDir, outName, videos, { subtitles, width, height, scope });
+    // normalize：方案 D 逐镜响度归一（缺省按 true，老渲染层不传也走新行为）
+    return inference.exportVideo(outDir, outName, videos, { subtitles, width, height, scope, normalize });
   });
   ipcMain.handle('ffmpeg:find', () => inference.findFfmpeg());
   // 取「上一镜末帧」→ 图片（首帧接力，2026-10-09）：
@@ -569,6 +570,40 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     const pre = String(prefix) + '_';
     return (Array.isArray(all) ? all : []).filter(f => f.file.startsWith(pre));
   });
+  /* 图片生成页：历史 = <workspace>/图片生成/<日期>/ 下的图片，按时间倒序，上限 120 张 */
+  ipcMain.handle('imggen:history', (e, ws) => {
+    const root = path.join(String(ws || ''), '图片生成');
+    const out = [];
+    let days = [];
+    try { days = fs.readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort().reverse(); } catch (_) { return []; }
+    for (const day of days) {
+      let files = [];
+      try { files = fs.readdirSync(path.join(root, day)); } catch (_) { continue; }
+      for (const f of files.filter(x => /\.(png|jpe?g|webp)$/i.test(x))) {
+        const abs = path.join(root, day, f);
+        let st = null; try { st = fs.statSync(abs); } catch (_) { continue; }
+        // 旁车文件（<图片名>.json，由生成侧写入）里记着耗时 → 历史图也能显示「生成时长」；
+        // 老图没有旁车就是 null，渲染层自然只显示分辨率，不做任何猜测
+        let ms = null;
+        try { const m = JSON.parse(fs.readFileSync(abs + '.json', 'utf8')); if (m && m.ms) ms = m.ms; } catch (_) {}
+        out.push({ file: f, path: abs, mtimeMs: st.mtimeMs, ms });
+      }
+      if (out.length >= 240) break;
+    }
+    return out.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 120);
+  });
+  /* ---- 提示词反推（图片 → 正向提示词）----
+   * 默认走本地 Qwen3.5-9B + mmproj（视觉模式 llama-server）。
+   * 🔴 独立通道：要读图片文件、且必须先确保 llama 带着视觉投影器启动，
+   *    不能复用 infer:llm（那里只保证「文本模式在线」，没有读图能力）。
+   * 返回 { text, ms }；失败直接抛错，由渲染层提示，不静默降级。 */
+  ipcMain.handle('imggen:reverse', async (e, file, opts) => {
+    const o = opts || {};
+    const prov = llmProvider.resolve('reverse', o.providerOverride);
+    if (prov.kind === 'local') await orchestrator.ensureVisionLlm('提示词反推');
+    return inference.reversePrompt(file, o);
+  });
+
   ipcMain.handle('file:readBase64', (e, abs) => {
     if (!fs.existsSync(abs)) return null;
     return fs.readFileSync(abs).toString('base64');

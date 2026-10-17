@@ -2412,3 +2412,204 @@ export function outfitKnownBrief(list) {
   return arr.map(o => '- ' + o.name + (o.base ? '（基线装扮）' : '') + '：' +
     (o.desc ? o.desc.slice(0, 60) : '（无描述）')).join('\n')
 }
+
+/* ============================================================================
+ * 集级设定 setting（rev28 · 2026-10-16）
+ *
+ * 分镜环节现在**多产出一个 `setting` 对象**（`光线基调` / `轴线铁律` / `声音基底` / `禁止项`），
+ * 它承载「镜头之间必须一致、但又不该逐镜重复写」的那部分内容。为什么不让模型每镜自己抄
+ * （方案 A）：rev27 已经在 shots.md 里写下「光有这条纪律没用」——同一件事每镜各写一遍，
+ * 模型必然会换说法（「主光自右侧窗照入」/「右侧窗光为主」），等于没定。
+ * 所以这里走方案 B：**写一次、由程序逐镜复制**。
+ *
+ * 三个函数的职责边界：
+ *   normSetting   —— 宽松解析模型给的对象（键名容错、字符串/数组容错、老集无 setting → null）
+ *   settingBlock  —— 拼「continuity 段头」那几行（集级四项 + 该场主光），空则返回空串
+ *   audioBaseBlock—— 拼 `{{audioBase}}` 槽文本（集级声音基底 + 该场环境音）
+ * 🔴 一律**不改动入参**、一律**返回新对象/新字符串**（纯函数，便于离线单测）。
+ * ========================================================================== */
+
+/** setting 的四个字段（顺序 = 注入顺序 = 用户界面的显示顺序） */
+export const SETTING_FIELDS = ['光线基调', '轴线铁律', '声音基底', '禁止项']
+
+/** 每个字段的收词别名（模型偶尔用近义键名或英文键） */
+const SETTING_ALIAS = {
+  光线基调: ['光线基调', '基调', '光线', 'light', 'lightTone', 'lighting'],
+  轴线铁律: ['轴线铁律', '轴线', 'axis', 'axisRule', 'axisRuleOf180'],
+  声音基底: ['声音基底', '声音', '声底', 'sound', 'soundBase', 'audioBase', 'soundscape'],
+  禁止项: ['禁止项', '禁止', '禁令', '禁忌', 'forbid', 'forbidden', 'bans', 'ban']
+}
+
+/** 禁止项归一化：数组 / 多行字符串 / 分隔符串都收成字符串数组 */
+function normBanList(v) {
+  const raw = Array.isArray(v) ? v : String(v == null ? '' : v).split(/[\n\r|；;、]+/)
+  const out = []
+  for (const x of raw) {
+    const s = String(x == null ? '' : x).replace(/\s+/g, ' ').trim()
+    if (s && out.indexOf(s) < 0) out.push(s)
+  }
+  return out
+}
+
+/**
+ * 宽松解析 setting（纯函数）。
+ * 容错：对象 / JSON 字符串（含 ```` ```json ```` 包裹或前后有解释文字）；对象可能被嵌在 `setting` 键下；
+ *   键名走 SETTING_ALIAS 别名；`禁止项` 收数组或多行字符串。
+ * 兜底：**四项全空 → 返回 null**（老集没有 setting 文件时也是 null），
+ *   调用方据此降级成改造前的行为，而不是往提示词里塞一个空块。
+ * @param {object|string|null} raw LLM 给的 setting、或磁盘上读回的 setting
+ * @returns {{lightTone:string, axisRule:string, soundBase:string, bans:string[]}|null}
+ */
+export function normSetting(raw) {
+  let obj = raw
+  if (typeof obj === 'string') {
+    const raw2 = obj
+    obj = null
+    try { obj = JSON.parse(raw2) } catch (_) { obj = null }
+    if (!obj) {
+      const m = raw2.match(/\{[\s\S]*\}/)
+      if (m) { try { obj = JSON.parse(m[0]) } catch (_) { obj = null } }
+    }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null
+  const src = (obj.setting && typeof obj.setting === 'object' && !Array.isArray(obj.setting)) ? obj.setting : obj
+  const pick = (field) => {
+    for (const k of SETTING_ALIAS[field]) {
+      if (src[k] != null && src[k] !== '') return src[k]
+    }
+    return ''
+  }
+  const lightTone = String(pick('光线基调') == null ? '' : pick('光线基调')).replace(/\s+/g, ' ').trim()
+  const axisRule = String(pick('轴线铁律') == null ? '' : pick('轴线铁律')).replace(/\s+/g, ' ').trim()
+  const soundBase = String(pick('声音基底') == null ? '' : pick('声音基底')).replace(/\s+/g, ' ').trim()
+  const bans = normBanList(pick('禁止项'))
+  if (!lightTone && !axisRule && !soundBase && !bans.length) return null
+  return { lightTone, axisRule, soundBase, bans }
+}
+
+/** 从 `「字段名：值」每行一条` 的档案文本里取某个字段的值（取不到返回空串） */
+export function pickProfileField(text, field) {
+  const src = String(text == null ? '' : text)
+  const f = String(field == null ? '' : field).trim()
+  if (!src || !f) return ''
+  for (const raw of src.split(/\r?\n/)) {
+    const line = raw.trim()
+    const m = line.match(/^([^：:]+)[：:]\s*([\s\S]*)$/)
+    if (!m) continue
+    if (m[1].trim() !== f) continue
+    const v = m[2].replace(/\s+/g, ' ').trim()
+    if (v) return v
+  }
+  return ''
+}
+
+/**
+ * 拼「continuity 段头」的集级 + 场级常量块（纯函数）。
+ * 产出形如（只列有值的行）：
+ *   【集级设定（本集恒定不变，逐字照抄）】
+ *   光线基调：…
+ *   轴线铁律：…
+ *   声音基底：…
+ *   禁止项：…；…
+ *   本场主光：…
+ * 🔴 尾部带换行：调用方直接 `block + 本镜 continuity` 即可拼成完整段，不必再补分隔符。
+ * @param {object|string} setting normSetting 的入参形态
+ * @param {{mainLight?:string}} [opt] 该场主光（来自场景档案的「主光」行）
+ * @returns {string} 四项与主光都为空时返回空串（→ 调用方原样下发旧内容，行为等价改造前）
+ */
+export function settingBlock(setting, opt = {}) {
+  const s = normSetting(setting)
+  const lines = []
+  if (s) {
+    const head = []
+    if (s.lightTone) head.push('光线基调：' + s.lightTone)
+    if (s.axisRule) head.push('轴线铁律：' + s.axisRule)
+    if (s.soundBase) head.push('声音基底：' + s.soundBase)
+    if (s.bans.length) head.push('禁止项：' + s.bans.join('；'))
+    if (head.length) {
+      lines.push('【集级设定（本集恒定不变，逐字照抄到本镜的每个维度里）】')
+      for (const h of head) lines.push(h)
+    }
+  }
+  const ml = String((opt && opt.mainLight) || '').replace(/\s+/g, ' ').trim()
+  if (ml) {
+    if (!lines.length) lines.push('【本场固定光线（逐字照抄，本场不许换光源方向）】')
+    lines.push('本场主光：' + ml)
+  }
+  if (!lines.length) return ''
+  return lines.join('\n') + '\n'
+}
+
+/**
+ * 拼 `{{audioBase}}` 槽文本（纯函数）：集级声音基底 + 该场环境音。
+ * 为什么两块都要：集级管「整集是什么配乐」（BGM 不许重启），场级管「这一场在响什么」（底噪不许消失），
+ * 二者合起来才是「这件声音一直在响」的完整交代 —— 只给一半，另一半点会空。
+ * 空则返回 `（无）` 而不是空串：模板里这块前后都是英文说明行，留空会让模型以为素材缺了一段。
+ * @param {object|string} setting
+ * @param {string} [sceneAmbient] 该场「环境音」字段的值
+ * @returns {string}
+ */
+export function audioBaseBlock(setting, sceneAmbient) {
+  const s = normSetting(setting)
+  const lines = []
+  if (s && s.soundBase) lines.push('本集声音基底（整集不中断）：' + s.soundBase)
+  if (s && s.bans.length) lines.push('声音方面的禁止项：' + s.bans.join('；'))
+  const amb = String(sceneAmbient == null ? '' : sceneAmbient).replace(/\s+/g, ' ').trim()
+  if (amb && amb !== '安静') lines.push('本场环境音（本场持续底噪）：' + amb)
+  return lines.length ? lines.join('\n') : '（无）'
+}
+
+/**
+ * 角色/场景的**锚点摘要**（纯函数，决策 4）。
+ * 起因（2026-10-16）：参考模式下 `<Subject N>` 由参考图定义外观，此时再发一份含完整外貌的
+ *   `prompt` 全文是**双描述** —— 图里因生成误差没出现的纹样、文字还写着，模型会照文字加回去；
+ *   还会与 `<Subject N>` 的「不要变成什么」边界句打架。
+ * 做法：只留**最稳定的区分维度**（模型靠它们把分镜里的人名对上画面里的主体就够了），
+ *   去掉摄影术语 / 光线 / 画质 / 负面词，以及「面部基线」（它已改由本镜 `action` 承载，见 rev26）
+ *   与「依据」（给人看的线索来源，对画面零信息）。
+ * 🔴 只用于**参考模式**：基础模式没有任何图，`prompt` 是唯一外观来源，仍发全文。
+ * @param {object|string} card 卡片对象（取 .profile）或档案文本本身
+ * @returns {string} 逗号分隔的短语串；档案为空返回空串
+ */
+export function anchorBrief(card) {
+  const src = String(
+    (card && typeof card === 'object')
+      ? ((card.profile != null && card.profile !== '') ? card.profile : '')
+      : (card == null ? '' : card)
+  )
+  if (!src.trim()) return ''
+  const parts = []
+  for (const f of ANCHOR_DIMS) {
+    const v = pickProfileField(src, f)
+    if (v) parts.push(f + '：' + v)
+  }
+  return parts.join('，')
+}
+
+/**
+ * 锚点维度（顺序 = 输出顺序）。
+ * 取「一眼能区分人与物」的稳定视觉维度：性别 / 年龄段 / 身形体态 / 脸型骨架 / 发型发饰 / 服装 / 配饰道具 / 主色调。
+ * 不含：妆容（近距离细节，参考图已给）、面部基线（归本镜 action）、依据（线索来源）、身份（不是画面信息）。
+ */
+const ANCHOR_DIMS = ['性别', '年龄段', '身形体态', '脸型骨架', '发型发饰', '服装', '配饰道具', '主色调']
+
+/**
+ * 批量锚点摘要（发给参考模式 `{{characters}}` / `{{scenes}}` 的文本）。
+ * 与 `variant.js` 的 `groupProfiles` 同形：**每个主体一行**、键用主体名（分镜里写的是主体名）。
+ * 场景侧的字段名与角色不同，所以用同一个 pick 逻辑、按传入的维度表取。
+ * @param {Array} list 卡片数组
+ * @param {function} [renderOne] 单卡取文本（默认 anchorBrief）
+ * @returns {string}
+ */
+export function anchorProfiles(list, renderOne) {
+  const fn = renderOne || anchorBrief
+  const rows = []
+  for (const c of Array.isArray(list) ? list : []) {
+    if (!c || !c.name) continue
+    const body = fn(c)
+    if (!body) continue
+    rows.push(String(c.name) + '：' + body)
+  }
+  return rows.join('\n')
+}
+

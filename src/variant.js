@@ -85,15 +85,23 @@ export function groupCards(list) {
  * 档案块（发给大模型的 `characters` / `scenes`）：**每个主体只产出一行**，键用主体名（baseOf）。
  * 🔴 用主体名而不是卡名：分镜的 chars / continuity 里写的是主体名，两边对不上模型就会当成两个人。
  * 档案优先级：父卡（且非空）→ 组内第一份非空档案 → 父卡（空也发）→ 组内第一张。
+ *
+ * @param {Array} list 卡片数组
+ * @param {function} [render] 单卡 → 该行正文（省略 = 发 `prompt` 全文，即基础模式的口径）。
+ *   参考模式（Ref2VA）要传 `promptlib.anchorBrief`：那里 `<Subject N>` 已由参考图定义外观，
+ *   再发一份完整外貌的 prompt 全文等于**双描述**（见 promptlib.anchorBrief 的块注释，2026-10-16）。
+ *   ⚠️ 「非空」判定也跟着 render 走 —— 换了 renderer，挑父卡的依据就是新口径的产物，
+ *   否则会出现「按 prompt 挑中父卡、按 profile 渲染出空行」的错配。
  */
-export function groupProfiles(list) {
+export function groupProfiles(list, render) {
+  const fn = typeof render === 'function' ? render : (c => String((c && c.prompt) || ''))
   const out = []
   for (const g of groupCards(list)) {
     const cards = g.items.map(o => o.c).filter(Boolean)
-    const nonEmpty = (c) => !!(c && String(c.prompt || '').trim())
+    const nonEmpty = (c) => !!(c && String(fn(c) || '').trim())
     let pick = (g.parent && nonEmpty(g.parent.c)) ? g.parent.c : null
     if (!pick) pick = cards.find(nonEmpty) || (g.parent && g.parent.c) || cards[0] || null
-    out.push(g.base + ': ' + String((pick && pick.prompt) || ''))
+    out.push(g.base + ': ' + String(fn(pick) || ''))
   }
   return out.join('\n')
 }

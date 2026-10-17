@@ -1,7 +1,8 @@
 {
   "51": { "class_type": "LoadImage", "inputs": { "image": "__IMAGE__" } },
-  "53": { "class_type": "KSampler", "inputs": { "seed": "__SEED__", "steps": 25, "cfg": 2.5, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0, "model": ["60", 0], "positive": ["56", 0], "negative": ["56", 1], "latent_image": ["56", 2] } },
+  "53": { "class_type": "KSampler", "inputs": { "seed": "__SEED__", "steps": __STEPS__, "cfg": __CFG__, "sampler_name": "__SAMPLER__", "scheduler": "__SCHEDULER__", "denoise": 1.0, "model": ["60", 0], "positive": ["56", 0], "negative": ["56", 1], "latent_image": ["57", 0] } },
   "56": { "class_type": "TextEncodeQwenImage21", "inputs": { "clip": ["70", 0], "prompt": "__PROMPT__", "negative_prompt": "__NEGATIVE__", "resolution": __RESOLUTION__, "vae": ["71", 0], "images.image_1": ["51", 0] } },
+  "57": { "class_type": "EmptyQwenImage21LatentImage", "inputs": { "width": "__EW__", "height": "__EH__", "batch_size": 1 } },
   "58": { "class_type": "VAEDecode", "inputs": { "samples": ["53", 0], "vae": ["71", 0] } },
   "59": { "class_type": "SaveImage", "inputs": { "filename_prefix": "comic/char", "images": ["58", 0] } },
   "60": { "class_type": "UNETLoader", "inputs": { "unet_name": "__Q_UNET__", "weight_dtype": "default" } },

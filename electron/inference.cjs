@@ -105,7 +105,24 @@ async function health() {
 /* ---------------- LLM ---------------- */
 
 /** 单条消息的文字长度 */
-function contentLen(c) { return String(c || '').length; }
+/**
+ * 消息内容长度（用于日志与上下文预算估算）。
+ * 2026-10-17：兼容 OpenAI 多模态 content 数组 —— 图片 base64 是几百万字符，
+ * 直接 String(数组) 会得出荒谬的数字；图片按 Qwen-VL 的固定视觉开销折算（≈1024 image token）。
+ */
+function contentLen(c) {
+  if (Array.isArray(c)) {
+    let n = 0;
+    for (const p of c) {
+      if (!p) continue;
+      if (p.type === 'image_url') n += 1600;
+      else if (p.type === 'text') n += String(p.text || '').length;
+      else if (typeof p === 'string') n += p.length;
+    }
+    return n;
+  }
+  return String(c || '').length;
+}
 
 /**
  * LLM 对话（OpenAI 兼容，llama-server）。
@@ -257,6 +274,83 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
   }
   logger.done('LLM 返回 ' + content.length + ' 字' + (finishReason ? '（finish=' + finishReason + '）' : ''), Date.now() - t0);
   return content;
+}
+
+/* ------------------------------------------------------------------ */
+/* 提示词反推（图片 → 正向提示词）                                      */
+/* ------------------------------------------------------------------ */
+
+/** 图片反推的系统提示词：约束成「可直接喂给文生图」的一段短语式描述 */
+const REVERSE_SYSTEM = [
+  '你是资深 AI 绘画提示词工程师。用户会给你一张图片，你要把它反推成一条可直接用于文生图 / 图生图的中文正向提示词。',
+  '',
+  '输出要求：',
+  '1. 只输出提示词正文：不要解释、不要前缀、不要编号、不要 Markdown、不要引号。',
+  '2. 单段，60~140 字。',
+  '3. 按「主体 → 外观与服饰细节 → 场景 → 光线 → 镜头与构图 → 材质与画风」的顺序写，用逗号分隔的短语，不要写成散文长句。',
+  '4. 写得具体可执行：给出颜色、材质、款式、数量、相对位置；避免「美丽」「好看」「精致」这类空泛形容词。',
+  '5. 不要写负面词；不要出现「这张图」「画面中」「如图所示」这类元叙述。',
+  '6. 不要输出思考过程。'
+].join('\n');
+
+const IMG_MIME = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.bmp': 'image/bmp'
+};
+
+/** 剥掉思考块与常见包装（模型偶尔会套代码围栏 / 「好的，」开头 / 整段引号） */
+function cleanPromptText(text) {
+  let s = String(text || '');
+  s = s.replace(/<think[\s\S]*?<\/think>/gi, '');
+  s = s.replace(/<\|think\|>[\s\S]*?<\|\/think\|>/gi, '');
+  s = s.replace(/^[\s\S]*?<\/think>/i, '');          // 未闭合的思考块残尾
+  s = s.replace(/```[a-z]*\s*/gi, '').replace(/```/g, '');
+  s = s.replace(/^(好的|当然|以下是|这是)[^\n]{0,24}[:：]\s*/, '');
+  s = s.replace(/^[\s"'“”『』「」]+/, '').replace(/[\s"'“”『』「」]+$/, '');
+  s = s.split(/\r?\n/).map(x => x.trim()).filter(Boolean).join('\n');
+  return s.trim();
+}
+
+/**
+ * 反推一张图的提示词。
+ * @param {string} file 图片绝对路径
+ * @param {{ providerOverride?: string }} [opts]
+ * @returns {Promise<{ text: string, ms: number }>}
+ */
+async function reversePrompt(file, opts = {}) {
+  const abs = String(file || '');
+  if (!abs || !fs.existsSync(abs)) throw new Error('找不到参考图文件：' + abs);
+  let st = null;
+  try { st = fs.statSync(abs); } catch (_) {}
+  if (!st || !st.size) throw new Error('参考图无法读取或为空：' + abs);
+  if (st.size > 24 * 1024 * 1024) {
+    throw new Error('参考图太大（' + (st.size / 1048576).toFixed(1) + 'MB），请先压缩到 24MB 以内再反推');
+  }
+
+  const mime = IMG_MIME[path.extname(abs).toLowerCase()] || 'image/png';
+  const b64 = fs.readFileSync(abs).toString('base64');
+  const messages = [
+    { role: 'system', content: REVERSE_SYSTEM },
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: '请反推这张图片的生成提示词。' },
+        { type: 'image_url', image_url: { url: 'data:' + mime + ';base64,' + b64 } }
+      ]
+    }
+  ];
+
+  const t0 = Date.now();
+  const raw = await llmChat(messages, {
+    stage: 'reverse',
+    providerOverride: opts.providerOverride || '',
+    temperature: 0.3,
+    maxTokens: 640,
+    timeoutMs: 600000
+  });
+  const text = cleanPromptText(raw);
+  if (!text) throw new Error('模型没有返回可用的提示词内容');
+  return { text, ms: Date.now() - t0 };
 }
 
 /** 提取 JSON（容忍 ```json 围栏与前后杂文本） */
@@ -423,6 +517,30 @@ function ensureDefaultTemplates() {
     try {
       fs.copyFileSync(path.join(builtin, n), dst);
       logger.info('工作流模板已就位：workflows/' + n);
+    } catch (_) { /* 忽略 */ }
+  }
+
+  // —— 图片模板升级：上面「存在即跳过」是为了不覆盖用户手改，但内置模板自己修 bug 时
+  //    老工作区就永远拿不到新版 —— 于是补一张「老版指纹表」：命中指纹才替换（精确匹配旧写法，
+  //    用户正常手改不会命中），替换前留 .bak 兜底。
+  //    2026-10-17 两条都是用户能直接感觉到的毛病：
+  //      character_edit：latent 直连 TextEncodeQwenImage21 → 输出尺寸跟参考图比例走，所选分辨率无效
+  //      character_qwen_image：steps/cfg/sampler 写死 → 页面上的采样方案下拉框点了没反应
+  const LEGACY_TPL = {
+    'character_edit.json': ['"latent_image": ["56", 2]'],
+    'character_qwen_image.json': ['"steps": 25, "cfg": 2.5, "sampler_name": "euler"']
+  };
+  for (const [name, marks] of Object.entries(LEGACY_TPL)) {
+    const src = path.join(builtin, name);
+    const dst = path.join(dir, name);
+    if (!fs.existsSync(src) || !fs.existsSync(dst)) continue;
+    let cur = '';
+    try { cur = fs.readFileSync(dst, 'utf-8'); } catch (_) { continue; }
+    if (!marks.some(m => cur.includes(m))) continue;
+    try {
+      fs.copyFileSync(dst, dst + '.bak');
+      fs.copyFileSync(src, dst);
+      logger.info('工作流模板已升级：workflows/' + name + '（旧版备份为 ' + name + '.bak）');
     } catch (_) { /* 忽略 */ }
   }
 
@@ -936,6 +1054,13 @@ async function comfyGenerate(args) {
   }
 }
 
+/** 产物旁车文件：<图片名>.json（目前只记生成耗时，供历史列表回显）。
+ *  历史扫描只认图片扩展名，旁车不会混进列表；写失败也只是少一条时长，不能影响出片。 */
+function writeSidecar(dir, name, meta) {
+  try { fs.writeFileSync(path.join(dir, name + '.json'), JSON.stringify(meta)); }
+  catch (e) { try { logger.warn('写产物元数据失败（不影响出片）：' + ((e && e.message) || e)); } catch (_) {} }
+}
+
 async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, timeoutMs = 1800000 }) {
   const tplFile = workflowPath(templateKey);
   if (!fs.existsSync(tplFile)) {
@@ -1008,8 +1133,30 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     // 宽高：剧集分辨率配置传入；没传给默认值（模板占位符 __WIDTH__/__HEIGHT__ 必须有值；兜底同 RES_SDXL 默认档 1920x1080）
     realParams.width = Number(params.width) > 0 ? Math.round(params.width) : 1920;
     realParams.height = Number(params.height) > 0 ? Math.round(params.height) : 1080;
+    // 采样参数：图片模板（qwen_image / character_edit）的 KSampler 已改占位符，这里给 2.1 推荐默认 ——
+    // 调用方（图片生成页）可覆盖；其它调用方（角色卡/场景卡）不传 = 原固定值 25 / 2.5 / euler / simple，行为不变
+    realParams.steps = Number(params.steps) > 0 ? Math.round(params.steps) : 25;
+    realParams.cfg = Number(params.cfg) > 0 ? Number(params.cfg) : 2.5;
+    realParams.sampler = params.sampler || 'euler';
+    realParams.scheduler = params.scheduler || 'simple';
+    // 编辑通道（character_edit）的输出宽高：官方 TextEncodeQwenImage21 自带的 latent 输出
+    // 尺寸跟参考图比例走、不理会所选分辨率（2026-10-17 实测 480×864 参考图出 768×1376）——
+    // 模板已改接 EmptyQwenImage21LatentImage（__EW__/__EH__）。没传 ew/eh 的既有调用方
+    // （角色卡换装/三视图等，只传 resolution）退回正方形 = 与改造前行为一致。
+    realParams.ew = Number(params.ew) > 0 ? Math.round(params.ew) : (Number(realParams.resolution) > 0 ? Math.round(realParams.resolution) : 1024);
+    realParams.eh = Number(params.eh) > 0 ? Math.round(params.eh) : (Number(realParams.resolution) > 0 ? Math.round(realParams.resolution) : 1024);
   }
+  // 多图参考（Qwen-Image 2.1 原生编辑官方支持多图）：params.images = [abs path, ...]。
+  // 第 1 张走既有 image 槽（驱动编辑/图生图支路），第 2..N 张上传后出图前动态注入 LoadImage。
+  const refAbsList = Array.isArray(params.images) ? params.images.filter(Boolean) : [];
+  if (refAbsList.length && !params.image) realParams.image = await uploadToComfy(refAbsList[0]);
   if (params.image) realParams.image = await uploadToComfy(params.image);
+  if (refAbsList.length) {
+    const skip = params.image ? 0 : 1;   // image 槽已吃掉第 1 张时其余才是「额外图」
+    const extraNames = [];
+    for (const p of refAbsList.slice(skip)) extraNames.push(await uploadToComfy(p));
+    if (extraNames.length) realParams._extraImgs = extraNames;
+  }
   if (realParams.seed === undefined || realParams.seed === null) realParams.seed = Math.floor(Math.random() * 1e9);
 
   const filled = applyParams(tplText, realParams);
@@ -1061,6 +1208,21 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
       }
     };
     wf[i2iNodes.enc].inputs.pixels = [scaleId, 0];
+  }
+
+  // 多图注入：找到 2.1 原生编辑节点（TextEncodeQwenImage21），把第 2..N 张参考图接上
+  // images.image_2..N（官方多图上限 10，页面已限）。模板没有该节点（非 2.1 方案）就降级只发首图。
+  if (Array.isArray(realParams._extraImgs) && realParams._extraImgs.length) {
+    const encId = Object.keys(wf).find(k => wf[k] && wf[k].class_type === 'TextEncodeQwenImage21');
+    if (encId) {
+      realParams._extraImgs.forEach((nm, i) => {
+        const id = '9' + String(90 + i);   // 注入段独立编号，不会撞模板节点 id
+        wf[id] = { class_type: 'LoadImage', inputs: { image: nm } };
+        wf[encId].inputs['images.image_' + (i + 2)] = [id, 0];
+      });
+    } else {
+      logger.warn('当前生图方案没有 TextEncodeQwenImage21 节点，多图参考只使用了第 1 张');
+    }
   }
 
   if (isVideo) {
@@ -1290,8 +1452,15 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     }
   }
   if (!saved.length) throw new Error('ComfyUI 完成但没有产出文件');
-  logger.done(saved.join('、') + ' 生成完成', Date.now() - tSubmit);
-  return { files: saved, seed: realParams.seed };
+  const elapsedMs = Date.now() - tSubmit;
+  // 生成时长落盘（2026-10-17）：耗时只活在渲染层内存里，重启/切菜单就没了，
+  // 历史列表（imggen:history 只 stat 目录）因此永远只有分辨率没有时长。
+  // 给每个产物配一个 <图片名>.json 旁的「旁车文件」，历史回读时带上 ms。
+  for (const name of saved) {
+    writeSidecar(dir, name, { ms: elapsedMs, mode: templateKey, at: new Date().toISOString() });
+  }
+  logger.done(saved.join('、') + ' 生成完成', elapsedMs);
+  return { files: saved, seed: realParams.seed, elapsedMs };
 }
 
 /** 取一个可用的底模文件名（ComfyUI 的 checkpoints 目录，只认文件名） */
@@ -1342,6 +1511,22 @@ const LEVEL_FLOOR = -60;
 /** 窗口边缘修剪：边缘响度低于「窗内均值 - 此值」就往里收（估计时长偏长时贴回人声边界） */
 const TRIM_MARGIN_DB = 9;
 
+/* ---------------- 方案 D：成片逐镜响度归一化（2026-10-16） ----------------
+ * 问题（Dragon 实测《真人剧4》第 4 集）：四镜综合响度 −34.6 / −15.0 / −17.0 / −21.0 LUFS，
+ *   镜 1 与镜 2 差 19.6 dB。成片是**逐镜 concat**，每镜各起一次头 → 观感就是
+ *   「BGM 一会儿有一会儿没有，像换了好几首」。
+ * 做法：concat **之前**逐镜把那一段音频归一到同一目标响度。
+ * 🔴 为什么不能「整片拼完再 loudnorm 一次」：两遍法的 linear 模式本质是**一个恒定增益**，
+ *    只能整体平移，镜间 19.6 dB 的落差**原样保留**；单遍的动态模式会拉平，但会引入泵动
+ *    （pumping）并压掉镜内音乐动态。要真正「落差归零」只有逐镜恒定增益一条路。
+ * 收益：落差归零，且不改动视频管线（中间产物 `-c:v copy`，只重编音频）。
+ */
+const NORM_I = -16;            // 目标综合响度（LUFS）—— 流媒体通用档
+const NORM_TP = -1.5;          // 目标真峰值（dBTP）—— 留 1.5 dB 余量防转码削波
+const NORM_GAIN_MAX = 20;      // 单镜增益上限（dB）：防「近乎静音的镜」被抬成一片底噪
+/** 综合响度低于此值视为「这一镜本来就没音」——放大只会抬底噪，直接不动（返回 0 dB 增益） */
+const NORM_SILENT_I = -50;
+
 /** 并发跑异步任务（逐镜探测要起进程，限并发，避免一次轰出几十个） */
 async function mapLimit(items, limit, fn) {
   const out = new Array(items.length);
@@ -1378,6 +1563,60 @@ function parseLevelCurve(txt) {
     if (Number.isFinite(t) && Number.isFinite(db)) out.push({ t, db: Math.max(db, LEVEL_FLOOR) });
   }
   return out;
+}
+
+/**
+ * 解析 ebur128 结尾的 Summary 段 → { i, lra, tp }（任一取不到给 null）。
+ *
+ * 段落实例（ffmpeg 6.x，`ebur128=peak=true`）：
+ *   Summary:
+ *     Integrated loudness:
+ *       I:         -34.6 LUFS
+ *       Threshold: -44.8 LUFS      ← 注意：Threshold 出现两次，这里不要它
+ *     Loudness range:
+ *       LRA:         1.0 LU
+ *       Threshold: -55.2 LUFS
+ *     True peak:
+ *       Peak:      -17.0 dBFS
+ *
+ * ⚠️ 必须**锚定小节标题**再取值：`I:` / `LRA:` 在每 100ms 的周期行里也出现，
+ *    不锚定就会把最后一条周期行当成摘要（那只是 100ms 的瞬时值，不是全片积分值）。
+ */
+function parseLoudnessSummary(txt) {
+  const s = String(txt || '');
+  const pick = (re) => { const m = s.match(re); return m ? parseFloat(m[1]) : null };
+  const i = pick(/Integrated loudness:\s*\n\s*I:\s*(-?[\d.]+)\s*LUFS/);
+  const lra = pick(/Loudness range:\s*\n\s*LRA:\s*(-?[\d.]+)\s*LU/);
+  const tp = pick(/True peak:\s*\n\s*Peak:\s*(-?[\d.]+)\s*dBFS/);
+  const ok = v => (Number.isFinite(v) ? v : null);
+  return (i === null && lra === null && tp === null) ? null : { i: ok(i), lra: ok(lra), tp: ok(tp) };
+}
+
+/**
+ * 由响度摘要算这一镜该加的**恒定增益**（dB，0 = 不动）。纯函数。
+ *
+ * 规则（三条护栏，按优先级）：
+ *   1. 目标：把综合响度抬/压到 NORM_I（`NORM_I - i`）。
+ *   2. 削波护栏：真峰值最多抬到 NORM_TP（`NORM_TP - tp`）—— 取两者更小者。
+ *      这是「宁可差几 dB 也不削波」的取舍：H3 混音的 −34.6 LUFS 那一镜峰值已是 −17.0 dBFS，
+ *      抬 18.6 dB 会顶穿 0 dBFS，按真峰值截到 +15.5 dB → 落在 −19.1 LUFS，
+ *      与其它镜的 19.6 dB 落差收敛到 3.1 dB（物理上不可能再多了）。
+ *   3. 上下限 ±NORM_GAIN_MAX；综合响度低于 NORM_SILENT_I 视为本镜无音 → 0（不抬底噪）。
+ *
+ * @param m analyzeShot().loud（可为 null = 无音轨 / 解析失败）
+ * @returns 增益 dB（保留两位小数；0 表示不需要处理）
+ */
+function normGain(m, opt = {}) {
+  const tI = Number.isFinite(opt.targetI) ? opt.targetI : NORM_I;
+  const tTP = Number.isFinite(opt.targetTP) ? opt.targetTP : NORM_TP;
+  const cap = Number.isFinite(opt.maxGain) ? opt.maxGain : NORM_GAIN_MAX;
+  if (!m || !Number.isFinite(m.i)) return 0;
+  if (m.i <= NORM_SILENT_I) return 0;
+  let g = tI - m.i;
+  if (Number.isFinite(m.tp)) g = Math.min(g, tTP - m.tp);
+  g = Math.max(-cap, Math.min(cap, g));
+  const r = Math.round(g * 100) / 100;
+  return Number.isFinite(r) ? r : 0;
 }
 
 /**
@@ -1512,18 +1751,26 @@ function cuesToSrt(cues) {
   return blocks.length ? '\ufeff' + blocks.join('\n\n') + '\n' : '';
 }
 
-/** 逐镜分析：一次 ffmpeg 进程同时拿到实测时长与镜内响度曲线（ebur128 每 100ms 一点，-vn 只解音频，很快） */
+/**
+ * 逐镜分析：一次 ffmpeg 进程同时拿到 ① 实测时长 ② 镜内响度曲线 ③ 响度摘要（LUFS/LRA/真峰值）。
+ *
+ * 🔴 2026-10-16（方案 D）：`peak` 由 `none` 改成 `true` —— 响度摘要里的 True peak 是
+ *    响度归一化的**削波护栏**（增益必须让输出真峰值停在 TP 目标以下，见 normGain）。
+ *    代价只是音频解码时多一次 4 倍过采样峰值扫描，`-vn` 下可忽略。
+ *    周期性输出行会多出尾巴 `FTPK: .. TPK: ..`，`parseLevelCurve` 的正则只取 TARGET 与 M，
+ *    不受影响（已实测对比两种设置的曲线点完全一致）。
+ */
 function analyzeShot(ffmpeg, file) {
   return new Promise(resolve => {
     // ⚠️ 不能加 -nostats：ebur128 的响度行会跟着一起被吞掉
     const args = ['-hide_banner', '-loglevel', 'info', '-i', file, '-vn',
-      '-af', 'ebur128=peak=none', '-f', 'null', '-'];
+      '-af', 'ebur128=peak=true', '-f', 'null', '-'];
     try {
       execFile(ffmpeg, args, { windowsHide: true, timeout: 180000, maxBuffer: 1 << 24 }, (err, _stdout, stderr) => {
         const txt = String(stderr || '');
-        resolve({ dur: parseDurationLine(txt), level: parseLevelCurve(txt) });
+        resolve({ dur: parseDurationLine(txt), level: parseLevelCurve(txt), loud: parseLoudnessSummary(txt) });
       });
-    } catch (_) { resolve({ dur: 0, level: [] }); }
+    } catch (_) { resolve({ dur: 0, level: [], loud: null }); }
   });
 }
 
@@ -1542,6 +1789,35 @@ function probeDuration(ffmpeg, file) {
   });
 }
 
+/**
+ * 单镜响度归一化 → 中间产物（方案 D）。
+ *
+ * 🔴 只重编**音频**（`-c:v copy`）→ 视频零损、耗时几乎只有 I/O，可以逐镜都过一遍。
+ * 🔴 音频中间产物用 **PCM**（`pcm_s16le`，封进 mkv）：无损，成片那一步只做一次 AAC 编码；
+ *    中途先编成 AAC 再编一次就是两代有损，能避则避。
+ * 🔴 无音轨的镜补一段等长静音：concat 列表里各段流结构不一致时音轨会整体错位
+ *    （表现为「越往后字幕/声音越飘」），宁可多写一次静音。
+ *
+ * @param gainDb normGain() 的结果（0 = 原样，但仍会产出规格统一的中间产物）
+ * @param hasAudio 该镜是否有音轨（来自 analyzeShot 的响度摘要是否为 null）
+ */
+function normalizeShot(ffmpeg, src, dst, gainDb, hasAudio) {
+  return new Promise(resolve => {
+    const g = Number.isFinite(gainDb) ? Math.round(gainDb * 100) / 100 : 0;
+    const args = ['-y', '-i', src];
+    if (!hasAudio) args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000', '-shortest');
+    args.push('-map', '0:v:0', '-map', hasAudio ? '0:a:0' : '1:a:0');
+    if (hasAudio) args.push('-af', 'volume=' + g + 'dB');
+    args.push('-c:v', 'copy', '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '2', '-f', 'matroska', dst);
+    try {
+      execFile(ffmpeg, args, { windowsHide: true, timeout: 300000, maxBuffer: 1 << 22 }, (err, _o, se) => {
+        const okFile = !err && fs.existsSync(dst);
+        resolve({ ok: okFile, err: okFile ? '' : String(se || err || '').slice(-400) });
+      });
+    } catch (e) { resolve({ ok: false, err: String(e) }); }
+  });
+}
+
 /** 跑一次 ffmpeg，收集 stderr（失败时给上层拼错误信息） */
 function runFfmpeg(ffmpeg, args, cwd) {
   return new Promise(resolve => {
@@ -1554,11 +1830,13 @@ function runFfmpeg(ffmpeg, args, cwd) {
 }
 
 /**
- * 真实拼接导出：concat + 统一输出分辨率 + 可选字幕烧录。
+ * 真实拼接导出：concat + 统一输出分辨率 + 可选逐镜响度归一 + 可选字幕烧录。
  * videos: [{file, dialogue, dur}]（绝对路径）
  * opts.width/height：输出分辨率（剧集「输出分辨率」配置），默认 1920x1080。
+ * opts.normalize：**逐镜响度归一（方案 D）** —— concat 之前把每一镜的音频归到同一目标响度，
+ *   治「镜间 BGM 音量忽大忽小」（《真人剧4》第 4 集实测差 19.6 dB）；关掉则与改造前逐字一致。
  */
-async function exportVideo(outDir, outName, videos, { subtitles = true, width = 1920, height = 1080, scope = '' } = {}) {
+async function exportVideo(outDir, outName, videos, { subtitles = true, width = 1920, height = 1080, scope = '', normalize = true } = {}) {
   // 导出是一次性长任务：这里同步确认一次 ffmpeg（避免「预热没跑完」被误判成没装）
   const ffmpeg = findFfmpeg({ forceSync: true });
   if (!ffmpeg) throw new Error('未找到 ffmpeg。软件自带的 tools/ffmpeg/bin/ffmpeg.exe 不见了，'
@@ -1568,16 +1846,40 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
   const W = Math.max(16, Math.round(Number(width) || 1920));
   const H = Math.max(16, Math.round(Number(height) || 1080));
   const tExport = Date.now();
-  logger.info('ffmpeg 组装成片：' + videos.length + ' 个镜头，输出 ' + W + 'x' + H + (subtitles ? ' + 字幕烧录' : ''));
+  logger.info('ffmpeg 组装成片：' + videos.length + ' 个镜头，输出 ' + W + 'x' + H
+    + (normalize ? ' + 响度归一' : '') + (subtitles ? ' + 字幕烧录' : ''));
 
   const tmp = path.join(outDir, '_tmp_' + Date.now());
   fs.mkdirSync(tmp, { recursive: true });
   try {
     const vfBase = 'scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2';
 
+    // ---- 逐镜分析（实测时长 / 镜内响度曲线 / 响度摘要）----
+    // 归一化要用摘要算增益，字幕要用曲线定人声窗 —— 一次解码同时喂两处。
+    // 两者都不需要时不跑，省一轮完整解码。
+    const shots = (normalize || subtitles) ? await mapLimit(videos, 4, v => analyzeShot(ffmpeg, v.file)) : [];
+
+    // ---- 方案 D：concat 之前逐镜响度归一（只重编音频，视频流 copy）----
+    const segs = videos.map(v => v.file);
+    if (normalize) {
+      const info = [];
+      const outs = await mapLimit(videos, 4, async (v, i) => {
+        const m = (shots[i] || {}).loud || null;
+        const g = normGain(m);
+        const dst = path.join(tmp, 'n' + String(i).padStart(3, '0') + '.mkv');
+        const r = await normalizeShot(ffmpeg, v.file, dst, g, !!m);
+        if (!r.ok) { logger.warn('第 ' + (i + 1) + ' 镜响度归一化失败，该镜按原样拼接：' + r.err); return null; }
+        info[i] = '镜' + (i + 1) + ' ' + (m ? m.i.toFixed(1) + '→' + (m.i + g).toFixed(1) : '无音轨') + ' LUFS '
+          + '(' + (g >= 0 ? '+' : '') + g.toFixed(2) + 'dB)';
+        return dst;
+      });
+      outs.forEach((p, i) => { if (p) segs[i] = p; });
+      logger.info('响度目标 ' + NORM_I + ' LUFS / ' + NORM_TP + ' dBTP：' + info.filter(Boolean).join(' | '));
+    }
+
     // concat 列表（先统一转码为相同规格，避免拼接黑屏）
     const listFile = path.join(tmp, 'list.txt');
-    fs.writeFileSync(listFile, videos.map(v => 'file \'' + v.file.replace(/\\/g, '/').replace(/'/g, "'\\''") + '\'').join('\n'), 'utf-8');
+    fs.writeFileSync(listFile, segs.map(p => 'file \'' + p.replace(/\\/g, '/').replace(/'/g, "'\\''") + '\'').join('\n'), 'utf-8');
 
     const outBase = sanitize(outName);
     // 走 assetStore 永不覆盖
@@ -1601,7 +1903,7 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
       if (r1.code !== 0 || !fs.existsSync(mutePath)) throw new Error('ffmpeg 拼接母片失败：' + r1.err.slice(-500));
 
       // ---- A + B：逐镜实测时长（A）+ 镜内响度窗定位人声（B）----
-      const shots = await mapLimit(videos, 4, v => analyzeShot(ffmpeg, v.file));
+      // ⚠️ 分析结果在函数开头就取好了（响度归一要用同一份摘要）—— 这里直接复用，不要再跑一遍。
       const dursRaw = shots.map((s, i) => s.dur || Number(videos[i].dur) || 5);
       const sumRaw = dursRaw.reduce((a, b) => a + b, 0) || 1;
       // 母片真实总时长 ÷ 按镜累加 → 校正系数（concat 帧对齐会有毫秒级出入）
@@ -1761,8 +2063,12 @@ module.exports = {
   // 字幕时间轴纯函数（离线自测用，不需要显卡/ffmpeg/Electron）
   srtTime, parseDurationLine, parseLevelCurve, bestSpeechSpan, trimSpeechSpan, cueText, cueWeight, spreadByWeight, buildCues, buildFilmCues, cuesToSrt,
   analyzeShot, probeDuration,
+  // 响度归一化（方案 D · 离线自测用）
+  parseLoudnessSummary, normGain, normalizeShot,
   // 导出仅为离线自测（test/h3-inject-check.cjs 直接验证连线，不需要显卡/ComfyUI）
   injectH3Media,
   // 纯函数（离线自测用）
-  contentLen
+  contentLen,
+  // 提示词反推（图片 → 正向提示词）
+  reversePrompt, cleanPromptText, REVERSE_SYSTEM
 };

@@ -1,7 +1,7 @@
 {
   "1": { "class_type": "LoadImage", "inputs": { "image": "__IMAGE__" } },
   "2": { "class_type": "VAEEncode", "inputs": { "pixels": ["1", 0], "vae": ["21", 0] } },
-  "3": { "class_type": "KSampler", "inputs": { "seed": "__SEED__", "steps": 25, "cfg": 2.5, "sampler_name": "euler", "scheduler": "simple", "denoise": __DENOISE__, "model": ["10", 0], "positive": ["6", 0], "negative": ["6", 1], "latent_image": __LATENT__ } },
+  "3": { "class_type": "KSampler", "inputs": { "seed": "__SEED__", "steps": __STEPS__, "cfg": __CFG__, "sampler_name": "__SAMPLER__", "scheduler": "__SCHEDULER__", "denoise": __DENOISE__, "model": ["10", 0], "positive": ["6", 0], "negative": ["6", 1], "latent_image": __LATENT__ } },
   "5": { "class_type": "EmptyQwenImage21LatentImage", "inputs": { "width": "__WIDTH__", "height": "__HEIGHT__", "batch_size": 1 } },
   "6": { "class_type": "TextEncodeQwenImage21", "inputs": { "clip": ["20", 0], "prompt": "__PROMPT__", "negative_prompt": "__NEGATIVE__", "resolution": 1024 } },
   "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["21", 0] } },

@@ -20,8 +20,8 @@ export const useProject = defineStore('project', {
     models: { ready: false, items: [] },
     health: null,          // 推理服务健康 { llm, comfyui, ffmpeg, endpoints }
     current: null,        // 当前集数对象（全量工件）
-    expanded: new Set(),  // 树展开的项目/文件夹 id
-    view: 'dash',         // dash | settings | lib | prompts
+    view: 'dash',         // dash | settings | lib | prompts | imggen | vidgen
+    expanded: new Set(),  // 树展开的项目/文件夹 id（含侧栏导航开关：workbench / imggen / vidgen）
     ask: null,            // 输入弹窗 {title, cb}
     askValue: '',         // 弹窗输入值
     confirmDel: null,     // 删除确认 {type:'project'|'folder'|'episode', id, name}

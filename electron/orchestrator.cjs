@@ -89,7 +89,15 @@ async function _ensureLlm(label) {
   if (!auto()) return { ok: true, skipped: true };
   if (Date.now() - readyAt.llm < READY_TTL) return { ok: true, cached: true };
 
-  const h = await inference.health();
+  let h = await inference.health();
+  // 视觉实例（--mmproj + 8192 上下文）只服务图片反推；普通文本环节遇到它要先换回文本模式，
+  // 否则长输入会被 8k 上下文截断。这是「反推完接着跑分镜提示词」的必经路径。
+  if (h.llm && launcher.llamaVisionActive()) {
+    logger.info('当前 llama 是视觉模式实例（上下文 8192，仅供读图反推）→ 重启为文本模式');
+    await launcher.stopLlama();
+    invalidate('llm');
+    h = await inference.health();
+  }
   if (h.llm) {
     readyAt.llm = Date.now();
     logger.detail('LLM 服务在线：' + inference.endpoint('llm'));
@@ -110,6 +118,45 @@ async function _ensureLlm(label) {
   if (!r.ok) { logger.error('llama 启动失败：' + r.message); throw new Error(r.message); }
   if (!r.already) invalidate('llm');
   readyAt.llm = Date.now();
+  return { ok: true, message: r.message };
+}
+
+/**
+ * 确保「视觉模式」的 llama-server 就绪（提示词反推专用）。
+ * 与 ensureLlm 的差别：不认 readyAt 缓存（缓存只证明服务在线，不证明带了 mmproj），
+ * 且在发现现有实例无视觉能力时会先停掉、再按 vision 参数重启。
+ */
+function ensureVisionLlm(label) {
+  return singleFlight('llm', () => _ensureVisionLlm(label));
+}
+
+async function _ensureVisionLlm(label) {
+  const tag = label || logger.tag();
+  logger.setTag(tag);
+  if (!auto()) return { ok: true, skipped: true };
+
+  const h = await inference.health();
+  if (h.llm && launcher.llamaVisionActive()) {
+    // 🔴 不写 readyAt.llm：那是**文本模式**的就绪缓存。视觉实例的上下文只有 8192，
+    //    如果让普通环节在 TTL 内命中缓存直接复用，长文本会被截断。宁可让它重新判断。
+    logger.detail('视觉 LLM 服务在线：' + inference.endpoint('llm'));
+    return { ok: true, already: true };
+  }
+
+  logger.info('提示词反推需要读图 → 准备以视觉模式启动 llama-server（多加载 mmproj，约 +0.9GB 显存）');
+  if (h.comfyui) {
+    const u = await launcher.unloadComfyModels();
+    logger[u.ok ? 'info' : 'warn'](u.message);
+    if (u.ok) {
+      const w = await launcher.waitVramBelow(VRAM_FOR_LLM, 30000);
+      logger.info(w.ok ? '显存已回落到 ' + w.vram + ' MiB' : '显存当前 ' + w.vram + ' MiB（偏高，仍尝试启动）');
+    }
+  }
+
+  const r = await launcher.startLlama({ vision: true });
+  if (!r.ok) { logger.error('视觉 llama 启动失败：' + r.message); throw new Error(r.message); }
+  // 清掉文本模式的就绪缓存：下一次普通环节必须重新判断（不能让 8192 上下文被当成通用实例）
+  invalidate('llm');
   return { ok: true, message: r.message };
 }
 
@@ -185,6 +232,6 @@ async function ensure(phaseIndex) {
 }
 
 module.exports = {
-  init, ensure, ensureLlm, ensureComfy, shutdownAll,
+  init, ensure, ensureLlm, ensureVisionLlm, ensureComfy, shutdownAll,
   phaseName, PHASES, auto, setAuto, invalidate, AUTO_KEY
 };

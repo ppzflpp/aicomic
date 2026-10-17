@@ -67,13 +67,18 @@
       <label class="res-lab subs-lab" title="勾选后导出的成片会烧录对白字幕；不勾则不加任何字幕">
         <input type="checkbox" v-model="subsEnabled" :disabled="busy" @change="onSubs" /> 添加字幕
       </label>
+      <!-- 响度归一（方案 D）：勾选 → 拼接前逐镜把音频归到同一目标响度，治「镜间 BGM 忽大忽小」。
+           默认勾选；不勾则各镜保持原始音量（与改造前一致）。按集记住（videos.json 的 opts.loud） -->
+      <label class="res-lab subs-lab" title="勾选后，拼接前会把每个镜头的音量统一到同一目标响度（-16 LUFS），治「镜头之间 BGM 忽大忽小」；不勾则保留各镜原始音量">
+        <input type="checkbox" v-model="normEnabled" :disabled="busy" @change="onNorm" /> 响度归一
+      </label>
       <button class="btn" :class="{ regen: !!exportFile }" :disabled="busy || !exportable" @click="exportFilm">
         <span v-if="busy" class="busy-txt"><i class="spin"></i>导出中…</span>
         <span v-else>导出成片</span>
       </button>
     </Teleport>
     <div class="ops-bar">
-      <span class="hint">拼接全部已选中镜头 → 统一 {{ outRes.replace('x', '×') }} → 按勾选烧录对白字幕 → 导出 MP4；每次导出都各自留档在 项目/成片/（文件名带集名前缀；本块只显示最新一版，历史版本点右侧「打开所在文件夹」看）</span>
+      <span class="hint">拼接全部已选中镜头 → 统一 {{ outRes.replace('x', '×') }} → 按勾选做响度归一 / 烧录对白字幕 → 导出 MP4；每次导出都各自留档在 项目/成片/（文件名带集名前缀；本块只显示最新一版，历史版本点右侧「打开所在文件夹」看）</span>
       <span style="flex:1"></span>
       <button class="btn sec" v-if="films.length" @click="reveal">打开所在文件夹</button>
     </div>
@@ -136,6 +141,15 @@ export default {
         if (!this.videoState.opts) this.videoState.opts = {}
         this.videoState.opts.subs = !!v
       }
+    },
+    /** 响度归一勾选状态：按集记住（opts.loud；缺省 = 勾选）。关掉 = 与改造前一致（各镜原始音量） */
+    normEnabled: {
+      get() { const o = (this.videoState || {}).opts; return o ? o.loud !== false : true },
+      set(v) {
+        if (!this.ep) return
+        if (!this.videoState.opts) this.videoState.opts = {}
+        this.videoState.opts.loud = !!v
+      }
     }
   },
   watch: {
@@ -181,6 +195,8 @@ export default {
     onRes() { this.st.setEpisodeRes('out', this.outRes) },
     /** 切换「添加字幕」：落库到 videos.json 的 opts（StageShots 的 saveVideos 会原样带过这个键） */
     async onSubs() { await this.st.saveArtifact('videoState', this.ep.videoState) },
+    /** 切换「响度归一」：同上，落库到 videos.json 的 opts.loud */
+    async onNorm() { await this.st.saveArtifact('videoState', this.ep.videoState) },
     async loadList() {
       if (!this.ep) return
       const dir = this.ep.filmDir   // <项目>/成片（全项目共用）
@@ -248,6 +264,8 @@ export default {
         const out = await window.studio.exportVideo({
           outDir, outName, videos,
           subtitles: this.subsEnabled, width: rw, height: rh,
+          // 方案 D：逐镜响度归一（勾选框控制；关掉 = 各镜原始音量）
+          normalize: this.normEnabled,
           // 🔴 必须带 scope：导出时主进程会删「本集之外的旧成片」，缺了就会删掉别的集的成片
           scope: this.ep.prefix || this.ep.name
         })

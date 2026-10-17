@@ -303,9 +303,57 @@ function portOf(url, def) {
   try { const u = new URL(url); return u.port || String(def); } catch (_) { return String(def); }
 }
 
-async function startLlama() {
+/** 视觉模式的上下文（见 startLlama 里的实测数据：32k 会被挤到 CPU，慢 16 倍） */
+const VISION_CTX = 8192;
+
+/** 从 llama 参数数组里剔除上下文设置（-c N / --ctx-size N / --ctx-size=N），保留其余不动 */
+function stripCtxArgs(list) {
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    if (a === '-c' || a === '--ctx-size') { i++; continue; }
+    if (/^--ctx-size=/.test(a)) continue;
+    out.push(a);
+  }
+  return out;
+}
+
+/**
+ * 视觉投影器（mmproj）：本地「提示词反推」用它把图片编码进 Qwen-VL 主模型。
+ * 取值顺序：设置项 `llama.mmproj` → 主模型同目录下的 mmproj*.gguf（优先 f16）。
+ * 找不到就返回 ''，由调用方决定是报错还是退回纯文本。
+ */
+function visionMmprojPath() {
+  const custom = db.getSetting('llama.mmproj');
+  if (custom && isFile(custom)) return custom;
+  const dir = models.resolveDir('llm');
+  if (!dir || !isDir(dir)) return '';
+  let names = [];
+  try { names = fs.readdirSync(dir).filter(n => /mmproj.*\.gguf$/i.test(n)); } catch (_) { return ''; }
+  if (!names.length) return '';
+  const pick = names.find(n => /f16|fp16/i.test(n)) || names[0];
+  return path.join(dir, pick);
+}
+
+/** 当前在跑的 llama-server 是否带了视觉投影器（同进程内存标记；重启软件后为未知=false） */
+let _llamaVision = false;
+function llamaVisionActive() { return !!_llamaVision; }
+
+/**
+ * 启动 llama-server。
+ * @param {{ vision?: boolean }} [opts] vision=true 时追加 --mmproj（提示词反推用）。
+ *   默认不带 —— 普通文本环节的启动参数与行为**完全不变**。
+ */
+async function startLlama(opts = {}) {
   const info = llamaInfo();
-  const h = await inference.health();
+  let h = await inference.health();
+  // 反推（vision）需要视觉投影器：若现有实例是普通文本模式起的，先停掉再按视觉模式拉起。
+  // 反向（vision 实例被普通调用撞上）不重启 —— mmproj 对纯文本推理没有副作用。
+  if (h.llm && opts.vision && !_llamaVision) {
+    logger.info('检测到在运行的 llama-server 未加载视觉投影器 → 重启为视觉模式（提示词反推）');
+    await stopLlama();
+    h = await inference.health();
+  }
   if (h.llm) return { ok: true, already: true, message: 'LLM 服务已在运行（' + info.endpoint + '）' };
   if (!info.exeOk) {
     return {
@@ -325,8 +373,34 @@ async function startLlama() {
   }
 
   const port = portOf(info.endpoint, 8080);
+
+  // 参数：用户自定义串 + （仅 vision 模式）视觉投影器 + 小上下文。
+  // 🔴 默认不带 --mmproj、不改上下文 —— 普通文本环节的启动参数与旧行为完全一致。
+  let extra = splitArgs(info.args);
+  const hasMmprojArg = extra.some(a => a === '--mmproj' || a === '-mm' || a.startsWith('--mmproj='));
+  if (opts.vision) {
+    // 视觉实例只服务「图片 → 提示词」这一件小事（图 1024 tok + 提示词 + 输出 ≈ 2k），
+    // 不需要 32768。实测同一张图：-c 32768 → prefill 27 tok/s、整次 42s；-c 8192 → 447 tok/s、3.8s。
+    // 原因是 32k 的 KV cache 把显存放满后 llama 自动把层退回 CPU（16 倍慢），必须压小。
+    extra = stripCtxArgs(extra);
+    if (!hasMmprojArg) {
+      const mmproj = visionMmprojPath();
+      if (!mmproj) {
+        return {
+          ok: false,
+          message: '没找到视觉投影器（mmproj*.gguf），无法进行本地图片反推。'
+            + '请把它放到主模型同目录（' + (info.modelDir || '模型根目录\\text_encoders') + '），'
+            + '或在设置项 llama.mmproj 里指定完整路径。'
+        };
+      }
+      extra.push('--mmproj', mmproj);
+      logger.info('视觉模式启动：--mmproj ' + path.basename(mmproj));
+    }
+    extra.push('-c', String(VISION_CTX));
+  }
+
   // 顺手更新一份 bat（只在用户手动双击排错时用；软件自身走静默启动，不弹窗）
-  writeLlamaBat(info.exe, info.modelPath, port, info.args);
+  writeLlamaBat(info.exe, info.modelPath, port, extra.join(' '));
 
   // 记下发起的阶段标签：健康检查可能等满 60s，期间用户切块会改掉全局标签，
   // 延迟日志若不带 originTag 就会挂到别的阶段名下（2026-10-12 实测：阶段3 起的
@@ -334,10 +408,10 @@ async function startLlama() {
   const originTag = logger.tag();
   const gen = ++_llamaGen;
 
-  const extra = splitArgs(info.args);
   const args = ['-m', info.modelPath, '--host', '127.0.0.1', '--port', String(port)].concat(extra);
   const sp = spawnSilent(info.exe, args, { cwd: path.dirname(info.exe), logName: 'llama-server' });
   if (sp.error || !sp.pid) {
+    _llamaVision = false;
     const m = '无法启动 llama-server：' + (sp.error || '进程创建失败')
       + (sp.logFile ? '（日志：' + sp.logFile + '）' : '');
     logger.error(m, originTag);
@@ -349,8 +423,10 @@ async function startLlama() {
   const w = await waitHealth('llm', 60000, { shouldAbort: () => gen !== _llamaGen });
   const ms = Date.now() - t0;
   const cudaOk = !!(info.cuda && info.cuda.ok);
-  if (w === 'ok') logger.ok('llama-server 已启动（' + info.modelFile + '，' + (ms / 1000).toFixed(1) + 's 就绪）', originTag);
-  else if (w === 'aborted') {
+  if (w === 'ok') {
+    _llamaVision = !!(opts.vision || hasMmprojArg);
+    logger.ok('llama-server 已启动（' + info.modelFile + '，' + (ms / 1000).toFixed(1) + 's 就绪）', originTag);
+  } else if (w === 'aborted') {
     // 进程已被下一块的显存编排回收 → 这次启动不再是当前意图，静默收工，不打警报
     logger.info('llama-server 启动检查已作废（进程已被回收，' + (ms / 1000).toFixed(1) + 's）', originTag);
   } else {
@@ -639,6 +715,7 @@ function llamaGen() { return _llamaGen; }
 /** 停止 llama-server，释放它常驻的约 10.6GB 显存 */
 async function stopLlama() {
   _llamaGen++;   // 先作废在飞的健康检查：这一代启动已被我们主动终止
+  _llamaVision = false;
   if (!(await llamaRunning())) return { ok: true, already: true, message: 'llama-server 未在运行' };
   const r = await runCmd('taskkill', ['/IM', 'llama-server.exe', '/F'], 15000);
   return {
@@ -653,6 +730,7 @@ async function stopLlama() {
  * 界面运行路径一律用上面的异步 stopLlama。
  */
 function stopLlamaSync() {
+  _llamaVision = false;
   try {
     const out = spawnSync('tasklist', ['/FI', 'IMAGENAME eq llama-server.exe', '/NH'], { encoding: 'utf-8', windowsHide: true }).stdout || '';
     if (!out.includes('llama-server')) return { ok: true, already: true, message: 'llama-server 未在运行' };
@@ -738,5 +816,6 @@ module.exports = {
   init, llamaDir, llamaInfo, comfyInfo, startLlama, startComfy, comfyStartElapsedMs, setDir,
   getLlamaArgs, setLlamaArgs, findFile, DEFAULT_LLAMA_ARGS,
   vramUsed, waitVramBelow, stopLlama, stopLlamaSync, llamaRunning, unloadComfyModels, freeVramForComfy,
+  visionMmprojPath, llamaVisionActive,
   waitHealth, llamaGen, spawnSilent, serviceLogPath, serviceLogs, tailFile, splitArgs, runCmd
 };

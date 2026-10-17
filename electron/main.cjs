@@ -1,6 +1,8 @@
 'use strict';
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, protocol, net } = require('electron');
 const path = require('path');
+const fs = require('fs');
+const { pathToFileURL } = require('url');
 
 const db = require('./db.cjs');
 const models = require('./models.cjs');
@@ -13,6 +15,49 @@ const skills = require('./skills.cjs');
 const { registerIpc } = require('./ipc.cjs');
 
 const isDev = !!process.env.VITE_DEV;
+
+/* ------------------------------------------------------------------
+   本地图片直连协议（2026-10-17）：studio-media://media/?p=<绝对路径>
+   为什么要有它：渲染层读本地图原来一律走 file:readBase64 —— 主进程 fs.readFileSync
+   同步读整文件 → 2MB 图变 3MB+ base64 字符串 → 跨进程拷贝 → 渲染层拼 data URL →
+   再整图解码。点开预览要等这一整串走完（弹窗一直「加载中」），缩略图还把这些
+   字符串常年堆在 JS 堆里。改成协议 URL 后由 Chromium 自己流式读、自己缓存、自己
+   异步解码，主进程只负责把路径映射成文件响应，渲染层零数据搬运。
+   ⚠️ 必须在 app ready 之前 registerSchemesAsPrivileged（下面这行是模块级调用）。
+   ------------------------------------------------------------------ */
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'studio-media',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
+  }
+]);
+const MIME_BY_EXT = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp'
+};
+/** 把 studio-media:// 请求映射到磁盘文件（只读，不做任何写入） */
+function handleMediaProtocol() {
+  protocol.handle('studio-media', async (req) => {
+    try {
+      const abs = new URL(req.url).searchParams.get('p') || '';
+      if (!abs || !fs.existsSync(abs)) return new Response('', { status: 404 });
+      const res = await net.fetch(pathToFileURL(abs).toString());
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      // net.fetch 对部分扩展名不给 MIME，<img> 会当二进制处理 → 显式补一个
+      if (!ct || ct.startsWith('text/plain') || ct === 'application/octet-stream') {
+        const mime = MIME_BY_EXT[path.extname(abs).toLowerCase()] || 'application/octet-stream';
+        return new Response(await res.arrayBuffer(), {
+          status: 200,
+          headers: { 'content-type': mime, 'cache-control': 'no-cache' }
+        });
+      }
+      return res;
+    } catch (e) {
+      logger.warn('图片协议读取失败：' + ((e && e.message) || e));
+      return new Response('', { status: 500 });
+    }
+  });
+}
 
 // 无独显/远程/虚拟机环境兜底：禁用 GPU 合成，走软件渲染
 if (process.env.COMIC_STUDIO_NO_GPU) {
@@ -111,6 +156,7 @@ app.whenReady().then(() => {
   skills.init(app.getPath('userData'));   // 内置 skill 播种（含 H3 官方提示词 skill）
   inference.ensureDefaultTemplates();
   registerIpc(db, () => win);
+  handleMediaProtocol();   // studio-media:// → 磁盘文件（图片预览/缩略图走这条路，不再 base64）
 
   createWindow();
   logger.info('飞鱼AI视频导演台 已启动（工作区 ' + db.getSetting('workspace') + '）');

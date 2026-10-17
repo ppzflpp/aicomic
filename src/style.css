@@ -101,11 +101,77 @@ body{
   width:264px; background:var(--side); color:#98a2b3;
   display:flex; flex-direction:column; flex-shrink:0; position:relative;
 }
+/* 收起态：窄条只留展开按钮（2026-10-17） */
+.sidebar.collapsed{width:44px;}
+.sidebar.collapsed::after{background:none;}
+.side-toggle{
+  position:absolute; top:8px; right:-1px; z-index:5;
+  width:20px; height:24px; padding:0; border:1px solid #1a2130; border-right:none;
+  border-radius:6px 0 0 6px; background:#141a26; color:#9db4d6;
+  cursor:pointer; font-size:12px; line-height:1; transition:color .12s, background .12s;
+}
+.side-toggle:hover{color:#fff; background:#1c2433;}
+/* ---- 一级菜单（工作台 / 图片生成 / 视频生成）：分组标题行，压得住下面的子项 ---- */
+.tree-row.nav-row{
+  position:relative; padding:11px 10px; gap:9px;
+  font-size:14.5px; font-weight:600; color:#c7d3e4; letter-spacing:.08em;
+}
+.tree-row.nav-row::before{   /* 左侧亮条：hover/展开时点亮，压阵用 */
+  content:""; position:absolute; left:0; top:18%; bottom:18%; width:2.5px; border-radius:2px;
+  background:transparent; transition:background .15s;
+}
+.tree-row.nav-row .caret{width:15px; font-size:12px; color:#5f6f8a; transition:color .15s;}
+.tree-row.nav-row:hover{
+  color:#fff; background:linear-gradient(90deg,rgba(59,130,246,.16),rgba(59,130,246,.02) 70%);
+}
+.tree-row.nav-row:hover::before{background:var(--blue-hi);}
+.tree-row.nav-row:hover .caret{color:#9cc3f7;}
+/* ---- 二级菜单（子功能入口）：圆点引导 + 选中态与集数行同款 ---- */
+.tree-row.nav-leaf{
+  position:relative; margin:0 0 2px; padding:7px 10px 7px 38px;
+  font-size:12.5px; color:#96a1b2;
+}
+.tree-row.nav-leaf::before{
+  content:""; position:absolute; left:26px; top:50%; transform:translateY(-50%);
+  width:4px; height:4px; border-radius:50%; background:#46536b; transition:background .15s;
+}
+.tree-row.nav-leaf:hover{color:#cfd7e3;}
+.tree-row.nav-leaf:hover::before{background:#8ba3c4;}
+.tree-row.nav-leaf.active{
+  background:var(--grad-deep); color:#fff; font-weight:500;
+  box-shadow:0 4px 14px rgba(37,99,235,.4), inset 0 0 0 1px rgba(96,165,250,.35);
+}
+.tree-row.nav-leaf.active::before{background:#b8d4f8;}
+/* ---- 后台任务提示点：「图片生成」切走后仍在出图（2026-10-17） ---- */
+.nav-dot{
+  display:inline-block; width:6px; height:6px; margin-left:6px; border-radius:50%;
+  background:#f0a13a; vertical-align:middle;
+  box-shadow:0 0 0 0 rgba(240,161,58,.6);
+  animation:navdot 1.4s ease-out infinite;
+}
+@keyframes navdot{
+  0%{box-shadow:0 0 0 0 rgba(240,161,58,.55);}
+  70%{box-shadow:0 0 0 5px rgba(240,161,58,0);}
+  100%{box-shadow:0 0 0 0 rgba(240,161,58,0);}
+}
+/* ---- 新建项目：轻量小按钮（虚线描边，弱化存在感） ---- */
+.side-actions .btn-new{
+  margin:5px 0 4px; padding:6px 10px; font-size:12px; font-weight:400;
+  border-style:dashed; border-color:rgba(96,165,250,.25);
+  background:rgba(59,130,246,.05); color:#8fb3e2;
+}
+.side-actions .btn-new:hover{border-style:solid;}
+/* 图片生成/视频生成 组与上方工作台项目树之间的分隔 */
+.side-actions.side-sub{padding-top:10px; border-top:1px solid #1a2130;}
+/* 收起态：底部设置按钮只留 ⚙ */
+.sidebar.collapsed .side-foot{padding:10px 6px;}
+.sidebar.collapsed .side-foot .btn-new{padding:8px 0; text-align:center; font-size:13px;}
 .sidebar::after{
   content:""; position:absolute; top:0; right:0; bottom:0; width:1px;
   background:linear-gradient(180deg,rgba(59,130,246,.25),rgba(59,130,246,.02) 40%,transparent);
 }
 .side-actions{padding:14px 12px 4px;}
+.side-actions .btn-new{margin:2px 0 6px;}
 .side-scroll{flex:1; overflow-y:auto; padding:0 12px 12px;}
 .tree-node{user-select:none;}
 .tree-row{
@@ -147,6 +213,7 @@ body{
   box-shadow:0 4px 16px rgba(37,99,235,.35);
 }
 .side-foot{
+  margin-top:auto;   /* 工作台收起时上面没有 flex:1 元素，靠它保证设置永远贴底 */
   padding:14px 16px; border-top:1px solid #1a2130; font-size:11px;
   color:var(--sub-2); background:rgba(0,0,0,.28);
 }
@@ -168,6 +235,9 @@ body{
 .pathbar .crumb{color:var(--sub);}
 .pathbar .crumb b{color:var(--text); font-weight:600;}
 .content{flex:1; overflow-y:auto; padding:20px 24px 32px;}
+/* 图片生成独立页：满高两栏，画廊内部滚动（不用 content 的整页滚动） */
+.content.ig-content{display:flex; padding:14px; overflow:hidden;}
+.content.ig-content .ig-wrap{flex:1; min-height:0;}
 .grid{display:grid; grid-template-columns:1fr; gap:16px; align-items:start;}
 /* 块1：剧本创作 = 一卡两栏（左 原文输入 | 右 AI 优化稿，中间细分隔线；窄窗口自动叠放） */
 .script-grid{display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:stretch;}
@@ -512,6 +582,33 @@ input[type=search]:focus{
 .scene-check .sc-ico{flex-shrink:0; font-size:13px;}
 .scene-check .sc-txt{flex:1; min-width:0;}
 .scene-check .sc-txt b{color:#fda4af; font-weight:600;}
+/* 集级设定卡（rev28 · 2026-10-16）：<集名>.setting.json 的编辑入口 ——
+   光线基调 / 轴线铁律 / 声音基底 / 禁止项，生成 H3 提示词时由程序逐镜注入 continuity 段头。
+   折叠态只是一行（不占分镜列表的视野），展开才是四行输入。
+   🔴 类名统一 .setcard / .st- 前缀：CSS 无作用域，.scene-check 已占了 .sc- 家族。 */
+.setcard{
+  margin-bottom:8px; border:1px solid rgba(129,140,248,.26); border-radius:7px;
+  background:rgba(99,102,241,.07);
+}
+.setcard .st-head{display:flex; align-items:center; gap:8px; padding:6px 9px; cursor:pointer; font-size:11.5px; color:#c7d2fe;}
+.setcard .st-head b{font-size:12px; color:#dbeafe; flex-shrink:0;}
+.setcard .st-ico{flex-shrink:0; font-size:13px;}
+.setcard .st-tag{
+  flex-shrink:0; font-size:10.5px; color:#8f9bb3;
+  background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08); border-radius:5px; padding:1px 6px;
+}
+.setcard .st-tag.on{color:#a5b4fc; background:rgba(99,102,241,.18); border-color:rgba(129,140,248,.36);}
+.setcard .st-sum{
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#8b95a9; font-size:11px;
+}
+.setcard .st-fold{flex-shrink:0; font-size:10.5px; color:#7c8798;}
+.setcard .st-body{display:flex; flex-direction:column; gap:7px; padding:2px 9px 9px;}
+.setcard .st-f{display:flex; flex-direction:column; gap:4px; min-width:0;}
+.setcard .st-f label{font-size:10.5px; color:#7c8798; letter-spacing:.04em;}
+.setcard .st-f textarea{resize:vertical;}
+.setcard .st-act{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+.setcard .st-hint{flex:1; min-width:0; font-size:10.5px; line-height:1.6; color:#8b95a9;}
+.setcard .st-hint b{color:#fcd34d; font-weight:600;}
 /* 节奏体检卡（2026-10-13）：双轨配时 —— 显示「画面单元数 / 目标时长 / 建议镜数 / 秒每单元」。
    只在体裁声明了 limits.pacing（剧集）时渲染；色调走中性青 —— 它不是告警，是度量。
    🔴 类名带 .pace-card / .pc- 前缀：CSS 无作用域，避免与别块同名字符串撞车。 */

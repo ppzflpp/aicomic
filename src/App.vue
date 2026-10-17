@@ -55,12 +55,20 @@
   </header>
 
   <div class="app-body">
-  <!-- 左侧菜单栏 -->
-  <aside class="sidebar">
+  <!-- 左侧菜单栏：可整体收成窄条（只留展开按钮）；「工作台」= 项目树的开关（默认收起） -->
+  <aside class="sidebar" :class="{collapsed: sideCollapsed}">
+    <button class="side-toggle" :title="sideCollapsed ? '展开菜单栏' : '收起菜单栏'"
+            @click="sideCollapsed = !sideCollapsed">{{ sideCollapsed ? '⟩' : '⟨' }}</button>
+    <template v-if="!sideCollapsed">
     <div class="side-actions">
-      <button class="btn-new" @click="newProject">＋ 新建项目</button>
+      <div class="tree-row nav-row" @click="st.toggleExpand('workbench')">
+        <span class="caret">{{ st.expanded.has('workbench') ? '▼' : '▶' }}</span>
+        <span>工作台</span>
+      </div>
+      <button v-if="st.expanded.has('workbench')" class="btn-new" @click="newProject">＋ 新建项目</button>
     </div>
-    <div class="side-scroll">
+    <!-- 工作台展开区：只有 新建项目按钮 + 项目列表（图片生成/视频生成与工作台平级，在下方） -->
+    <div class="side-scroll" v-if="st.expanded.has('workbench')">
       <div class="side-h">项目</div>
       <template v-for="p in st.tree" :key="p.id">
         <div class="tree-node">
@@ -214,13 +222,30 @@
           </template>
         </div>
       </template>
-      <div class="side-sep"></div>
-      <div class="side-h">位置</div>
-      <div class="tree-row" style="cursor:default">📁 {{ workspaceName }}</div>
     </div>
-    <!-- 模型与工作区信息统一放在最底状态栏，这里只留入口 -->
+    <!-- 图片生成 / 视频生成：与工作台同级的独立菜单组 -->
+    <div class="side-actions side-sub">
+      <div class="tree-row nav-row" @click="st.toggleExpand('imggen')">
+        <span class="caret">{{ st.expanded.has('imggen') ? '▼' : '▶' }}</span>
+        <span>图片生成</span>
+        <i v-if="igState.busy" class="nav-dot" title="正在生成中…"></i>
+      </div>
+      <div v-if="st.expanded.has('imggen')" class="tree-row nav-leaf"
+           :class="{active: st.view==='imggen'}" @click="st.view='imggen'">图片生成
+        <i v-if="igState.busy" class="nav-dot" :title="'正在生成：' + (igState.text || '出图中')"></i>
+      </div>
+      <div class="tree-row nav-row" @click="st.toggleExpand('vidgen')">
+        <span class="caret">{{ st.expanded.has('vidgen') ? '▼' : '▶' }}</span>
+        <span>视频生成</span>
+      </div>
+      <div v-if="st.expanded.has('vidgen')" class="tree-row nav-leaf"
+           :class="{active: st.view==='vidgen'}" @click="st.view='vidgen'">视频生成</div>
+    </div>
+    </template>
+    <!-- 模型与工作区信息统一放在最底状态栏，这里只留入口；设置按钮永远显示在最下面（收起态只留 ⚙） -->
     <div class="side-foot">
-      <button class="btn-new" :class="{on: st.view==='settings'}" style="margin:0" @click="st.view='settings'">⚙ 设置</button>
+      <button class="btn-new" :class="{on: st.view==='settings'}" style="margin:0"
+              @click="st.view='settings'">{{ sideCollapsed ? '⚙' : '⚙ 设置' }}</button>
     </div>
   </aside>
 
@@ -228,13 +253,20 @@
   <div class="main">
     <div class="pathbar">
       <button class="btn ghost" style="padding:3px 10px; font-size:12px"
-              v-if="st.view==='settings' || st.view==='prompts'" @click="st.view='dash'">← 返回</button>
+              v-if="st.view==='settings' || st.view==='prompts' || st.view==='imggen' || st.view==='vidgen'"
+              @click="st.view='dash'">← 返回</button>
       <span class="crumb">工作区 <b>{{ workspaceName }}</b></span>
       <template v-if="st.view==='dash' && st.current">
         <span class="crumb">/ <b>{{ st.current.name }}</b></span>
       </template>
       <template v-if="st.view==='settings'">
         <span class="crumb">/ <b>设置</b></span>
+      </template>
+      <template v-else-if="st.view==='imggen'">
+        <span class="crumb">/ <b>图片生成</b></span>
+      </template>
+      <template v-else-if="st.view==='vidgen'">
+        <span class="crumb">/ <b>视频生成</b></span>
       </template>
       <template v-if="st.view==='lib'">
         <span class="crumb">/ <b>项目角色场景库</b></span>
@@ -251,6 +283,13 @@
     <!-- 设置视图 -->
     <div class="content" v-if="st.view==='settings'">
       <settings-panel />
+    </div>
+
+    <!-- 图片生成独立功能页（Qwen-Image 2.1：文生图 / 原生编辑 / 图生图）见本文件末尾常驻块 -->
+
+    <!-- 视频生成（功能页建设中，先占位） -->
+    <div class="content" v-else-if="st.view==='vidgen'">
+      <div class="placeholder" style="margin-top:60px">视频生成 · 功能页建设中</div>
     </div>
 
     <!-- 项目角色场景库视图（不属于任何一集：左树点库条目进来，改的是全项目共享的库）。
@@ -272,8 +311,9 @@
       <prompts-view />
     </div>
 
-    <!-- 仪表盘视图 -->
-    <div class="content" v-else>
+    <!-- 仪表盘视图（🔴 必须是 v-else-if 不是 v-else：图片生成页已从这条链里拿出来做常驻挂载，
+         留个 v-else 兜底会让 imggen 同时命中仪表盘 → 上面半屏是工作台、下面半屏才是图片生成） -->
+    <div class="content" v-else-if="st.view==='dash'">
       <div v-if="!st.current" class="placeholder" style="margin-top:60px">
         左侧选择或新建一个集数开始
       </div>
@@ -376,6 +416,14 @@
           </div>
         </section>
       </div>
+    </div>
+
+    <!-- 图片生成独立功能页（Qwen-Image 2.1：文生图 / 原生编辑 / 图生图）
+         🔴 常驻挂载（v-show），不参与上面那条 v-if/v-else-if 链：切菜单只 display:none 不销毁，
+            参数 / 参考图 / 本次结果 / 正在跑的任务都留在组件实例里 → 切走再回来还在生成、结果还在
+            （2026-10-17 用户反馈「切到其他菜单任务就自动停止」的根因 = 原来走 v-else-if，组件被销毁）。 -->
+    <div class="content ig-content" v-show="st.view==='imggen'">
+      <image-gen ref="imagegen" />
     </div>
 
     <!-- 运行日志（底部可折叠抽屉） -->
@@ -618,15 +666,20 @@ import StageChars from './StageChars.vue'
 import StageLibrary from './StageLibrary.vue'
 import StageExport from './StageExport.vue'
 import PromptsView from './PromptsView.vue'
+import ImageGen from './ImageGen.vue'
 import LogPanel from './LogPanel.vue'
 import { clearStylePack } from './prompts.js'
+import { igState } from './imggenState.js'
+import { mediaUrl } from './mediaUrl.js'
 import { moduleStale, ackModule, MODULE_STALE_KINDS } from './stale.js'
 
 export default {
-  components: { FolderNode, SettingsPanel, StageAdapt, StageShots, StageChars, StageLibrary, StageExport, PromptsView, LogPanel },
+  components: { FolderNode, SettingsPanel, StageAdapt, StageShots, StageChars, StageLibrary, StageExport, PromptsView, ImageGen, LogPanel },
   data() {
     return {
       chapter: '',
+      igState,               // 图片生成任务跨页可见状态（侧栏小圆点用，见 imggenState.js）
+      sideCollapsed: false,   // 左侧菜单栏收起态（窄条只留展开按钮）
       projModal: null,   // 项目配置弹窗 {mode:'create'|'edit', id, name, img, vid, out}
       preview: null,     // 媒体预览弹窗 {kind:'image'|'video', file, sub, src, path}
       toastMsg: null,
@@ -763,6 +816,13 @@ export default {
     if (this._offResize) window.removeEventListener('resize', this._offResize)
   },
   watch: {
+    // 图片生成页是常驻挂载（v-show）的，没有 mounted 时机可依赖 → 每次切回来手动刷一次历史，
+    // 免得「上次在别处生成的图（或外部拷进来的图）不出现」
+    'st.view'(v) {
+      if (v !== 'imggen') return
+      const c = this.$refs.imagegen
+      if (c && c.onShow) c.onShow()
+    },
     'st.error'(msg) {
       if (msg) { this.toast('出错：' + msg); this.st.error = null }
     },
@@ -1128,10 +1188,14 @@ export default {
         p.sub = bits.filter(Boolean).join(' · ')
       }
       try {
+        // 图片：直接给协议 URL，不再把整张图读成 base64 再拼 data URL（2026-10-17）
+        // —— 那条链要「同步读 + 33% 膨胀 + 跨进程拷贝 + 主线程拼串 + 整图解码」全走一遍，点开明显一顿。
+        // 现在由 Chromium 自己流式读、缓存、异步解码，弹窗不再出现「加载中」空档。
+        if (kind === 'image') { p.src = mediaUrl(it.path); return }
         const b64 = await window.studio.readFileBase64(it.path)
         // 期间可能已关掉/点了别的文件：比对当前弹窗指向，过期结果直接丢弃
         if (!this.preview || this.preview.file !== it.file || this.preview.path !== it.path) return
-        this.preview.src = b64 ? (kind === 'image' ? 'data:image/png;base64,' + b64 : 'data:video/mp4;base64,' + b64) : ''
+        this.preview.src = b64 ? 'data:video/mp4;base64,' + b64 : ''
       } catch (_) { /* 读取失败就停在上面的「加载中」 */ }
     },
     /** 图片加载完 → 补上真实分辨率与体积 */

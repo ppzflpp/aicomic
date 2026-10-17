@@ -162,6 +162,8 @@ contextBridge.exposeInMainWorld('studio', {
   videoLastFrame: (payload) => ipcRenderer.invoke('video:lastFrame', payload),
   fileStat: (abs) => ipcRenderer.invoke('file:stat', abs),
   listMedia: (dir, prefix) => ipcRenderer.invoke('media:list', dir, prefix),
+  imgHistory: (ws) => ipcRenderer.invoke('imggen:history', ws),
+  imgReverse: (file, opts) => ipcRenderer.invoke('imggen:reverse', file, opts),
   readFileBase64: (abs) => ipcRenderer.invoke('file:readBase64', abs),
   deleteFile: (abs) => ipcRenderer.invoke('file:delete', abs),
   pickFiles: (kind) => ipcRenderer.invoke('file:pick', kind),

@@ -31,7 +31,11 @@ const STAGES = [
   { id: 'outfits', label: '装扮清单' },
   { id: 'library', label: '素材库提示词' },
   { id: 'prompt', label: '分镜提示词' },
-  { id: 'split', label: '拆分镜头重写' }
+  { id: 'split', label: '拆分镜头重写' },
+  // 图片提示词反推（2026-10-17）：本地 Qwen3.5 + mmproj 读图 → 产出画面描述。
+  // 独立环节的原因：本地那套默认不带视觉投影器，且反推与「分镜提示词」的口吻/长度完全不同，
+  // 不能跟着 prompt 环节的来源走（用户可能把 prompt 切到云端，反推仍要按自己的设置来）。
+  { id: 'reverse', label: '提示词反推' }
 ];
 const STAGE_IDS = STAGES.map(s => s.id);
 
@@ -60,6 +64,7 @@ function normalizeStage(v) {
   const s = String(v || '').trim();
   if (!s) return 'shots';
   if (STAGE_IDS.includes(s)) return s;
+  if (/反推/.test(s)) return 'reverse';   // 必须在「提示词」规则之前：反推的默认值不同
   if (/阶段2|改编/.test(s)) return 'adapt';
   if (/阶段3|分镜脚本/.test(s)) return 'shots';
   if (/装扮/.test(s)) return 'outfits';

@@ -10,7 +10,8 @@ const styles = require('./styles.cjs');
  *
  *  <工作区>/projects/<项目>/
  *    剧本/    <集名>.chapter.txt / <集名>.adapted.md / <集名>.shots.json / <集名>.chars.json
- *             / <集名>.scenes.json / <集名>.prompts.json / <集名>.videos.json / <集名>.revs.json
+ *             / <集名>.scenes.json / <集名>.setting.json / <集名>.prompts.json
+ *             / <集名>.videos.json / <集名>.revs.json
  *    分镜/    <集名>_shot_1.mp4（同集多版本追加 _02；换集靠文件名前缀区分）
  *    成片/    <集名>_<时间戳>.mp4
  *    assets/  角色图 / 场景图（项目级资产：跨集共用同一张脸）
@@ -716,6 +717,10 @@ function getEpisodeFull(db, workspace, episodeId) {
     shots: readJson(dir, pre + '.shots.json', []),
     chars: readJson(dir, pre + '.chars.json', []),
     scenes: readJson(dir, pre + '.scenes.json', []),
+    // 集级设定（rev28 · 2026-10-16）：分镜同一次调用里多产出的那个 setting 对象
+    // （光线基调 / 轴线铁律 / 声音基底 / 禁止项）。老集没有这个文件 → 回到 null，
+    // 渲染层与 promptlib 都按「无 setting」降级（等价于改造前的行为）。
+    setting: readJson(dir, pre + '.setting.json', null),
     prompts: readJson(dir, pre + '.prompts.json', []),
     videoState: readJson(dir, pre + '.videos.json', {}),
     videoFiles,
@@ -740,6 +745,9 @@ function saveArtifact(db, workspace, episodeId, kind, data) {
   if (kind === 'shots') write('shots.json');
   else if (kind === 'chars') write('chars.json');
   else if (kind === 'scenes') write('scenes.json');
+  // 集级设定（rev28）：与 shots/chars/scenes 同批产出、同目录落盘；不在 SCRIPT_KINDS 里
+  // 外露（它是给程序注入用的数据，用户在分镜页的「集级设定」卡里看与改）
+  else if (kind === 'setting') write('setting.json');
   else if (kind === 'prompts') write('prompts.json');
   else if (kind === 'videoState') write('videos.json');
   else if (kind === 'revs') write('revs.json');

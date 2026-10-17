@@ -66,6 +66,46 @@
 
     <!-- 脏标记（改编稿改过 → 分镜需重新生成）统一显示在本模块标题后面，见 App.vue 的 stage-head -->
 
+    <!-- 集级设定（rev28 · 2026-10-16）：分镜**同一次调用**里多产出的那个对象 ——
+         「镜头之间必须一致、但又不该逐镜重复写」的那部分内容（光线基调 / 轴线铁律 / 声音基底 / 禁止项）。
+         为什么要有这块而不是让模型每镜自己抄（rev27 的教训：光有纪律没用，同一件事每镜各写一遍必然换说法）：
+         写一次、由程序**逐镜复制**进 H3 提示词的 continuity 段头，才不会漂移。
+         这里可编辑 —— 改完点「保存」落 <集名>.setting.json，下一次生成提示词生效。
+         ⚠️ 类名统一 st- 前缀：CSS 无作用域，避免与别块的 .sc- / .f 撞车。 -->
+    <div class="setcard">
+      <div class="st-head" @click="setOpen = !setOpen">
+        <span class="st-ico">🎛</span>
+        <b>集级设定</b>
+        <span v-if="setInfo.on" class="st-tag on">已设 {{ setInfo.n }}/4</span>
+        <span v-else class="st-tag">未设 —— 光线 / 轴线 / 声音只靠每镜自己的 continuity</span>
+        <span class="st-sum" v-if="setInfo.on && setInfo.text">{{ setInfo.text }}</span>
+        <span style="flex:1"></span>
+        <span class="st-fold">{{ setOpen ? '收起' : '展开' }}</span>
+      </div>
+      <div v-if="setOpen" class="st-body">
+        <div class="st-f">
+          <label>光线基调</label>
+          <input v-model="setDraft.lightTone" placeholder="全集统一的冷暖倾向 / 光照硬度 / 明暗对比，例：全集冷调、硬光、高对比" />
+        </div>
+        <div class="st-f">
+          <label>轴线铁律</label>
+          <input v-model="setDraft.axisRule" placeholder="例：遵循 180° 轴线；同一场对话双方左右位置全片不互换" />
+        </div>
+        <div class="st-f">
+          <label>声音基底</label>
+          <input v-model="setDraft.soundBase" placeholder="例：持续雨声底噪；BGM 为低沉弦乐、全片不中断；对白出现时 BGM 自动避让" />
+        </div>
+        <div class="st-f">
+          <label>禁止项</label>
+          <textarea v-model="setDraft.bans" rows="3" placeholder="一行一条。例：&#10;禁止光源方向改变&#10;禁止 BGM 中断或重启&#10;禁止越轴"></textarea>
+        </div>
+        <div class="st-act">
+          <span class="st-hint">保存后只改这一份工件：<b>已经生成</b>的 H3 提示词是文本快照，要生效需重新生成提示词。</span>
+          <button class="btn sm" :disabled="busy" @click="saveSetting()">保存集级设定</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 列表视图：每行 = 该镜头的分镜编辑 | H3 提示词（含分辨率+生成视频） | 视频预览。
          🔴 无锁定：所有分区随时可编辑；上游变化由 ⚠ 脏标记提示。 -->
     <div class="shot-list">
@@ -477,7 +517,7 @@ import { useProject as useProjectStore } from './stores/project.js'
 import { usePipeline, fmtMs } from './stores/pipeline.js'
 import { stepLog, secs, dbgPrompt } from './ulog.js'
 import { composeSystem, composeUser, normalizeProfile, currentStyleLimits } from './prompts.js'
-import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, mergeShotPair, mergeAllShots, fitDurs, fitShotCount, pacingPlan, shotCheck, storyUnits, sceneKey, sceneAlign, sceneCardIssues, sceneDeclIssues, charAlign, stripTailEnNote, profileBrief, splitShot, splitAll, splitTag, auditModelArchive } from './promptlib.js'
+import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, mergeShotPair, mergeAllShots, fitDurs, fitShotCount, pacingPlan, shotCheck, storyUnits, sceneKey, sceneAlign, sceneCardIssues, sceneDeclIssues, charAlign, stripTailEnNote, profileBrief, splitShot, splitAll, splitTag, auditModelArchive, normSetting, settingBlock, audioBaseBlock, anchorBrief, pickProfileField } from './promptlib.js'
 import { parseRes, resLabel, optsWith, clampDur, seg, joinPath } from './resutil.js'
 import { baseOf, variantOf, groupProfiles } from './variant.js'
 import { touchRevs, sigStale, staleReason, refOrderSig, SIG_V } from './stale.js'
@@ -551,7 +591,14 @@ export default {
       // 🔴 素材文件指纹（2026-10-16）：{ 绝对路径: "大小:修改时间" }，主进程现算（见 electron/filesig.cjs）。
       //    脏标记靠它发现「参考图被换掉了」—— 没有它，用户手工换图（覆盖同名文件）时
       //    提示词/视频明明过期了却一个字都不提示。见 stale.js 的「素材签名 v2」。
-      asig: {}, asigReady: false
+      asig: {}, asigReady: false,
+      // 🔴 集级设定（rev28 · 2026-10-16）的可编辑草稿：{ lightTone, axisRule, soundBase, bans }。
+      //    真源是 <集名>.setting.json（ep.setting）；这里只放**界面编辑态**，改完点「保存」才落库。
+      //    四项全空 = 本集没有集级设定（老集读回 null → 草稿也是空的，行为等价改造前）。
+      //    `bans` 在草稿里是**多行字符串**（textarea 好编辑），落库前由 normSetting 收成数组。
+      setDraft: { lightTone: '', axisRule: '', soundBase: '', bans: '' },
+      // 集级设定卡是否展开（默认收起，不占分镜列表的视野）
+      setOpen: false
     }
   },
   computed: {
@@ -673,7 +720,21 @@ export default {
      *  🔴 必须在 computed 里、模板**不带括号**取值。若写成 methods 而模板写 `{{ totalDur }}`，
      *     Vue 会把方法 bind 到实例上，渲染出来是 `function () { [native code] }` —— 2026-10-13 实机踩到，已纠正。
      */
-    totalDur() { return this.shots.reduce((a, s) => a + (Number((s || {}).dur) || 0), 0) }
+    totalDur() { return this.shots.reduce((a, s) => a + (Number((s || {}).dur) || 0), 0) },
+    /**
+     * 🔴 集级设定（rev28 · 2026-10-16）：真源是 `<集名>.setting.json`（ep.setting），
+     *   由「生成分镜」同一次调用产出，生成 H3 提示词时**逐镜注入** continuity 段头。
+     *   老集 / 未生成过 → null → promptlib.settingBlock 返回空串，行为与改造前逐字一致。
+     *  🔴 必须在 computed 里、模板不带括号取值（同 totalDur 的坑）。
+     */
+    epSetting() { const ep = this.st.current; return (ep && ep.setting) || null },
+    /** 集级设定的四项是否齐备（卡片收起时显示一行状态用） */
+    setInfo() {
+      const s = normSetting(this.epSetting)
+      if (!s) return { on: false, n: 0, text: '' }
+      const n = (s.lightTone ? 1 : 0) + (s.axisRule ? 1 : 0) + (s.soundBase ? 1 : 0) + (s.bans.length ? 1 : 0)
+      return { on: true, n, text: [s.lightTone, s.axisRule, s.soundBase].filter(Boolean).join(' ｜ ') }
+    }
   },
   watch: {
     'st.current'(ep) {
@@ -745,6 +806,8 @@ export default {
       this.initShots(ep)
       this.initPrompts(ep)
       this.initVideos(ep)
+      // 集级设定草稿（rev28）：换集必须重灌，否则会把上一集的设定写进这一集
+      this.setDraftFrom(ep)
       this.targetSec = this.projTargetSec     // 单集目标时长（项目级，双轨配时的输入）
       this.loadLimits()
     },
@@ -819,7 +882,9 @@ export default {
       try {
         const system = await composeSystem({
           specs: ['shots.md', 'profile.md', 'chars.md', 'scenes.md'],
-          mustHave: ['"shots"', '"characters"', '"scenes"'],
+          // mustHave：契约守卫（防有人把 JSON 字段名改掉 → 程序解析失败）。
+          // `"setting"` 是 rev28 新增的第四个产出对象，与前三者同档守卫。
+          mustHave: ['"shots"', '"characters"', '"scenes"', '"setting"'],
           task: 'shots'
         })
         // 「整部作品的综合信息」：除本集剧本稿外，带上项目里已存在的角色/场景名（跨集共享，要求沿用）。
@@ -849,6 +914,11 @@ export default {
         if (!shots || !shots.length) throw new Error('LLM 未返回镜头数组')
         const chars = pickArr(parsed, ['characters', 'chars', '角色档案', '角色'], used) || []
         const scenes = pickArr(parsed, ['scenes', '场景档案', '场景'], used) || []
+        // 🔴 集级设定（rev28 · 2026-10-16）：同一次调用里多产出的那个对象
+        //    （光线基调 / 轴线铁律 / 声音基底 / 禁止项）。宽松解析（键名与类型都容错），
+        //    四项全空 → null（落盘 null = 「本集没有集级设定」，注入层自动降级，行为等价改造前）。
+        //    ⚠️ 不走 pickArr：它按 used 去重，而这里用的是**整个对象**（normSetting 自己会看 `setting` 键）。
+        const setting = normSetting(parsed)
         // 🔴 解析后形状校验（2026-10-08）：JSON 语法合法 ≠ 结构没坏。素材里的半角引号会让值提前
         //    闭合、后半段变成数组里的裸字符串碎片 —— 那种「合法但残废」的输出在旧代码里会被
         //    normArchive 的宽容分支照单全收。这里按命名契约拦一次，宁可不落盘。
@@ -951,6 +1021,12 @@ export default {
         await this.st.saveArtifact('shots', this.shots)
         await this.st.saveArtifact('chars', chars2)
         await this.st.saveArtifact('scenes', scenes2)
+        // 🔴 集级设定（rev28）：与 shots/chars/scenes **同批落盘**（它就是这次调用的第四个产出）。
+        //    没给（老模型 / 模型漏写）→ 存 null，把上一版遗留的 setting 一并清掉（本次结果是唯一事实来源）。
+        await this.st.saveArtifact('setting', setting)
+        this.setDraftFrom(this.st.current)
+        if (!setting) L.warn('本次分镜没有产出「集级设定」（光线基调 / 轴线铁律 / 声音基底 / 禁止项）——' +
+          '本集将退回「只用镜头自己的 continuity」的老行为。可重生成一次，或在下方的「集级设定」卡里手填')
         // 🔴 提示词与视频槽位跟着一起重建（2026-10-07）：老逻辑只按**数量**补齐/裁掉，
         //    重新生成后镜头数恰好相同（很常见）时，旧提示词/旧视频会原样挂在**内容完全不同**的
         //    新镜头上 —— 那不是「残留」，是错配。分镜既然是从零来的，槽位也归零。
@@ -1184,19 +1260,74 @@ export default {
      *    即使这一镜挂了它的参考图，档案也不下发。
      *    `chars` 为空（LLM 没写 / 老数据）→ 不过滤，保持老行为（宁可多发，不可漏发）。
      */
-    charProfilesFor(s) {
+    charProfilesFor(s, anchor) {
       const names = this.shotCharNames(s)
-      if (!names.size) return groupProfiles(this.chars)
-      return groupProfiles((this.chars || []).filter(c => names.has(baseOf(c.name))))
+      const list = names.size ? (this.chars || []).filter(c => names.has(baseOf(c.name))) : (this.chars || [])
+      // 🔴 参考模式发**锚点摘要**（rev28 · 决策 4 · 2026-10-16）：参考模式下 `<Subject N>` 的外观
+      //    已由参考图定义，再发一份含完整外貌的 `prompt` 全文等于**双描述** —— 图里因生成误差
+      //    没出现的纹样、文字还写着，模型会照文字加回去，还会与「不要变成什么」的边界句打架。
+      //    所以只发最稳定的区分维度（见 promptlib.anchorBrief）。基础模式没有任何图，
+      //    `prompt` 是唯一外观来源 → 仍发全文（不传 anchor）。
+      return groupProfiles(list, anchor ? anchorBrief : undefined)
+    },
+    /**
+     * 本镜命中的**场景卡列表**（宽松命中：先逐字主体名，再走 sceneKey 归一化）。
+     * 🔴 命中口径必须是**唯一一处**（rev28 收敛）：下发给模型的场景档案块、注入 continuity 的
+     *    「本场主光」、以及 `{{audioBase}}` 的本场环境音，三者拿到的必须是**同一张卡** ——
+     *    三处各写一套命中逻辑，迟早会出现「档案发的是 A 卡、主光取的是 B 卡」这种错配。
+     * 一个都没命中返回 null（调用方据此回落「全量下发」，见 sceneProfilesFor）。
+     */
+    sceneCardsFor(s) {
+      const all = this.scenes || []
+      const sc = String((s && s.scene) || '').trim()
+      if (!sc) return null
+      let pick = all.filter(c => baseOf(c.name) === sc)
+      if (!pick.length) { const k = sceneKey(sc); pick = k ? all.filter(c => sceneKey(baseOf(c.name)) === k) : [] }
+      return pick.length ? pick : null
+    },
+    /** 本镜的场景卡（取命中列表的第一张；没命中返回 null） */
+    sceneCardFor(s) {
+      const pick = this.sceneCardsFor(s)
+      return (pick && pick[0]) || null
     },
     /** 本镜的**场景档案块** —— 只发本镜 `scene` 那一条（宽松命中；一个都没命中则不过滤，宁可多发） */
     sceneProfilesFor(s) {
-      const all = this.scenes || []
-      const sc = String((s && s.scene) || '').trim()
-      if (!sc) return groupProfiles(all)
-      let pick = all.filter(c => baseOf(c.name) === sc)
-      if (!pick.length) { const k = sceneKey(sc); pick = k ? all.filter(c => sceneKey(baseOf(c.name)) === k) : [] }
-      return groupProfiles(pick.length ? pick : all)
+      return groupProfiles(this.sceneCardsFor(s) || (this.scenes || []))
+    },
+    /** 本场主光（场景档案「主光」行）：逐镜拼进 continuity 段头的**场级**常量（rev28，每场戏一条） */
+    mainLightOf(s) {
+      const c = this.sceneCardFor(s)
+      return pickProfileField(c && c.profile, '主光')
+    },
+    /** 本场环境音（场景档案「环境音」行）：逐镜拼进 `{{audioBase}}`（rev28） */
+    sceneAmbientOf(s) {
+      const c = this.sceneCardFor(s)
+      return pickProfileField(c && c.profile, '环境音')
+    },
+    /* ---- 集级设定（rev28）：草稿同步与落库 ---- */
+    /** 把 ep.setting 灌进编辑草稿（换集 / 生成完分镜后调；清空 = 老集没有这条工件） */
+    setDraftFrom(ep) {
+      const s = normSetting(ep && ep.setting)
+      this.setDraft = {
+        lightTone: s ? s.lightTone : '',
+        axisRule: s ? s.axisRule : '',
+        soundBase: s ? s.soundBase : '',
+        bans: s ? s.bans.join('\n') : ''
+      }
+    },
+    /**
+     * 保存集级设定。四项全空 → 存 null（该集回到「无集级设定」的行为，等价改造前）。
+     * 🔴 只改这一份工件，不动分镜：已生成的 H3 提示词是**文本快照**，改设定不会自动重算 ——
+     *   要让新设定生效得重新生成提示词（界面上的文案已如实说明）。
+     */
+    async saveSetting() {
+      const norm = normSetting(this.setDraft)
+      try {
+        await this.st.saveArtifact('setting', norm)
+        this.$root.toast(norm
+          ? '集级设定已保存（生成 H3 提示词时逐镜注入；已生成的提示词要重新生成才会带上）'
+          : '集级设定已清空：本集回到「用镜头自己的 continuity」的老行为')
+      } catch (_) { /* 错误已由 store 的 fail 提示 */ }
     },
     async savePrompts() {
       if (!this.canSave()) return
@@ -1746,6 +1877,12 @@ export default {
         // 服装/随身物只靠这一块钉住，见 promptlib.contWarnings）
         const cont = String(s.continuity || '').trim()
         const chg = String(s.change || '').trim()
+        // 🔴 集级 + 场级常量的**逐镜注入**（rev28 · 2026-10-16）：集级四项（光线基调 / 轴线铁律 /
+        //    声音基底 / 禁止项）来自 `setting`，场级「主光」来自本镜场景档案的同名字段。
+        //    为什么由程序拼而不是让模型每镜自己抄：见 shots.md rev28 的说明 ——
+        //    同一件事每镜各写一遍，模型必然换说法（「主光自右侧窗照入」/「右侧窗光为主」），等于没定。
+        //    拼在 continuity 段头（不是新通道），空则返回空串 → 与改造前逐字一致。
+        const setHead = settingBlock(this.epSetting, { mainLight: this.mainLightOf(s) })
         // 资产清单：参考模式按注入顺序编号（模型据此写 <Subject N> 定义）；首/尾帧另给一组对齐句标签。
         // 🔴 2026-10-10（方案 A）：**参考模式下首尾帧同样会注入工作流**（inference.injectMedia 里
         //    hasRef 分支之后仍跑 guide 段，用 AddGuide 把首帧钉在 0 秒、尾帧钉在结尾），所以提示词里
@@ -1766,14 +1903,18 @@ export default {
           refAssets = inv.join('\n')
         }
         const user = await composeUser(specFile, {
-          characters: this.charProfilesFor(s) || '(none)',
+          characters: this.charProfilesFor(s, mode === 'Ref2VA') || '(none)',
           scenes: this.sceneProfilesFor(s) || '(none)',
           n: i + 1,
           dur: s.dur,
           shot: JSON.stringify(s, null, 2),
           mode,
           dialogue: dlgText,
-          continuity: (cont || chg) ? (cont || '(none)') : '',
+          continuity: setHead + ((cont || chg) ? (cont || '(none)') : ''),
+          // 🔴 集级声音基底 + 本场环境音（rev28）：h3.md / h3ref.md 的「## 素材格式」新增的槽。
+          //    它治的是「每镜各写 very quiet + 首尾渐隐、拼起来四次重新起头」（《真人剧4》实测
+          //    镜 1 只有 −34.6 LUFS）。两块都没有时给 `（无）`，不让模板留空。
+          audioBase: audioBaseBlock(this.epSetting, this.sceneAmbientOf(s)),
           change: chg,
           refAssets,
           frames
