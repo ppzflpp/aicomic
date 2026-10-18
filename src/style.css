@@ -1071,7 +1071,6 @@ input[type=search]:focus{
 /* ---- 模型管家（2026-09-28）：把模型从别处拷进模型根目录的正确子目录 ---- */
 .mm-head{display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;}
 .mm-head h3{margin-bottom:0;}
-.mm-root{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:52%;}
 .mm-row{
   display:flex; align-items:center; gap:10px; padding:7px 0;
   border-top:1px solid var(--line-soft);
@@ -1109,6 +1108,53 @@ input[type=search]:focus{
 .mm-bar .bar{height:100%; background:var(--grad); border-radius:4px; transition:width .28s ease; box-shadow:0 0 12px rgba(56,189,248,.5);}
 .mm-prog-foot{display:flex; align-items:center; gap:10px;}
 .mm-result{display:flex; align-items:center; gap:10px; margin-top:12px; font-size:12.5px; flex-wrap:wrap;}
+/* ---- 模型管家 · 极简三行（2026-10-18 二次改版） ----
+   教训：第一版把 ①②③ 说明 + 红警告 + 4 条候选 + 5 行体检明细全铺在界面上，用户「根本看不懂」。
+   现在：常态只有「模型目录 / ComfyUI / 配套节点」三行；说明收进「?」，明细收进「详情」。 */
+.mm-q{width:18px; height:18px; flex-shrink:0; border-radius:50%; border:1px solid var(--line);
+  background:rgba(255,255,255,.03); color:var(--sub-2); font-size:11px; line-height:1; cursor:pointer; padding:0;}
+.mm-q:hover, .mm-q.on{border-color:rgba(96,165,250,.5); color:#bcd2ee; background:rgba(96,165,250,.10);}
+.mm-help{margin:0 0 10px; padding:8px 10px; border-radius:var(--r-md); background:rgba(255,255,255,.02);
+  border:1px solid var(--line-soft); font-size:11.5px; line-height:1.7; color:var(--sub-2);}
+.mm-help b{color:#b9c9de; font-weight:600;}
+.mm-help-i{padding-left:10px;}
+.mm-help-w{margin-top:2px; color:#d9a05b;}
+.mm-line{display:flex; align-items:center; gap:8px; min-width:0; padding:4px 0; font-size:12px; min-height:26px; flex-wrap:wrap;}
+.mm-line-k{width:68px; flex-shrink:0; color:#8b97a8; font-size:11.5px;}
+.mm-line-v{font-size:11.5px; color:#c3cddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:62%;}
+.mm-line-hint{color:#d9a05b;}
+.mm-dim{color:var(--sub-2); font-size:11.5px;}
+.mm-bad{color:#e07a79;}
+.mm-ver{font-size:11.5px;}
+.mm-ver.ok{color:#7fc08a;}
+.mm-ver.bad{color:#e07a79;}
+.mm-ver.warn{color:#d9a05b;}
+.mm-ver.dim{color:var(--sub-2);}
+/* 配套节点徽标（2026-10-18）：只有运行中的 ComfyUI 真加载了节点才显示绿色 */
+.mm-node{display:inline-flex; align-items:center; gap:6px; font-size:10.5px; line-height:1.4;
+  padding:1px 8px; border-radius:9px; border:1px solid transparent; flex-shrink:0;}
+.mm-node.ok{color:#7fc08a; background:rgba(127,192,138,.10); border-color:rgba(127,192,138,.30);}
+.mm-node.dim{color:var(--sub-2); background:rgba(255,255,255,.03); border-color:var(--line-soft);}
+.mm-node.warn{color:#d9a05b; background:rgba(217,160,91,.08); border-color:rgba(217,160,91,.30);}
+.mm-node.bad{color:#e07a79; background:rgba(226,75,74,.08); border-color:rgba(226,75,74,.30);}
+.mm-node-retry{border:none; background:none; padding:0; font-size:10.5px; color:inherit; cursor:pointer;
+  text-decoration:underline; text-underline-offset:2px;}
+.mm-node-retry:hover{color:#fff;}
+/* 失败行带动作按钮（重试），所以用 flex 而不是纯文字 */
+.mm-msg-act{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+.mm-msg-act .btn{padding:1px 9px; font-size:11px;}
+/* 目录不对：只这一行红字（缩进对齐到值那一列），不摆解释 */
+.mm-msg{padding:2px 0 4px 76px; font-size:11.5px; line-height:1.6;}
+.mm-msg.bad{color:#e07a79;}
+/* 详情折叠 */
+.mm-fold{margin-left:auto; border:none; background:none; color:var(--sub-2); font-size:11px; cursor:pointer; padding:2px 0;}
+.mm-fold:hover{color:#bcd2ee;}
+.mm-fold-dot{display:inline-block; width:5px; height:5px; margin-left:5px; border-radius:50%; background:var(--danger); vertical-align:middle;}
+.mm-detail{margin:2px 0 10px; padding:8px 10px; border-radius:var(--r-md); background:rgba(255,255,255,.02); border:1px solid var(--line-soft);}
+.mm-d-row{display:flex; align-items:center; gap:8px; padding:3px 0; font-size:11.5px; flex-wrap:wrap;}
+.mm-d-k{width:96px; flex-shrink:0; color:#8b97a8;}
+.mm-d-v{color:#c3cddd; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:58%;}
+.mm-d-tag{font-size:10.5px; padding:1px 7px; border-radius:9px; background:rgba(255,255,255,.06); color:#9fb4d0; flex-shrink:0;}
 /* 模型样例文件名：过长截断，悬停看全文 */
 .sample{font-size:11px; color:#586172; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex-shrink:0;}
 /* 从属行（如 llama 启动参数）：向内缩进，弱化层级 */

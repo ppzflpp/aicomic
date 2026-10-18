@@ -21,6 +21,7 @@ const os = require('os');
 const { spawn, spawnSync, execFile } = require('child_process');
 const models = require('./models.cjs');
 const inference = require('./inference.cjs');
+const comfySetup = require('./comfySetup.cjs');
 const tools = require('./tools.cjs');
 const logger = require('./logger.cjs');
 
@@ -544,13 +545,39 @@ function startComfy() {
 async function _startComfy() {
   const info = comfyInfo();
   const h = await inference.health();
-  if (h.comfyui) return { ok: true, already: true, message: 'ComfyUI 已在运行（' + info.endpoint + '）' };
+  if (h.comfyui) {
+    // 已经在跑：节点包装了也不会被加载（ComfyUI 只在启动时扫 custom_nodes），
+    // 但**该装的还是要装** —— 否则用户下次重启 ComfyUI 依然是缺的，永远好不了。
+    // 这里只写盘 + 提示重启，不擅自杀掉正在跑的实例（可能正在出图）。
+    let warn = '';
+    try {
+      const r = comfySetup.ensureCustomNodes(info.installDir);
+      if (r.changed) {
+        warn = '。⚠ 已自动安装/更新配套节点，重启一次 ComfyUI 后生效（当前实例不会热加载）';
+        logger.info(r.message);
+      } else if (!r.ok) {
+        warn = '。⚠ ' + r.message;
+      }
+    } catch (_) { /* 体检失败不影响返回 */ }
+    return { ok: true, already: true, message: 'ComfyUI 已在运行（' + info.endpoint + '）' + warn };
+  }
   _comfyStartT0 = Date.now();
   if (!info.launcherOk) {
     return {
       ok: false,
       message: '没找到 ComfyUI 启动程序。请指定 ComfyUI 安装目录：Desktop 版选「Comfy Desktop.exe 所在目录」，便携版选含 run_nvidia_gpu.bat 的目录。'
     };
+  }
+
+  // 启动前把配套自定义节点装好（EmptyQwenImage21LatentImage 就在这一包里；
+  // 没有它，Qwen-Image 2.1 只能出正方形图，或者直接报「节点不存在」）。
+  let nodeTip = '';
+  try {
+    const r = comfySetup.ensureCustomNodes(info.installDir);
+    if (r.changed) { nodeTip = '；已安装配套节点'; logger.info(r.message); }
+    else if (!r.ok) logger.warn('配套节点未安装：' + r.message);
+  } catch (e) {
+    logger.warn('配套节点安装失败：' + ((e && e.message) || e));
   }
 
   let sp = null;
@@ -585,6 +612,7 @@ async function _startComfy() {
       ? 'ComfyUI 已启动：' + info.endpoint + '（' + info.label + '，' + (ms / 1000).toFixed(1) + 's）'
       : '已拉起 ' + info.label + '（静默启动，无窗口）。ComfyUI Desktop 首次启动较慢（要等界面出来才会起 8188 服务），'
         + '稍后点「重新检测」查看状态。')
+      + nodeTip
       + '　日志：' + (sp.logFile || '—')
   };
 }

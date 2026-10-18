@@ -16,6 +16,7 @@ const videoTiers = require('./videoTiers.cjs');
 const profiles = require('./profiles.cjs');
 const projects = require('./projects.cjs');
 const llmProvider = require('./llmProvider.cjs');
+const comfyProbe = require('./comfyProbe.cjs');
 const logger = require('./logger.cjs');
 
 let db = null;
@@ -1315,6 +1316,25 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
       '，工作流 ' + models.activeImageTemplate());
   }
   logger.info('提交 ComfyUI 工作流：' + (templateKey === 'video' ? ((vidP && vidP.label) || '视频') : '角色图') + ' → ' + baseName);
+
+  // 提交前对账（2026-10-18）：ComfyUI 校验工作流的依据是它自己的 /object_info ——
+  // 「节点在不在」和「模型文件它扫没扫到」都先用它当场返回的清单核一遍，
+  // 免得提交出去一个注定失败的任务，用户只拿到一段英文 JSON。
+  // 🔴 探测失败（老内核没有单节点路由 / 请求超时 / 桩服务）一律**放行**：
+  //    「查不到」不等于「有问题」，绝不能把网络问题变成阻止生成的墙。
+  let chk = null;
+  try {
+    chk = await comfyProbe.verifyWorkflow(endpoint('comfyui'), wf, { modelsRoot: models.modelsRoot() || '' });
+  } catch (e) {
+    logger.detail('提交前对账跳过（探测器异常）：' + ((e && e.message) || e));
+  }
+  if (chk && chk.skipped) logger.detail('提交前对账跳过：' + (chk.reason || 'ComfyUI 无响应'));
+  if (chk && chk.ok && !chk.skipped) logger.detail('提交前对账通过（节点与模型文件均在 ComfyUI 可见）');
+  if (chk && !chk.ok) {
+    logger.warn('提交前对账未通过：' + (chk.problems || []).length + ' 项 → ' + baseName);
+    throw new Error(chk.message);
+  }
+
   let submit;
   try {
     submit = await fetchJson(endpoint('comfyui') + '/prompt', {
@@ -1327,7 +1347,12 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
       + '（之后软件会自己接管，不需要在本软件里配 ComfyUI 路径）。');
   }
   if (!submit.ok || !submit.json || !submit.json.prompt_id) {
-    throw new Error('ComfyUI 拒绝工作流：' + JSON.stringify(submit.json).slice(0, 400));
+    // 校验失败 → 翻成中文（节点缺失 / 值不在候选列表 / 必填缺失）。
+    // 认不出来时保留原文，别把有用信息吞掉。
+    const zh = comfyProbe.explainPromptError(submit.json);
+    throw new Error(zh
+      ? ('ComfyUI 拒绝工作流：\n' + zh)
+      : ('ComfyUI 拒绝工作流：' + JSON.stringify(submit.json).slice(0, 400)));
   }
   const pid = submit.json.prompt_id;
   logger.detail('prompt_id=' + pid + (realParams.seed !== undefined ? '，seed=' + realParams.seed : ''));

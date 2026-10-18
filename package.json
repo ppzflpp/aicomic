@@ -1,6 +1,6 @@
 {
   "name": "ai-comic-studio",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "AI 视频导演台 — 本地把小说、故事变成漫剧 / 短剧视频",
   "main": "electron/main.cjs",
   "private": true,
@@ -52,6 +52,15 @@
           "!**/*.pdb",
           "!crispasr",
           "!crispasr/**"
+        ]
+      },
+      {
+        "from": "electron/comfy_nodes",
+        "to": "comfy_nodes",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
         ]
       }
     ],

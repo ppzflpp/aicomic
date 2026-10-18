@@ -102,35 +102,47 @@
         </button>
       </div>
       <div class="ig-gallery">
+       <!-- 固定大小网格容器：格子 196×196（见 .ig-flow 的 --ig-cell），图片按原比例缩放到格内 -->
+       <div class="ig-flow">
         <div v-if="busy" class="ig-tile genning">
           <i class="spin big"></i>
           <span class="g-txt">{{ busyText || '生成中…' }}</span>
           <button class="ig-stop" @click="stop">停止</button>
         </div>
-        <div v-for="(r,i) in results" :key="r.path" class="ig-tile">
-          <img :src="imgSrc(r.path)" title="点击预览" @click="preview(r)" @load="onTileLoad($event, r.path)">
-          <span class="ig-badge" :class="{edit: r.mode==='图片编辑'}">{{ r.mode }}</span>
-          <span class="ig-tag">{{ tileMeta(r) }}</span>
-          <div class="ig-ov">
-            <div class="ig-ovb">
-              <button class="ig-m" title="把这张图加入参考图，继续迭代" @click="useAsRef(r)">用作参考</button>
-              <button class="ig-m" @click="reveal(r.path)">文件夹</button>
+        <!-- 本次产物：最新一张排最前（results 是按下标追加上来的，展示时按 at 倒序） -->
+        <div v-for="r in resultsDesc" :key="r.path" class="ig-tile">
+          <div class="ig-ph">
+            <img :src="imgSrc(r.path)" title="点击预览" @click="preview(r)" @load="onTileLoad($event, r.path)">
+            <!-- 右上角：分辨率 · 生成时长（保持改造前原样） -->
+            <span class="ig-tag">{{ tileMeta(r) }}</span>
+            <!-- 图下方悬浮：生成时长胶囊（沿用旧 mode 徽标的样式） -->
+            <span v-if="timeText(r)" class="ig-dur" title="本张图片的生成时间">{{ timeText(r) }}</span>
+            <div class="ig-ov">
+              <div class="ig-ovb">
+                <button class="ig-m" title="把这张图加入参考图，继续迭代" @click="useAsRef(r)">用作参考</button>
+                <button class="ig-m" @click="reveal(r.path)">文件夹</button>
+              </div>
             </div>
           </div>
         </div>
+        <!-- 历史产物：imggen:history 已按 mtime 倒序返回，直接铺 -->
         <div v-for="h in history" :key="h.path" class="ig-tile dim">
-          <img :src="imgSrc(h.path)" title="点击预览" @click="preview(h)" @load="onTileLoad($event, h.path)">
-          <span class="ig-tag">{{ tileMeta(h) }}</span>
-          <div class="ig-ov">
-            <div class="ig-ovb">
-              <button class="ig-m" title="把这张图加入参考图，继续迭代" @click="useAsRef(h)">用作参考</button>
-              <button class="ig-m" @click="reveal(h.path)">文件夹</button>
+          <div class="ig-ph">
+            <img :src="imgSrc(h.path)" title="点击预览" @click="preview(h)" @load="onTileLoad($event, h.path)">
+            <span class="ig-tag">{{ tileMeta(h) }}</span>
+            <span v-if="timeText(h)" class="ig-dur" title="本张图片的生成时间">{{ timeText(h) }}</span>
+            <div class="ig-ov">
+              <div class="ig-ovb">
+                <button class="ig-m" title="把这张图加入参考图，继续迭代" @click="useAsRef(h)">用作参考</button>
+                <button class="ig-m" @click="reveal(h.path)">文件夹</button>
+              </div>
             </div>
           </div>
         </div>
         <div v-if="!results.length && !history.length" class="ig-tile empty">
           <span>还没有生成记录<br>左侧配置好参数点「生成」</span>
         </div>
+       </div>
       </div>
     </div>
 
@@ -179,7 +191,7 @@ export default {
       busyText: '',
       errMsg: '',
       infoMsg: '',
-      results: [],         // 本次会话产物 [{path, mode, ms}]
+      results: [],         // 本次会话产物 [{path, mode, ms, at}]
       history: [],         // <workspace>/图片生成/ 历史产物
       resOpts: null,       // [{value,label}] —— 独立页不依赖当前项目，直接从主进程取
       dims: {}             // path → 'W×H'（img onload 记录，悬浮 meta 显示）
@@ -219,6 +231,12 @@ export default {
     canGen() {
       if (this.effMode === 't2i') return this.prompt.trim().length > 0
       return this.prompt.trim().length > 0 && this.refs.length > 0
+    },
+    /* 结果排序（2026-10-17 用户要求）：按实际生成时间倒序 —— 最新一张排最前。
+     * results 是循环里 push 进来的（越晚越靠后），所以展示层必须自己排，
+     * 不能直接拿数组顺序铺；at 缺失的老数据回落到 0（排最后）。 */
+    resultsDesc() {
+      return this.results.slice().sort((a, b) => (b.at || 0) - (a.at || 0))
     }
   },
   /* 任务状态镜像到 igState：页面本身用 v-show 常驻（切菜单不销毁，生成不中断），
@@ -299,12 +317,22 @@ export default {
         this.$forceUpdate()
       }
     },
-    /** 悬浮 meta：分辨率 + 生成时长（历史图没有时长就只显示分辨率） */
+    /** 右上角 meta：分辨率 + 生成时长（历史图没有时长就只显示分辨率）—— 保持改造前原样 */
     tileMeta(r) {
       const bits = []
       if (this.dims[r.path]) bits.push(this.dims[r.path])
       if (r.ms) bits.push((r.ms / 1000).toFixed(1) + 's')
       return bits.join(' · ')
+    },
+    /** 图下方悬浮胶囊：本张图的生成时间 yyyy-mm-dd hh:mm:ss（旧 mode 徽标样式）
+     *  本次产物取 at（生成完成时刻），历史产物取 mtimeMs（文件落盘时刻）；都没有就不显示 */
+    timeText(r) {
+      const ms = Number(r && (r.at || r.mtimeMs)) || 0
+      if (!ms) return ''
+      const d = new Date(ms)
+      const p = n => String(n).padStart(2, '0')
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+        ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
     },
     reveal(p) { window.studio.revealFile(p) },
     openOutDir() { window.studio.openPath(this.st.workspace + '\\图片生成\\' + this.today) },
@@ -354,7 +382,7 @@ export default {
             const abs = /^[a-zA-Z]:[\\/]/.test(f) ? f : dir + '\\' + f
             // 时长优先用主进程给的 elapsedMs（与落盘 sidecar 同源），保证本次与历史的数字一致
             const ms = (r && r.elapsedMs) || (Date.now() - t0)
-            this.results.push({ path: abs, mode: mv.t, ms })
+            this.results.push({ path: abs, mode: mv.t, ms, at: Date.now() })
           }
           if (this.lockSeed && !params.seed && r && r.seed) params.seed = r.seed
           okCnt++
@@ -454,23 +482,39 @@ export default {
 .ig-tool svg{width:13px;height:13px;fill:currentColor;opacity:.85;}
 .ig-tool:hover{color:#fff;background:rgba(96,165,250,.16);border-color:rgba(96,165,250,.55);box-shadow:0 2px 10px rgba(37,99,235,.25);}
 .ig-tool:active{transform:translateY(1px);}
-.ig-gallery{flex:1;overflow-y:auto;padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;align-content:start;}
-.ig-tile{position:relative;border-radius:12px;overflow:hidden;border:1px solid var(--line-soft);aspect-ratio:1;background:#0e1320;}
+/* 结果画廊：固定大小网格（2026-10-18 用户要求）
+   —— 每个格子同宽同高、行列对齐，不再是高度参差的瀑布流；
+      图片用 object-fit:contain 缩放到格子内，完整显示不裁切（竖图/横图各自留边）。 */
+.ig-gallery{flex:1;overflow-y:auto;padding:14px;}
+.ig-flow{
+  --ig-cell:196px;                                   /* 单个格子边长：只想改大小就改这一个值 */
+  display:grid;
+  grid-template-columns:repeat(auto-fill, var(--ig-cell));
+  grid-auto-rows:var(--ig-cell);
+  gap:12px;
+  justify-content:start;
+  align-content:start;
+}
+.ig-tile{position:relative;border-radius:12px;overflow:hidden;border:1px solid var(--line-soft);background:#0e1320;height:100%;}
 .ig-tile.dim{opacity:.82;}
-.ig-tile img{width:100%;height:100%;object-fit:cover;display:block;}
-.ig-badge{position:absolute;top:8px;left:8px;font-size:10.5px;padding:2px 9px;border-radius:12px;background:rgba(0,0,0,.55);color:#cfe1f8;border:1px solid rgba(255,255,255,.14);}
-.ig-badge.edit{border-color:rgba(96,165,250,.5);color:#a8c6ef;}
-/* 分辨率 + 生成时长：常驻右上角小 tag（不用 hover） */
+/* 图片层：叠层（悬停操作钮/底部时长胶囊）都锚在图片本体上 */
+.ig-ph{position:relative;display:flex;align-items:center;justify-content:center;width:100%;height:100%;}
+/* 缩略图铺满整个格子（cover）：所有格子里的图看起来一样大 —— 这是「固定大小网格」的关键。
+   原图比例不同，铺满时会裁掉一点边缘；点开预览看到的仍是完整原图。 */
+.ig-tile img{width:100%;height:100%;object-fit:cover;object-position:center;display:block;}
+/* 右上角：分辨率 · 生成时长（保持改造前原样，常驻不随 hover） */
 .ig-tag{position:absolute;top:8px;right:8px;font-size:10.5px;padding:2px 8px;border-radius:12px;background:rgba(0,0,0,.55);color:#cfe1f8;border:1px solid rgba(255,255,255,.14);letter-spacing:.02em;white-space:nowrap;}
+/* 图下方悬浮：生成耗时胶囊（沿用旧 mode 徽标 `.ig-badge` 的样式：半透明黑底 + 细边） */
+.ig-dur{position:absolute;left:8px;bottom:8px;font-size:10.5px;padding:2px 9px;border-radius:12px;background:rgba(0,0,0,.55);color:#cfe1f8;border:1px solid rgba(255,255,255,.14);letter-spacing:.02em;white-space:nowrap;font-variant-numeric:tabular-nums;pointer-events:none;}
 .ig-ov{position:absolute;left:0;right:0;bottom:0;padding:18px 8px 8px;background:linear-gradient(transparent,rgba(0,0,0,.85));display:flex;flex-direction:column;gap:6px;opacity:0;transition:.15s;}
 .ig-tile:hover .ig-ov{opacity:1;}
 .ig-tile img{cursor:zoom-in;}
 .ig-ovb{display:flex;flex-wrap:wrap;justify-content:center;gap:5px;}
-/* 生成中占位卡（结果区第一个格子） */
-.ig-tile.genning{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;border-style:dashed;border-color:rgba(96,165,250,.4);}
+/* 生成中占位卡（结果区第一个格子）：与其它格子同尺寸，靠网格行高撑起来 */
+.ig-tile.genning{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;border-style:dashed;border-color:rgba(96,165,250,.4);height:100%;}
 .ig-tile.genning .spin.big{width:22px;height:22px;border-width:3px;}
 .ig-tile.genning .g-txt{font-size:12px;color:var(--sub);text-align:center;line-height:1.6;}
 .ig-m{font-size:11px;color:#dbe4f0;background:rgba(255,255,255,.12);border:none;border-radius:6px;padding:2px 8px;cursor:pointer;}
 .ig-m:hover{background:rgba(59,130,246,.5);color:#fff;}
-.ig-tile.empty{display:flex;align-items:center;justify-content:center;color:var(--sub-2);font-size:12px;text-align:center;line-height:1.8;border-style:dashed;}
+.ig-tile.empty{display:flex;align-items:center;justify-content:center;color:var(--sub-2);font-size:12px;text-align:center;line-height:1.8;border-style:dashed;min-height:240px;grid-column:1 / -1;}
 </style>

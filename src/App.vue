@@ -447,7 +447,7 @@
       <span class="sb-log" :class="{on: logs.open}" @click="logs.toggle()">
         运行日志<b v-if="logs.unreadErr" class="sb-badge">{{ logs.unreadErr > 99 ? '99+' : logs.unreadErr }}</b>
       </span>
-      <span>v0.3.0-m5</span>
+      <span>v0.3.1-m5</span>
     </div>
   </div>
   </div>

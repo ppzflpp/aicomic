@@ -92,10 +92,18 @@ contextBridge.exposeInMainWorld('studio', {
   chooseModelDir: (key) => ipcRenderer.invoke('models:chooseDir', key),
   setModelsRoot: (dir) => ipcRenderer.invoke('models:setRoot', dir),
   detectModelsRoot: () => ipcRenderer.invoke('models:detectRoot'),
+  resolveComfyModels: (dir) => ipcRenderer.invoke('comfy:resolveModels', dir),
+  validateModelsRoot: (dir) => ipcRenderer.invoke('models:validateRoot', dir),
   pickModels: () => ipcRenderer.invoke('models:pick'),
 
   // 模型管家：把模型从别处拷贝进模型根目录的正确子目录（自动分类 + 进度条）
   modelSlots: () => ipcRenderer.invoke('models:slots'),
+  // ComfyUI 体检：软件扫到的目录 vs ComfyUI 真正读的目录（只读）+ 一键对齐（写前备份）
+  comfyDiagnose: () => ipcRenderer.invoke('comfy:diagnose'),
+  comfyAlignModels: () => ipcRenderer.invoke('comfy:alignModels'),
+  comfyInstallNodes: () => ipcRenderer.invoke('comfy:installNodes'),
+  /** 选好 ComfyUI 目录后置备节点（幂等）：返回 { ok, changed, message, reason:{code,text} } */
+  provisionComfyNodes: () => ipcRenderer.invoke('comfy:provisionNodes'),
   modelImportPick: () => ipcRenderer.invoke('models:importPick'),
   modelImportScan: (paths) => ipcRenderer.invoke('models:importScan', paths),
   modelImportRun: (payload) => ipcRenderer.invoke('models:importRun', payload),
@@ -168,5 +176,6 @@ contextBridge.exposeInMainWorld('studio', {
   deleteFile: (abs) => ipcRenderer.invoke('file:delete', abs),
   pickFiles: (kind) => ipcRenderer.invoke('file:pick', kind),
   openPath: (p) => ipcRenderer.invoke('file:openPath', p),
-  revealFile: (abs) => ipcRenderer.invoke('file:reveal', abs)
+  revealFile: (abs) => ipcRenderer.invoke('file:reveal', abs),
+  openUrl: (u) => ipcRenderer.invoke('app:openUrl', u)
 });

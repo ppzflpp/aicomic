@@ -7,6 +7,8 @@ const assetStore = require('./assetStore.cjs');
 const models = require('./models.cjs');
 const profiles = require('./profiles.cjs');
 const modelImport = require('./modelImport.cjs');
+const comfyProbe = require('./comfyProbe.cjs');
+const comfySetup = require('./comfySetup.cjs');
 const inference = require('./inference.cjs');
 const launcher = require('./launcher.cjs');
 const logger = require('./logger.cjs');
@@ -358,6 +360,17 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     const r = models.redetect();
     return { detected: r.modelsRoot || '', state: r };
   });
+  /* 模型根校验 + 从 ComfyUI 安装目录推导 models（2026-10-18 三次改版）
+     🔴 用户只做一个动作：选「ComfyUI 安装目录」。models 由主进程推，不要求用户懂目录结构。
+        推不出来 / 推错 → 直接报错，不做「大概能跑」的宽容判断。 */
+  ipcMain.handle('comfy:resolveModels', (e, dir) => {
+    try { return comfyProbe.resolveModelsFromInstall(dir); }
+    catch (err) { return { ok: false, modelsRoot: '', source: '', reason: '推导失败：' + ((err && err.message) || err) }; }
+  });
+  ipcMain.handle('models:validateRoot', (e, dir) => {
+    try { return comfyProbe.validateModelsRoot(dir, launcher.comfyInfo()); }
+    catch (err) { return { level: 'warn', dir: dir || '', message: '校验失败：' + ((err && err.message) || err), hints: [] }; }
+  });
   ipcMain.handle('models:pick', () => models.workflowModels());
   ipcMain.handle('models:chooseDir', async (e, key) => {
     const win = getWin ? getWin() : null;
@@ -424,6 +437,49 @@ function registerIpc(db, getWin, fallbackWorkspace) {
   /* ---- 模型管家：从别处把模型「拷贝」进模型根目录的正确子目录 ----
      用户只做「选文件」一个动作，分类与落点由主进程决定；拷贝全程推进度给渲染层。 */
   ipcMain.handle('models:slots', () => modelImport.slotsState(models));
+
+  /* ---- ComfyUI 侧体检（只读）：软件扫到的模型目录 vs ComfyUI 真正读取的目录 ----
+     2026-10-18：这两份清单从来没有对过账，于是出现
+       `unet_name: 'xxx.safetensors' not in []`
+     这种「软件看得见、ComfyUI 看不见」的报错。这里把两边并排摆出来。 */
+  ipcMain.handle('comfy:diagnose', async () => {
+    comfyProbe.forgetCache();     // 用户点「重新检测」时必须是当场的新数据
+    try {
+      return await comfyProbe.diagnose(launcher.comfyInfo(), { modelsRoot: models.modelsRoot() || '' });
+    } catch (e) {
+      return { error: (e && e.message) || String(e) };
+    }
+  });
+  // 一键对齐：把 ComfyUI 的 base_path 写成软件正在用的模型根（写前备份，只动这一行）
+  ipcMain.handle('comfy:alignModels', () => {
+    const r = comfyProbe.alignModelsConfig(launcher.comfyInfo(), models.modelsRoot() || '');
+    logger[r.ok ? 'info' : 'warn']('对齐 ComfyUI 模型目录：' + (r.message || '').replace(/\n/g, ' '));
+    return r;
+  });
+  // 安装配套自定义节点（EmptyQwenImage21LatentImage）到 <ComfyUI>/custom_nodes
+  ipcMain.handle('comfy:installNodes', () => {
+    const info = launcher.comfyInfo();
+    const r = comfySetup.ensureCustomNodes(info.installDir);
+    logger[r.ok ? 'info' : 'warn']('安装配套节点：' + (r.message || '').replace(/\n/g, ' '));
+    comfyProbe.forgetCache();
+    return r;
+  });
+  /* 选好 ComfyUI 目录后就装一次节点（2026-10-18）：把「装节点」从"软件拉起 ComfyUI 时"
+     提前到"用户配置路径时"，这样用户自己双击 Comfy Desktop 启动也能命中。
+     🔴 失败时必须给出能解决问题的动作（权限 / 占用 / 路径错），不能笼统说"重启软件"。 */
+  ipcMain.handle('comfy:provisionNodes', () => {
+    const info = launcher.comfyInfo();
+    let r;
+    try {
+      r = comfySetup.ensureCustomNodes(info.installDir);
+    } catch (e) {
+      r = { ok: false, changed: false, message: (e && e.message) || String(e), list: [] };
+    }
+    const reason = comfySetup.classifyInstallError(r);
+    logger[r.ok ? 'info' : 'warn']('节点置备：' + (r.message || '').replace(/\n/g, ' '));
+    comfyProbe.forgetCache();
+    return { ...r, reason, installDir: info.installDir };
+  });
   // 选源：mode='files' 多选文件；mode='dir' 选一个文件夹（递归扫描里面的模型文件）
   ipcMain.handle('models:importPick', async () => {
     const win = getWin ? getWin() : null;
@@ -633,6 +689,16 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     const { shell } = require('electron');
     if (fs.existsSync(abs)) shell.showItemInFolder(abs);
     return true;
+  });
+  // 打开固定外链（白名单，避免渲染进程随便调 openExternal 打开任意 URL）
+  ipcMain.handle('app:openUrl', async (e, url) => {
+    const u = String(url || '');
+    if (!/^https:\/\/(www\.)?comfy\.org(\/|$)/i.test(u) && !/^https:\/\/github\.com\//i.test(u)) {
+      return { ok: false, message: '不允许的链接' };
+    }
+    const { shell } = require('electron');
+    await shell.openExternal(u);
+    return { ok: true };
   });
 }
 
