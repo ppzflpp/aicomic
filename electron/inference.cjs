@@ -214,6 +214,15 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  // 🔴 超时文案按环节分（2026-10-19）：分镜是最容易「剧本一长就等不完」的环节，
+  //    用户口径是「分镜最长等 10 分钟，超时直接告诉他剧本太长、建议分集」——
+  //    统一报「请求超时」会让人以为是网络问题，白等一轮。
+  const timeoutMins = Math.max(1, Math.round(timeoutMs / 60000));
+  const timeoutError = () => new Error(
+    stage === 'shots'
+      ? '剧本太长，建议分集后重试（分镜生成超过 ' + timeoutMins + ' 分钟仍未完成）'
+      : (cloud ? '云端大模型' : 'LLM') + '请求超时（已等待 ' + timeoutMins + ' 分钟）'
+  );
   let res;
   try {
     res = await fetch(base + '/v1/chat/completions', {
@@ -224,6 +233,7 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
     });
   } catch (e) {
     clearTimeout(timer);
+    if (ctrl.signal.aborted) throw timeoutError();
     throw new Error((cloud ? '云端大模型' : 'LLM') + '请求失败（连接中断或超时）：' + (e && e.message || e));
   }
   if (!res.ok) {
@@ -262,6 +272,10 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
         if (d.reasoning_content) reasoning += d.reasoning_content;
       }
     }
+  } catch (e) {
+    // 流式读到一半被超时 abort：同样走「剧本太长」那条文案，不要漏成裸的 AbortError
+    if (ctrl.signal.aborted) throw timeoutError();
+    throw new Error((cloud ? '云端大模型' : 'LLM') + '流式读取中断：' + (e && e.message || e));
   } finally { clearTimeout(timer); }
 
   if (!content) {
@@ -271,7 +285,9 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
   // 输出被 max_tokens 掐断时明确报错（此前静默返回半截 JSON / 半篇改编稿，下游才爆错，难排查）
   if (finishReason === 'length') {
     throw new Error('LLM 输出被 max_tokens=' + maxTokens + ' 截断（finish_reason=length，已生成 ' +
-      content.length + ' 字）。请到设置里调大输出上限，或精简规范 / 拆短章节。');
+      content.length + ' 字）。' + (stage === 'shots'
+        ? '剧本太长，建议分集后重试；也可以到设置里调大输出上限。'
+        : '请到设置里调大输出上限，或精简规范 / 拆短章节。'));
   }
   logger.done('LLM 返回 ' + content.length + ' 字' + (finishReason ? '（finish=' + finishReason + '）' : ''), Date.now() - t0);
   return content;
@@ -354,14 +370,99 @@ async function reversePrompt(file, opts = {}) {
   return { text, ms: Date.now() - t0 };
 }
 
-/** 提取 JSON（容忍 ```json 围栏与前后杂文本） */
+/**
+ * 括号配平扫描：从 i0（必须指向 `{` 或 `[`）开始，返回与之匹配的闭合下标；扫到结尾仍未闭合返回 -1。
+ * 🔴 必须字符串感知 —— 台词里常有 `}` `]` 与 `\"`，纯数括号会把范围切错。
+ */
+function matchBracket(s, i0) {
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = i0; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === '{' || c === '[') { depth++; continue; }
+    if (c === '}' || c === ']') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** 扫描 start 之后的全部顶层 JSON 值（值之间允许夹杂说明文字 / 逗号 / 换行） */
+function scanJsonValues(raw, start) {
+  const parts = [];
+  let truncated = false;
+  let i = start;
+  while (i < raw.length) {
+    if (raw[i] !== '{' && raw[i] !== '[') { i++; continue; }
+    const end = matchBracket(raw, i);
+    if (end < 0) { truncated = true; break; }   // 最后一段没闭合 = 输出被截断
+    parts.push(raw.slice(i, end + 1));
+    i = end + 1;
+  }
+  return { parts, truncated };
+}
+
+/** 多段 JSON 合并：对象按键合并（数组拼接、标量以先出现的为准），纯数组直接拼接 */
+function mergeJsonValues(vals) {
+  const objs = vals.filter(v => v && typeof v === 'object' && !Array.isArray(v));
+  const arrs = vals.filter(Array.isArray);
+  if (!objs.length) return arrs.length === 1 ? arrs[0] : [].concat(...arrs);
+  const out = {};
+  for (const o of objs) {
+    for (const k of Object.keys(o)) {
+      const cur = out[k];
+      const next = o[k];
+      if (cur === undefined) { out[k] = next; continue; }
+      if (Array.isArray(cur) && Array.isArray(next)) { out[k] = cur.concat(next); continue; }
+      // 同名标量 / 对象冲突：保留**先出现**的那份（前半段是主结构，后半段多为重复输出）
+    }
+  }
+  // 独立的裸数组（模型把某一类数据另起一段输出）+ 对象里没有任何数组 → 挂到 data，pickArray 认得这个键
+  if (arrs.length && !Object.keys(out).some(k => Array.isArray(out[k]))) {
+    out.data = arrs.length === 1 ? arrs[0] : [].concat(...arrs);
+  }
+  return out;
+}
+
+/**
+ * 提取 JSON（容忍 ```json 围栏、前后杂文本、以及「吐完一个 JSON 又续写一段」）。
+ * 🔴 2026-10-19 修：旧实现用 `lastIndexOf('}')` 切片，只要 JSON 后面还有别的 `}`（重复输出、
+ *    第二段对象、解释里的示例），就会把第二段一起包进来，报
+ *    `Unexpected non-whitespace character after JSON at position N`。
+ *    现在改成**括号配平**逐段扫描：先试整段，失败再取所有完整顶层值并合并。
+ */
 function extractJson(text) {
-  const m = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const raw = m ? m[1] : text;
+  const src = String(text == null ? '' : text);
+  const m = src.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const raw = m ? m[1] : src;
   const start = raw.search(/[[{]/);
   if (start < 0) throw new Error('LLM 输出中未找到 JSON');
-  const end = Math.max(raw.lastIndexOf(']'), raw.lastIndexOf('}'));
-  return JSON.parse(raw.slice(start, end > start ? end + 1 : undefined));
+
+  // ① 最快路径：整段就是一个 JSON（绝大多数情况）
+  try { return JSON.parse(raw.slice(start)); } catch (_) {}
+
+  // ② 逐段扫描：模型有时「输出完整 JSON 后再续写一段」，或把 shots / characters 分成两个对象发
+  const { parts, truncated } = scanJsonValues(raw, start);
+  const vals = [];
+  let lastErr = null;
+  for (const p of parts) {
+    try { vals.push(JSON.parse(p)); } catch (e) { lastErr = e; }
+  }
+  if (vals.length) return vals.length === 1 ? vals[0] : mergeJsonValues(vals);
+  if (truncated) {
+    throw new Error('LLM 输出的 JSON 在结尾处不完整（多半被 max_tokens 截断，已生成 ' +
+      src.length + ' 字）：请调大输出上限，或把剧本拆成多集后重试。');
+  }
+  throw new Error('LLM 输出不是合法 JSON：' + ((lastErr && lastErr.message) || '解析失败'));
 }
 
 /** 从任意 JSON 值里取出数组：裸数组直接用；对象则找第一个数组字段（json_object 模式会包一层） */
@@ -474,8 +575,8 @@ function extractLastFrame(video, out, offsetSec) {
 
 /* ---------------- ComfyUI 工作流执行 ---------------- */
 
-/** 生成入口 → 模型方案用途：生图（角色 / 场景）走 image，视频走 video */
-const TEMPLATE_KIND = { character: 'image', video: 'video' };
+/** 生成入口 → 模型方案用途：生图（角色 / 场景）走 image，视频走 video，成片超分走 upscale */
+const TEMPLATE_KIND = { character: 'image', video: 'video', upscale: 'upscale' };
 
 /**
  * 工作流模板路径。
@@ -547,13 +648,14 @@ function ensureDefaultTemplates() {
 
   // —— H3 视频：2026-09 起改为 __H3_UNET__ + 运行时注入「首/尾帧、参考图、参考视频」——
   // 老内置模板用的是 __H3_FL2VA__ / __H3_TURBO_LORA__ 写法，遇到就自动换成新版。
+  // 2026-10-18 起内置模板多了「放大二采」段（质量最优档用），老模板（没有 __SEED2__）同样自动升级。
   const bv = path.join(__dirname, 'workflows', 'video_h3.json');
   const tv = path.join(dir, 'video_h3.json');
   let needVideo = !fs.existsSync(tv);
   if (!needVideo) {
     try {
       const cur = fs.readFileSync(tv, 'utf-8');
-      if (cur.includes('__H3_FL2VA__') || cur.includes('__H3_TURBO_LORA__')) needVideo = true;
+      if (cur.includes('__H3_FL2VA__') || cur.includes('__H3_TURBO_LORA__') || !cur.includes('__SEED2__')) needVideo = true;
     } catch (_) { /* 读不到就按不需要处理 */ }
   }
   if (needVideo && fs.existsSync(bv)) {
@@ -669,6 +771,96 @@ function tierOfProject(projectId, profile) {
   }
   return String(db.getSetting('h3.quality') || '') || videoTiers.defaultTier(profile);
 }
+
+/* ---------------- 放大二采（quality 档的「先小后大」策略） ---------------- */
+
+/**
+ * 解析本档的二采声明（方案 wiring.twoPass + tiers 里该档的 twoPass:true）。
+ * 不启用 → null（生成链路与前二采时代完全一致）。
+ *
+ * 🔴 参数全部来自方案，代码不认任何模型名 / 分辨率 / σ 数值：
+ *    · steps  —— 第二遍步数（必须与第二遍挂的蒸馏 LoRA 训练步数一致）
+ *    · lora   —— 第二遍 LoRA 文件名正则（第一遍仍用档位自己的 LoRA）
+ *    · shift  —— 第二遍 σ-shift；null = 不注入
+ *    · sigmas —— 第二遍 σ 序列（起点决定「保留多少第一遍内容」，越低越像原片）
+ *    · canvas —— 第二遍画布（比例 → 宽x高）
+ *
+ * 为什么要有二采：整段直接上大画布要 20 步 + 大 latent，单镜十几分钟；
+ * 「小画布 4 步出构图 → 放大 latent → 8 步补细节」实测画质基本持平、耗时省四成
+ * （2026-10-18 真镜消融：S 组 838s vs R 组 1017s）。
+ */
+function twoPassOf(vidP, tierRes, loraFiles, aspect) {
+  const T = (vidP && vidP.wiring && vidP.wiring.twoPass) || null;
+  if (!T || T.enabled === false) return null;
+  if (!tierRes || !tierRes.twoPass) return null;
+  // 🔴 tierRes.twoPass 可以是「对象」覆盖 wiring.twoPass 的字段（lora/loraKind/steps/shift/sigmas/canvas），
+  //    让「同档位不同候选走不同第二遍」成为可能 —— 例如 hq-A 第二遍普通 ref2v 8step、hq-B 第二遍 PDD。
+  //    布尔 true 则沿用 wiring.twoPass 的全局默认（历史行为不变）。
+  const ov = (tierRes.twoPass && typeof tierRes.twoPass === 'object') ? tierRes.twoPass : {};
+  const loraRe = ov.lora != null ? ov.lora : T.lora;
+  const files = Array.isArray(loraFiles) ? loraFiles : [];
+  const re = loraRe ? safeRegex(loraRe) : null;
+  const hit = re ? files.find(f => re.test(String(f).split(/[\\/]/).pop())) : null;
+  // 第二遍的 LoRA 没装 → 这一档退化成「照常出一版」，绝不拿 4 步蒸馏硬跑 8 步（那样画面会崩）
+  if (!hit) return null;
+  const canvas = (ov.canvas != null ? ov.canvas : T.canvas) || {};
+  const want = String(canvas[aspect] || canvas['16:9'] || '').trim();
+  const m = /^(\d+)x(\d+)$/.exec(want);
+  if (!m) return null;
+  const sigmas = String(ov.sigmas != null ? ov.sigmas : T.sigmas || '').trim();
+  if (!sigmas) return null;
+  const loraKindSrc = ov.loraKind != null ? ov.loraKind : T.loraKind;
+  const shiftSrc = ov.shift != null ? ov.shift : T.shift;
+  const isPddKind = String(loraKindSrc || '').toLowerCase() === 'pdd';
+  return {
+    steps: Number(ov.steps != null ? ov.steps : T.steps) || 8,
+    lora: hit,
+    // 'pdd' = 第二遍用 MiniMaxH3PDDLoRA 节点（内部出 σ + sigmas）；否则普通 LoraLoaderModelOnly
+    loraKind: isPddKind ? 'pdd' : null,
+    // PDD 内部处理 σ-shift，第二遍不注入 MiniMaxH3SigmaShift（与第一遍 PDD 装配口径一致）
+    shift: isPddKind ? null : (Array.isArray(shiftSrc) && shiftSrc.length === 2 ? shiftSrc.slice() : null),
+    sigmas,
+    width: Number(m[1]),
+    height: Number(m[2]),
+    seedOffset: Number.isFinite(Number(ov.noiseSeedOffset != null ? ov.noiseSeedOffset : T.noiseSeedOffset)) ? Number(ov.noiseSeedOffset != null ? ov.noiseSeedOffset : T.noiseSeedOffset) : 1,
+    nodes: (ov.nodes != null ? ov.nodes : T.nodes) || {}
+  };
+}
+
+/** 安全编译正则（方案里的正则写错了不能让整个生成挂掉） */
+function safeRegex(src) {
+  try { return new RegExp(src, 'i'); } catch (_) { return null; }
+}
+
+/** 分辨率字符串 → [w, h]；解析不出来返回 null */
+function parseResStr(s) {
+  const m = /^(\d+)\s*[x×]\s*(\d+)$/i.exec(String(s || '').trim());
+  return m ? [Number(m[1]), Number(m[2])] : null;
+}
+
+/**
+ * 二采的第一遍画布：按第二遍画布的 ≈50% 像素量，保持比例，并向上对齐方案的帧网格粒度。
+ *
+ * 为什么第一遍不直接上大画布：
+ *   · 第一遍挂的是 4 步蒸馏 LoRA（544p 训练）—— 它在小画布上最稳、最省时；
+ *   · 构图本来就该在第一遍定下来，第二遍只补细节，所以第一遍不需要大画布；
+ *   · 实测 4 步 864×480 ≈2.5 分钟，直接 1344×768 要十几分钟。
+ * 对齐粒度取方案 frames.snap（H3 是 32）：H3 画布必须能被 32 整除。
+ */
+function firstPassCanvas(cur, tp) {
+  const sx = Number(tp && tp.width) || 1344;
+  const sy = Number(tp && tp.height) || 768;
+  const snap = 32;
+  const up = v => Math.max(snap, Math.round(v / snap) * snap);
+  // 一半**像素量**（不是一半边长 —— 边长砍半 = 像素只剩 25%，第一遍的构图信息会不够用）
+  const k = Math.sqrt(0.5);
+  const w = up(sx * k);
+  const h = up(sy * k);
+  // 已经比第一遍还小的画布（用户手选了更小尺寸）就别再缩了
+  if (cur && cur[0] * cur[1] <= w * h) return cur;
+  return [w, h];
+}
+
 
 /* ---------------- 媒体支路（首帧/尾帧/参考图/参考视频） ---------------- */
 
@@ -860,6 +1052,200 @@ function refExtraValue(spec, nodes, media) {
 
 /** 兼容旧签名：老调用 / 离线自测按「当前激活的视频方案」注入 */
 function injectH3Media(wf, media) { return injectMedia(wf, media, null); }
+
+/**
+ * 摘掉模板里的「放大二采」段，并把输出接回第一遍。
+ *
+ * 为什么要主动摘（而不是让 ComfyUI 自己判定）：
+ *   SaveVideo ← CreateVideo ← VAEDecode(22)。只要 22 的输入还指向二采采样器，
+ *   ComfyUI 就会把整条二采链（含第二遍 8 步全画布采样）跑完 —— 快 / 平衡两档会被
+ *   悄悄变成最慢的那一档，耗时翻倍且用户毫不知情。
+ *
+ * 只删「本方案声明的二采节点」，模板里没声明过（老模板）就什么都不做。
+ */
+function dropTwoPass(wf, profile) {
+  const T = (profile && profile.wiring && profile.wiring.twoPass) || null;
+  if (!T || !T.nodes) return;
+  const id = T.nodes;
+  for (const k of ['noise', 'splitAv', 'decode', 'scale', 'encode', 'concatAv',
+    'conditioning', 'lora', 'shift', 'guider', 'sigmas', 'sampler']) {
+    if (id[k] && wf[id[k]]) delete wf[id[k]];
+  }
+  // 5xx 段是二采装配时按需生成的「参考图重缩放」节点
+  for (const k of Object.keys(wf)) {
+    if (/^5\d{2}$/.test(k)) delete wf[k];
+  }
+  // 输出接回第一遍（第一遍采样器由方案 nodes.samplerAdv 声明）
+  const n1 = (profile && profile.nodes) || {};
+  if (n1.samplerAdv && wf[n1.decodeVideo]) wf[n1.decodeVideo].inputs.samples = [n1.samplerAdv, 0];
+  if (n1.samplerAdv && wf[n1.decodeAudio]) wf[n1.decodeAudio].inputs.samples = [n1.samplerAdv, 0];
+}
+
+/* ---------------- 放大二采：第二遍采样段装配 ---------------- */
+
+/**
+ * 在第一遍采样结果之后接一段「放大 → 再采」，并让输出改读第二遍。
+ *
+ * 数据流（H3 的 latent 是「视频 + 音频」拼在一起的 AV 格式，不能只拿半边去放大）：
+ *   21(第一遍) → LTXVSeparateAVLatent ─┬─ 视频半边 → VAEDecode → ImageScale(大画布) → VAEEncode ─┐
+ *                                      └─ 音频半边 ─────────────────────────────────────────────┤
+ *                                              LTXVConcatAVLatent(视频=放大后, 音频=第一遍原样) ←──┘
+ *   → 第二遍条件节点（大画布，媒体与第一遍同一套）
+ *   → 第二遍 LoRA（768p 训练的 8 步蒸馏）+ σ-shift
+ *   → ManualSigmas（σ 序列，起点决定保留多少第一遍内容）
+ *   → SamplerCustomAdvanced → 22/VAEDecode 改读它
+ *
+ * 🔴 音频必须钉回第一遍：第二遍只对画面做细节补充，音频再采一次会让音色/口型轻微漂移
+ *    （2026-10-18 实测：接第二遍后音轨 MD5 变化、局部 RMS 差 5dB）。所以 23/VAEDecodeAudio
+ *    的输入在模板里就写死指向第一遍（21），这里也主动再钉一次。
+ *
+ * @param {object} wf        工作流图（已注入媒体）
+ * @param {object} tp        twoPassOf() 的结果
+ * @param {object} ctx       { inj, profile, params, seed }
+ */
+function applyTwoPass(wf, tp, ctx) {
+  const { inj, profile, params, seed } = ctx || {};
+  const N = (profile && profile.nodes) || {};
+  const C = (profile && profile.classes) || {};
+  const id = tp.nodes || {};
+  const n1 = {
+    sampler: N.samplerAdv, decodeVideo: N.decodeVideo, decodeAudio: N.decodeAudio,
+    videoVae: N.videoVae, textEncoder: N.textEncoder, cond: N.conditioning
+  };
+  for (const k of Object.keys(id)) {
+    if (!wf[id[k]]) logger.warn('二采节点缺失（方案声明 ' + id[k] + ' / ' + k + '），这一段跳过');
+  }
+  const W = tp.width, H = tp.height;
+
+  // ① 拆 AV → 只放大视频半边 → 拼回（音频半边原样保留）
+  wf[id.splitAv] = { class_type: 'LTXVSeparateAVLatent', inputs: { av_latent: [n1.sampler, 0] } };
+  wf[id.decode] = { class_type: 'VAEDecode', inputs: { samples: [id.splitAv, 0], vae: [n1.videoVae, 0] } };
+  wf[id.scale] = {
+    class_type: 'ImageScale',
+    inputs: {
+      image: [id.decode, 0], upscale_method: 'lanczos',
+      width: W, height: H, crop: 'center'
+    }
+  };
+  wf[id.encode] = { class_type: 'VAEEncode', inputs: { pixels: [id.scale, 0], vae: [n1.videoVae, 0] } };
+  wf[id.concatAv] = {
+    class_type: 'LTXVConcatAVLatent',
+    inputs: { video_latent: [id.encode, 0], audio_latent: [id.splitAv, 1] }
+  };
+
+  // ② 第二遍的条件节点：画布换成大画布，其余输入（clip / vae / prompt / 参考媒体）沿用第一遍。
+  //    🔴 参考图也得按大画布重缩一遍 —— 参考图喂进模型前是「画布尺寸」的，沿用第一遍的小图会让
+  //       第二遍按小图理解主体比例（实测：直接复用会让人物在画面里变小）。
+  const cond = wf[inj.condId];
+  if (!cond || !cond.inputs) throw new Error('二采：找不到第一遍的条件节点 ' + inj.condId);
+  const ins2 = JSON.parse(JSON.stringify(cond.inputs));
+  ins2.width = W;
+  ins2.height = H;
+  if (ins2.clip) ins2.clip = [n1.textEncoder, 0];
+  if (ins2.vae) ins2.vae = [n1.videoVae, 0];
+  // 参考图 / 首尾帧的 ImageScale：按大画布重缩（节点 id 从原有 scale 节点派生，各自独立）
+  const rescale = {};
+  const walk = (v, keyPath) => {
+    if (!Array.isArray(v) || v.length !== 2) return v;
+    const srcId = String(v[0]);
+    const src = wf[srcId];
+    if (!src) return v;
+    // 只处理「某张图的缩放节点」：它的入参是一个 LoadImage
+    const imgRef = src.class_type === 'ImageScale' && Array.isArray(src.inputs.image) ? String(src.inputs.image[0]) : null;
+    if (!imgRef || !wf[imgRef]) return v;
+    if (rescale[srcId]) return [rescale[srcId], 0];
+    // 5xx 段：二采专用的参考图缩放节点。避开模板（10-41）、媒体注入段（90/200-259）、
+    // 多图注入段（990+），以及图片 i2i 的 30 —— 互不覆盖。
+    const nid = String(500 + Object.keys(rescale).length);
+    wf[nid] = {
+      class_type: 'ImageScale',
+      inputs: {
+        image: [imgRef, 0], upscale_method: src.inputs.upscale_method || 'lanczos',
+        width: W, height: H, crop: src.inputs.crop || 'center'
+      }
+    };
+    rescale[srcId] = nid;
+    return [nid, 0];
+  };
+  for (const k of Object.keys(ins2)) {
+    if (/^ref_(images|videos)\./.test(k) || k === 'first_frame' || k === 'last_frame' || k === 'image') {
+      ins2[k] = walk(ins2[k], k);
+    }
+  }
+  wf[id.conditioning] = { class_type: cond.class_type, inputs: ins2 };
+
+  // ③ 第二遍模型：同底模 + 第二遍 LoRA（+ 可选的 σ-shift）。
+  //    🔴 PDD 二采：第二遍 LoRA 是 PDD 时走 MiniMaxH3PDDLoRA 节点（内部处理 σ-shift + 输出 sigmas），
+  //       不能走 LoraLoaderModelOnly（会静默丢掉 32 输出头库）。sigmas 改接 PDD 输出 [lora,1]。
+  const isPdd = tp.loraKind === 'pdd';
+  let pddSigmas = null;
+  if (isPdd) {
+    wf[id.lora] = {
+      class_type: 'MiniMaxH3PDDLoRA',
+      inputs: { model: [N.model, 0], lora_name: tp.lora, strength: 1.0, steps: Number(tp.steps) || 8 }
+    };
+    pddSigmas = [id.lora, 1];
+    // PDD 内部已处理 σ-shift，不再注入 MiniMaxH3SigmaShift 节点
+    if (wf[id.shift]) delete wf[id.shift];
+  } else {
+    wf[id.lora] = { class_type: 'LoraLoaderModelOnly', inputs: { model: [N.model, 0], lora_name: tp.lora, strength_model: 1 } };
+    if (tp.shift) {
+      wf[id.shift] = {
+        class_type: (C.shift || 'MiniMaxH3SigmaShift'),
+        inputs: { model: [id.lora, 0], shift_video: tp.shift[0], shift_audio: tp.shift[1] }
+      };
+    } else if (wf[id.shift]) {
+      delete wf[id.shift];
+    }
+  }
+  let modelRef = (tp.shift && !isPdd && wf[id.shift]) ? id.shift : id.lora;
+
+  // ④ 引导器 / σ 序列 / 噪声 / 采样器
+  // 🔴 引导器必须接「第一遍真正的最终 conditioning」（inj.condId 可能是 AddGuide 链尾，
+  //    而不是基础条件节点）—— 接错就等于第二遍丢掉了首尾帧锚点。
+  const g0 = wf[N.guider];
+  const condRef = (g0 && Array.isArray(g0.inputs && g0.inputs.conditioning))
+    ? g0.inputs.conditioning.slice() : [inj.condId, 0];
+  // 🔴 第二遍加速（二采两遍都加加速 · 2026-10-21 用户拍板）：第二遍 guider 的 model 也串
+  //    INT8 注意力 + BlockCache。节点编号用 72x 段（第一遍用 710/711，第二遍用 720/721，互不覆盖）。
+  const accelCfg = (profile && profile.wiring && profile.wiring.attentionBoost) || null;
+  if (params && params._accelOn && accelCfg && accelCfg.enabled !== false) {
+    if (accelCfg.attention && accelCfg.attention.class) {
+      wf['720'] = { class_type: accelCfg.attention.class, inputs: { model: [modelRef, 0], attention: accelCfg.attention.backend || 'comfy kitchen attention' } };
+      modelRef = '720';
+    }
+    if (accelCfg.blockCache && accelCfg.blockCache.class) {
+      wf['721'] = { class_type: accelCfg.blockCache.class, inputs: { model: [modelRef, 0], residual_diff_threshold: 0.12, start_percent: 0.08, end_percent: 0.95, max_consecutive_hits: 2, cache_device: 'cpu', metric_stride: 8, verbose: false } };
+      modelRef = '721';
+    }
+  }
+  wf[id.guider] = { class_type: 'BasicGuider', inputs: { model: [modelRef, 0], conditioning: condRef } };
+  // 第一遍如果声明了 condTargets（引导器被外部改写），这里也照搬那份接线
+  for (const t of (Array.isArray(profile.wiring && profile.wiring.condTargets) ? profile.wiring.condTargets : [])) {
+    if (t.node !== N.guider) continue;
+    const n = wf[id.guider];
+    if (n && n.inputs) n.inputs[t.key] = condRef;
+  }
+  wf[id.noise] = { class_type: 'RandomNoise', inputs: { noise_seed: Number(seed) >>> 0 } };
+  // PDD 二采：sigmas 直接取 PDD 节点输出（训练定死网格），不用 ManualSigmas；
+  // 普通二采：ManualSigmas 走方案声明的 σ 序列。
+  if (!pddSigmas) wf[id.sigmas] = { class_type: 'ManualSigmas', inputs: { sigmas: tp.sigmas } };
+  wf[id.sampler] = {
+    class_type: 'SamplerCustomAdvanced',
+    inputs: {
+      noise: [id.noise, 0], guider: [id.guider, 0],
+      sampler: [N.sampler, 0], sigmas: pddSigmas || [id.sigmas, 0],
+      latent_image: [id.concatAv, 0]
+    }
+  };
+
+  // ⑤ 输出改读第二遍；音频钉回第一遍
+  if (wf[n1.decodeVideo]) wf[n1.decodeVideo].inputs.samples = [id.sampler, 0];
+  if (wf[n1.decodeAudio]) wf[n1.decodeAudio].inputs.samples = [n1.sampler, 0];
+
+  return { condId: id.conditioning, samplerId: id.sampler, width: W, height: H };
+}
+
 
 /** 静态兜底提示（只留「不属于任何方案槽位」的那几个特殊占位符） */
 const PH_TIP_FALLBACK = {
@@ -1109,12 +1495,28 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     const tierRes = videoTiers.resolve(vidP, p.tier, family, loraFiles);
     p.tierRes = tierRes;
     // 参考支路专用权重优先，没有就退回主线权重（角色名由方案声明，不是写死的键名）
-    p.h3_unet = refMode
-      ? ((A.byRole.unetRef && A.byRole.unetRef.name) || (A.byRole.unet && A.byRole.unet.name))
-      : (A.byRole.unet && A.byRole.unet.name);
+    // 🔴 档位声明了 unet 正则（tiers.spec.unet）时，优先用它从该槽位的文件清单里挑基模 ——
+    //    用于「同目录并存剪枝版 / 原始版」时按档位配对（速度优先 A 用剪枝版，B 用原始版）。
+    const unetSlot = refMode
+      ? (A.byRole.unetRef && A.byRole.unetRef.name ? A.byRole.unetRef : A.byRole.unet)
+      : A.byRole.unet;
+    let h3Unet = unetSlot && unetSlot.name;
+    if (tierRes.unet && unetSlot && Array.isArray(unetSlot.files) && unetSlot.files.length) {
+      const unetRe = (() => { try { return new RegExp(tierRes.unet, 'i'); } catch (_) { return null; } })();
+      if (unetRe) {
+        const hit = unetSlot.files.find(f => unetRe.test(String(f).split(/[\\/]/).pop()));
+        if (hit) h3Unet = hit;
+      }
+    }
+    p.h3_unet = h3Unet;
     p.h3_lora = tierRes.lora;                       // null = 基础模型直跑（摘 LoRA 节点）
+    p.h3_loraKind = tierRes.loraKind || null;       // 'pdd' = PDD 节点加载（否则普通 LoraLoaderModelOnly）
     p.steps = p.stepsOverride || tierRes.steps;     // h3.steps 仅作高级手动覆盖
     p.h3_shift = tierRes.shift;                     // [v,a] 需注入 σ-shift 节点；null 不注入
+    // 采样器：蒸馏 LoRA（4step/8step turbo/PDD）训练采样器是 euler，用模板默认 res_multistep 会残影
+    // （2026-10-21 实测：同一份剪枝版+4step+480p，euler 干净 / res_multistep 拖影）。
+    // 档位声明了 sampler 就透传改写 KSamplerSelect；没声明（20 步基础模型直跑）= null，沿用模板默认。
+    p.h3_sampler = tierRes.sampler || null;
     // 采样序列：蒸馏模型（LTX-2.5）的 sigma 网格是训练时定死的，由档位直接给字符串
     // （ManualSigmas 节点）。走 LoRA 步数派的模型（H3）不声明，模板里也没有这个占位符。
     p.sigmas = tierRes.sigmas || (vidP && vidP.params && vidP.params.sigmas) || null;
@@ -1122,7 +1524,48 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     // conditioning / latent 的连接目标；注入媒体支路后会由 injectMedia 改写
     p.cond_id = vidN.conditioning || '16';
     p.latent_id = p.cond_id;
+
+    // —— 放大二采（本档声明才启用）——
+    // 比例优先用调用方传的 aspect；没传就从本次画布推断（宽>高 = 横版）。
+    const aspect = String(params.aspect || '').trim() ||
+      ((Number(p.width) || 0) > (Number(p.height) || 0) ? '16:9' : '9:16');
+    const tp = twoPassOf(vidP, tierRes, loraFiles, aspect);
+    p.twoPass = tp;
+    // 第二遍的噪声种子必须与第一遍不同：同种子 + 同一段 σ 会让第二遍形同「重放一遍」
+    p.seed2 = ((Number(p.seed) || 0) + (tp ? tp.seedOffset : 0)) >>> 0;
+    // 🔴 模板里的二采占位符是**常驻**的（同一份模板服务三档），不启用时也必须填上
+    //    语法合法的中性值 —— 否则 applyParams 会跳过它们，JSON 解析直接失败。
+    //    中性值之后由 dropTwoPass() 连节点一起摘掉，不会进 ComfyUI。
+    const TP0 = (vidP && vidP.wiring && vidP.wiring.twoPass) || {};
+    const tpId = TP0.nodes || {};
+    p.twopass_w = tp ? tp.width : 0;
+    p.twopass_h = tp ? tp.height : 0;
+    p.twopass_lora = tp ? tp.lora : 'none';
+    p.twopass_steps = tp ? tp.steps : 1;
+    p.twopass_sigmas = tp ? tp.sigmas : '1, 0';
+    p.twopass_shift_v = (tp && tp.shift) ? tp.shift[0] : 0;
+    p.twopass_shift_a = (tp && tp.shift) ? tp.shift[1] : 0;
+    // 输出解码读哪一路 / 二采条件与 latent 接哪
+    p.out_latent = tp ? String(tpId.sampler || '21') : String(vidN.samplerAdv || '21');
+    p.cond2_id = p.cond_id;
+    p.latent2_id = p.cond_id;
+    if (tp) {
+      // 画布：第一遍按「第二遍画布的 ≈50% 像素」出构图（4 步蒸馏够用），第二遍放大补细节。
+      // 🔴 第一遍 LoRA 是 544p 训练的，小画布不漂；第二遍换 768p 训练的 LoRA + 768p 画布。
+      const cur = parseResStr(`${p.width}x${p.height}`);
+      const small = firstPassCanvas(cur, tp);
+      p.width = small[0];
+      p.height = small[1];
+    }
     realParams = { ...p, ...params };
+    // 🔴 画布必须以「算出来的第一遍画布」为准，不能被调用方透传的 params.width 覆盖。
+    //    调用方传的是「成片画布」（渲染层按档位推荐值传），而二采的第一遍必须用半像素画布 ——
+    //    被覆盖的后果是「第一遍就跑 1344×768、第二遍放大等于空转」：耗时翻倍还看不出差别
+    //    （2026-10-18 实测踩到：提交给 ComfyUI 的 16 号节点 width=1344）。
+    if (realParams.twoPass) {
+      realParams.width = p.width;
+      realParams.height = p.height;
+    }
   } else {
     realParams = { ...models.workflowModels(), ...params };
     const N = (imgP && imgP.nodes) || {};
@@ -1197,6 +1640,11 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     if (wf[i2iNodes.img] && wf[i2iNodes.img].class_type === 'LoadImage') delete wf[i2iNodes.img];
     if (wf[i2iNodes.enc] && wf[i2iNodes.enc].class_type === 'VAEEncode') delete wf[i2iNodes.enc];
   }
+
+  // 视频模板里的「放大二采」段是常驻的（同一份模板要服务三档），本档不用时必须整段摘掉。
+  // 🔴 否则 SaveVideo 会顺着 22 号解码节点一路把二采链路拉活：第二遍白跑一遍、耗时翻倍。
+  //    判据是「模板里有没有 __SEED2__」—— 老模板（二采诞生前）不需要这一步。
+  if (isVideo && !realParams.twoPass) dropTwoPass(wf, vidP);
   // 图生图：参考图先缩放到本次选定的分辨率再编码 —— 否则「参考图多大就出多大」，
   // 逐张分辨率选择在 i2i 下形同虚设（crop=center 保持比例不拉伸）
   if (!isVideo && realParams.image && i2iNodes && wf[i2iNodes.img] && wf[i2iNodes.enc]) {
@@ -1232,6 +1680,13 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     const condOut = Wg.condOutput !== undefined ? Wg.condOutput : 0;
     const latentOut = Wg.latentOutput !== undefined ? Wg.latentOutput : 1;
 
+    // 采样器：蒸馏 LoRA（4step/8step turbo/PDD）训练采样器是 euler，模板默认 res_multistep 会残影/拖影
+    // （2026-10-21 实测：同一份剪枝版+4step+480p，euler 干净、res_multistep 拖影）。
+    // 档位声明了 sampler → 改写 KSamplerSelect 的 sampler_name；没声明（20 步基础模型）= 沿用模板默认。
+    if (vidN.sampler && wf[vidN.sampler] && realParams.h3_sampler) {
+      wf[vidN.sampler].inputs.sampler_name = realParams.h3_sampler;
+    }
+
     // σ-shift 注入：蒸馏 LoRA 的训练 shift ≠ 模型默认（12/3）时才需要（如 768p 系训练 6/3）。
     // 🔴 调度器节点也必须接 shift 后的模型 —— sigma 网格由 model_sampling 生成，
     //    接错会让「采样网格」和「DiT 内部换算」用两套 shift，画面直接毁。
@@ -1245,6 +1700,27 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
         if (wf[n] && Array.isArray(wf[n].inputs.model) && wf[n].inputs.model[0] === nLora) {
           wf[n].inputs.model = [nShift, 0];
         }
+      }
+    }
+
+    // PDD 加载（速度优先 B：原始版 + 阿里 PDD 8 步 LoRA）：
+    // 🔴 PDD 不是普通 LoRA —— 必须 MiniMaxH3PDDLoRA 节点（内部处理 σ-shift + 输出 sigmas），
+    //    普通 LoraLoaderModelOnly 会静默丢掉 32 输出头库。装配时把 LoRA 节点改写成本节点，
+    //    并把 sampler 的 sigmas 从 BasicScheduler 改接到 PDD 节点输出（PDD 的 sigmas 是训练定死的网格）。
+    if (realParams.h3_lora && realParams.h3_loraKind === 'pdd' && wf[nLora]) {
+      wf[nLora] = {
+        class_type: 'MiniMaxH3PDDLoRA',
+        inputs: { model: [nModel, 0], lora_name: realParams.h3_lora, strength: 1.0, steps: Number(realParams.steps) || 8 }
+      };
+      // sampler 的 sigmas 改接 PDD 节点输出（[nLora, 1]）；scheduler 不再参与，直接摘掉
+      const nSampler = vidN.samplerAdv;
+      if (nSampler && wf[nSampler] && Array.isArray(wf[nSampler].inputs.sigmas)) {
+        wf[nSampler].inputs.sigmas = [nLora, 1];
+      }
+      if (vidN.scheduler && wf[vidN.scheduler]) delete wf[vidN.scheduler];
+      // guider 的 model 直连 PDD 节点（PDD 自己输出 model，不走 σ-shift）
+      if (wf[vidN.guider] && Array.isArray(wf[vidN.guider].inputs.model)) {
+        wf[vidN.guider].inputs.model = [nLora, 0];
       }
     }
 
@@ -1264,6 +1740,39 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
       }
     }
 
+    // 加速优化开关（全局）：INT8 注意力 + BlockCache T8。
+    // 🔴 开关是全局设置（wiring.attentionBoost.settingKey），与档位正交 —— 用户不管选哪个档位
+    //    都能一键开关。开时在「最终模型 → Guider」之间串入两个 model patch 节点；
+    //    关（或值为 '0'）则什么都不插，画面回到纯 pytorch 注意力的基线。
+    // 🔴 INT8 注意力会改变采样轨迹（画面有轻微差异、无硬伤），BlockCache 在 8 步以上才有净收益；
+    //    两者叠加在 PDD 档位下也实测可跑（A3 实验 151s 无硬伤）。节点编号用 7xx 段，避开模板/媒体/二采。
+    const accel = (Wg.attentionBoost) || null;
+    const accelOn = !!(accel && accel.enabled !== false &&
+      String(db.getSetting(accel.settingKey || 'h3.attentionBoost') || '').trim() !== '0');
+    // 记录加速开关状态，供二采第二遍复用（第二遍 guider 也要串同样的 710/711）
+    realParams._accelOn = accelOn;
+    if (accelOn && wf[vidN.guider] && Array.isArray(wf[vidN.guider].inputs.model)) {
+      let modelRef = wf[vidN.guider].inputs.model;
+      if (accel.attention && accel.attention.class) {
+        const aid = '710';
+        wf[aid] = {
+          class_type: accel.attention.class,
+          inputs: { model: modelRef, attention: accel.attention.backend || 'comfy kitchen attention' }
+        };
+        modelRef = [aid, 0];
+      }
+      if (accel.blockCache && accel.blockCache.class) {
+        const bid = '711';
+        wf[bid] = {
+          class_type: accel.blockCache.class,
+          inputs: { model: modelRef, residual_diff_threshold: 0.12, start_percent: 0.08, end_percent: 0.95,
+            max_consecutive_hits: 2, cache_device: 'cpu', metric_stride: 8, verbose: false }
+        };
+        modelRef = [bid, 0];
+      }
+      wf[vidN.guider].inputs.model = modelRef;
+    }
+
     // 媒体一律上传到 ComfyUI 的 input 目录 —— LoadImage / LoadVideo 只认那里
     const media = { refImages: [], refVideos: [], refImageSize: realParams.refImageSize };
     media.first = wantFirst ? await uploadToComfy(wantFirst) : null;
@@ -1278,6 +1787,21 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
       if (wf[vidN.guider]) wf[vidN.guider].inputs.conditioning = [inj.condId, condOut];
       if (wf[vidN.samplerAdv]) wf[vidN.samplerAdv].inputs.latent_image = [inj.latentId, latentOut];
     }
+
+    // 放大二采：在本档的第一遍之后接一段「放大 → 再采」（只在本档声明了 twoPass 时）
+    if (realParams.twoPass) {
+      try {
+        const r2 = applyTwoPass(wf, realParams.twoPass, {
+          inj, profile: vidP, params: realParams, seed: realParams.seed2
+        });
+        realParams._twoPassOn = r2;
+      } catch (e) {
+        // 二采装不起来就退回「只出一版」—— 绝不能因为补细节这一步把整条生成打断
+        realParams._twoPassOn = null;
+        logger.warn('放大二采装配失败，本次按单遍出片：' + ((e && e.message) || e));
+      }
+    }
+
     const bits = [];
     // 日志里带上本地文件名（而不是只给 ×N）：用户核对「这版视频到底用的哪张图」就靠这行
     if (media.first) bits.push('首帧：' + path.basename(String(wantFirst)));
@@ -1289,6 +1813,12 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
       '（' + (inj.mode === 'ref' ? '参考模式' : '首尾帧模式') + '），' + realParams.steps + ' 步，' +
       realParams.width + 'x' + realParams.height +
       (bits.length ? '，输入：' + bits.join(' + ') : '，纯文字'));
+    if (realParams._twoPassOn) {
+      const tp = realParams.twoPass;
+      logger.info('放大二采：第一遍 ' + realParams.width + 'x' + realParams.height + '（' + realParams.steps + ' 步）' +
+        ' → 放大到 ' + tp.width + 'x' + tp.height + '（' + tp.steps + ' 步，σ 起点 ' +
+        String(tp.sigmas).split(',')[0].trim() + '），音频沿用第一遍');
+    }
   }
 
   const clientId = 'comic-studio-' + Date.now();
@@ -1296,6 +1826,7 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   // 生成配置一览（方便排查「分辨率/秒数不对」这类问题）
   if (isVideo) {
     logger.info('本次视频生成配置：' + realParams.width + 'x' + realParams.height +
+      (realParams._twoPassOn ? '（二采后 ' + realParams._twoPassOn.width + 'x' + realParams._twoPassOn.height + '）' : '') +
       '，' + (realParams.seconds || Math.round(realParams.length / 24)) + 's（' + realParams.length + ' 帧）' +
       '，' + realParams.steps + ' 步，' + (realParams.tierLabel || '平衡') + '档');
     // 模型一览：排查「出的片不对」第一步就是确认这套组合是不是预期的那套。
@@ -1310,6 +1841,11 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
           ? realParams.h3_shift[0] + '/' + realParams.h3_shift[1] + '（已注入 σ-shift 节点）'
           : '模型默认 12/3（不注入节点）')) +
       (tr.downgraded ? '｜⚠ 该档位 LoRA 文件缺失，本次已降级为基础模型 20 步' : ''));
+    if (realParams._twoPassOn) {
+      logger.info('二采模型：' + realParams.twoPass.lora + '｜' + realParams.twoPass.steps + ' 步' +
+        (realParams.twoPass.shift ? '｜σ-shift ' + realParams.twoPass.shift[0] + '/' + realParams.twoPass.shift[1] : '') +
+        '｜σ 序列 ' + realParams.twoPass.sigmas);
+    }
   } else {
     logger.info('本次图片生成配置：' + realParams.width + 'x' + realParams.height +
       (realParams.image ? '，图生图（denoise ' + realParams.denoise + '）' : '，文生图') +
@@ -1486,6 +2022,244 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   }
   logger.done(saved.join('、') + ' 生成完成', elapsedMs);
   return { files: saved, seed: realParams.seed, elapsedMs };
+}
+
+/* ---------------- 成片超分（SeedVR2 · ComfyUI 内置节点） ---------------- */
+
+/** 对齐到 step 的整数倍（默认 16）：SeedVR2 的 preprocess 会 pad 到 16、post 又裁到偶数，
+ *  这里先把目标尺寸对齐，省得它自己补一轮再裁一轮。 */
+function snapTo(v, step) {
+  const s = Number(step) > 0 ? Number(step) : 16;
+  return Math.max(s, Math.round(Number(v) / s) * s);
+}
+
+/**
+ * 视频超分：输入一条本地镜头视频 → 放大一档 → 落盘到 outDir。
+ *
+ * 走 ComfyUI **内置**的 SeedVR2（comfy_extras/nodes_seedvr.py + comfy/ldm/seedvr）：
+ *   LoadVideo → GetVideoComponents ─┬→ ImageScale(目标尺寸) → SeedVR2Preprocess → VAEEncodeTiled
+ *                                   │        → SeedVR2TemporalChunk ─┬→ SeedVR2Conditioning → KSampler(1 步)
+ *                                   │                                └→ (latent)              ↓
+ *                                   │                                   SeedVR2TemporalMerge → VAEDecodeTiled
+ *                                   │                                                            ↓
+ *                                   │        ┌──────────── original_resized_images ──────→ SeedVR2PostProcessing
+ *                                   └→ audio ┴→ CreateVideo(images, audio, fps) → SaveVideo
+ * 与第三方插件路线（_vendor + 两个补丁 + SEEDVR2 私有目录）相比：零依赖、零补丁，
+ * 模型直接落在 ComfyUI 标准的 diffusion_models / vae 两个目录里。
+ *
+ * @param {object} a
+ * @param {string} a.file      源视频绝对路径
+ * @param {string} a.outDir    产物目录（通常是 <项目>/分镜/_upscale）
+ * @param {number} [a.scale]   放大倍率（默认取方案 params.scale，内置方案 = 2）
+ * @returns {Promise<{file:string,path:string,width:number,height:number,srcWidth:number,srcHeight:number,elapsedMs:number}>}
+ */
+async function upscaleVideo({ file, outDir, scale, timeoutMs = 3600000 } = {}) {
+  const src = String(file || '').trim();
+  if (!src || !fs.existsSync(src)) throw new Error('超分失败：源视频不存在（' + (src || '(空)') + '）');
+  const out = String(outDir || '').trim() || path.dirname(src);
+
+  const p = profiles.active('upscale');
+  if (!p) {
+    throw new Error('没有可用的超分方案：electron/profiles/upscale.json 缺失或配置有误。'
+      + '请到 设置 → 模型管家 检查，或重新安装本软件。');
+  }
+  const tplFile = workflowPath('upscale');
+  if (!fs.existsSync(tplFile)) {
+    throw new Error('超分工作流模板缺失：' + tplFile
+      + '。请重新启动软件（首次运行会把内置模板补到工作区 workflows/ 目录）。');
+  }
+
+  // 模型文件：槽位由方案声明（role = upscaleModel / upscaleVae），代码不认文件名
+  const A = models.resolveAssets('upscale');
+  const unet = (A.byRole.upscaleModel && A.byRole.upscaleModel.name) || '';
+  const vae = (A.byRole.upscaleVae && A.byRole.upscaleVae.name) || '';
+  if (!unet || !vae) {
+    const miss = [];
+    if (!unet) miss.push('超分主模型（' + (p.assets.find(a => a.role === 'upscaleModel') || {}).need
+      + '，放在 ComfyUI 的 diffusion_models 目录）');
+    if (!vae) miss.push('超分 VAE（' + (p.assets.find(a => a.role === 'upscaleVae') || {}).need
+      + '，放在 ComfyUI 的 vae 目录）');
+    throw new Error('超分模型缺失：' + miss.join('；')
+      + '。放好后到 设置 → 模型管家 点「重新检测」。（模型目录：' + (models.modelsRoot() || '未设置') + '）');
+  }
+
+  const meta = await probeVideo(src);
+  if (!meta.width || !meta.height) {
+    throw new Error('超分失败：读不出源视频的分辨率（' + path.basename(src) + '），文件可能已损坏。');
+  }
+
+  const prm = p.params || {};
+  const k = Number(scale) > 0 ? Number(scale) : (Number(prm.scale) > 0 ? Number(prm.scale) : 2);
+  const cap = Number(prm.capLongEdge) > 0 ? Number(prm.capLongEdge) : 1920;
+  let tw = Math.round(meta.width * k), th = Math.round(meta.height * k);
+  const long = Math.max(tw, th);
+  if (long > cap) {
+    // 长边封顶：hq 档的 1344×768 直接 ×2 会到 2688×1536，16G 显存跑不动
+    const r = cap / long;
+    tw = Math.round(tw * r); th = Math.round(th * r);
+  }
+  tw = snapTo(tw, 16); th = snapTo(th, 16);
+
+  const tplText = fs.readFileSync(tplFile, 'utf-8');
+  const videoName = await uploadToComfy(src);
+  const num = (v, d) => (Number(v) > 0 ? Number(v) : d);
+  const params = {
+    seedvr2_unet: unet, seedvr2_vae: vae, video: videoName,
+    width: tw, height: th, seed: Math.floor(Math.random() * 1e9),
+    steps: num(prm.steps, 1), cfg: num(prm.cfg, 1), denoise: num(prm.denoise, 1),
+    sampler: prm.sampler || 'euler', scheduler: prm.scheduler || 'simple',
+    color: prm.colorCorrection || 'lab',
+    tile_size: num(prm.tileSize, 512), tile_overlap: num(prm.tileOverlap, 128),
+    temporal_size: num(prm.temporalSize, 64), temporal_overlap: num(prm.temporalOverlap, 8),
+    prefix: 'comic/upscale'
+  };
+
+  const filled = applyParams(tplText, params);
+  const optionalPH = optionalPlaceholders();
+  const left = findPlaceholders(filled).filter(x => !optionalPH.has(x));
+  if (left.length) {
+    const TIPS = phTips();
+    const tips = left.map(x => {
+      const key = x.replace(/^__|__$/g, '').toLowerCase();
+      return x + (TIPS[key] ? ' → 缺少 ' + TIPS[key] : '');
+    });
+    throw new Error('超分工作流占位符未解析：' + tips.join('；')
+      + '。请到 设置 → 模型管家 看模型目录对不对、缺哪个模型。');
+  }
+  let wf;
+  try { wf = JSON.parse(filled); }
+  catch (e) { throw new Error('超分工作流 JSON 解析失败（' + path.basename(tplFile) + '）：' + (e && e.message)); }
+
+  logger.info('超分：' + path.basename(src) + ' → ' + tw + 'x' + th
+    + '（源 ' + meta.width + 'x' + meta.height + '，' + k + ' 倍'
+    + (long > cap ? '，按长边 ' + cap + ' 封顶' : '') + '）');
+
+  disarmVramFree();
+  try {
+    // 提交前对账：节点在不在 / 模型文件 ComfyUI 扫没扫到（探测失败一律放行）
+    let chk = null;
+    try {
+      chk = await comfyProbe.verifyWorkflow(endpoint('comfyui'), wf, { modelsRoot: models.modelsRoot() || '' });
+    } catch (e) {
+      logger.detail('超分提交前对账跳过（探测器异常）：' + ((e && e.message) || e));
+    }
+    if (chk && chk.skipped) logger.detail('超分提交前对账跳过：' + (chk.reason || 'ComfyUI 无响应'));
+    if (chk && !chk.ok) throw new Error(chk.message);
+
+    const clientId = 'comic-studio-up-' + Date.now();
+    const tSubmit = Date.now();
+    let submit;
+    try {
+      submit = await fetchJson(endpoint('comfyui') + '/prompt', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: wf, client_id: clientId })
+      }, 15000);
+    } catch (e) {
+      throw new Error('ComfyUI 服务不可达（' + endpoint('comfyui') + '）。请先手动打开一次 ComfyUI Desktop。');
+    }
+    if (!submit.ok || !submit.json || !submit.json.prompt_id) {
+      const zh = comfyProbe.explainPromptError(submit.json);
+      throw new Error(zh ? ('ComfyUI 拒绝超分工作流：\n' + zh)
+        : ('ComfyUI 拒绝超分工作流：' + JSON.stringify(submit.json).slice(0, 400)));
+    }
+    const pid = submit.json.prompt_id;
+    _activePid = pid;
+    _cancelPid = null;
+
+    // 轮询：完成 / 出错 / 被停止 / 从队列消失（3 次）/ 超时
+    let history = null, vanished = 0, unreachable = 0;
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      if (_cancelPid === pid) throw new CancelledError(pid);
+      await new Promise(r => setTimeout(r, 1500));
+      let h;
+      try { h = await fetchJson(endpoint('comfyui') + '/history/' + pid, {}, 8000); unreachable = 0; }
+      catch (_) {
+        if (++unreachable >= 30 && Date.now() - t0 > 120000) {
+          throw new Error('ComfyUI 连续 ' + unreachable + ' 次无响应：它可能已退出，请检查后重试。');
+        }
+        continue;
+      }
+      if (h.ok && h.json && h.json[pid]) {
+        history = h.json[pid];
+        const st = history.status || {};
+        if (st.completed) break;
+        if (st.status_str === 'error') break;
+      } else if (Date.now() - t0 > 15000) {
+        let q = null;
+        try { q = await fetchJson(endpoint('comfyui') + '/queue', {}, 8000); } catch (_) { q = null; }
+        if (q && q.ok && q.json) {
+          const inQueue = ['queue_running', 'queue_pending'].some(key =>
+            Array.isArray(q.json[key]) && q.json[key].some(it => (Array.isArray(it) ? it[1] : it && it.prompt_id) === pid));
+          if (!inQueue) {
+            vanished++;
+            if (vanished >= 3) throw new Error('超分任务已从 ComfyUI 队列消失：ComfyUI 可能被重启或任务被中断，请重试。');
+          } else vanished = 0;
+        }
+      }
+    }
+    if (!history) {
+      throw new Error('超分超时未完成（已等待 ' + Math.round((Date.now() - t0) / 1000) + 's）。'
+        + '可到 ComfyUI 界面确认它是否仍在运行（产物会留在 ComfyUI 的 output 目录）。');
+    }
+    if (history.status && history.status.status_str === 'error') {
+      const errMsg = (history.status.messages || []).filter(m => m[0] === 'execution_error')[0];
+      const e0 = errMsg ? errMsg[1] : null;
+      const brief = e0
+        ? ('节点 ' + e0.node_type + '[' + e0.node_id + ']：' + String(e0.exception_message || '').trim())
+        : JSON.stringify(history.status.messages || {}).slice(0, 400);
+      const raw = e0 ? String(e0.exception_message || '') : '';
+      const tip = /out of memory|OutOfMemory|CUDA error/i.test(raw)
+        ? '（显存不足：关掉其他占用显存的程序，或把放大倍率调小后重试）' : '';
+      throw new Error('超分执行出错：' + brief + tip);
+    }
+
+    // 拉产物。
+    // 🔴 只认「保存节点」/ type=output 的产物：LoadVideo 在 history.outputs 里也会挂一条
+    //    （type=input 的原样回显），照单全收会把**上传的源视频**当成超分结果下载回来
+    //    （2026-10-21 实测踩到：拿去当产物的那条是 864×480 的源片，真产物 1728×960 反而被丢掉）。
+    const saveId = String((p.nodes && p.nodes.save) || '');
+    const outNodes = (saveId && history.outputs[saveId])
+      ? [saveId]
+      : Object.keys(history.outputs || {});
+    const bufs = [];
+    for (const nodeId of outNodes) {
+      for (const key of ['videos', 'gifs', 'images']) {
+        for (const item of (history.outputs[nodeId][key] || [])) {
+          if ((item.type || 'output') !== 'output') continue;
+          const q = new URLSearchParams({
+            filename: item.filename, subfolder: item.subfolder || '', type: item.type || 'output'
+          });
+          const r = await fetch(endpoint('comfyui') + '/view?' + q);
+          if (!r.ok) throw new Error('超分产物下载失败：' + item.filename);
+          bufs.push({ buf: Buffer.from(await r.arrayBuffer()), ext: (path.extname(item.filename) || '.mp4').slice(1) });
+        }
+      }
+    }
+    if (!bufs.length) throw new Error('ComfyUI 完成了超分但没有产出文件');
+
+    // 一次超分只应有一份产物；万一方案以后接多个保存节点，全都落盘（渲染层取第一份）
+    const written = [];
+    for (const b of bufs) {
+      const stem = path.basename(src, path.extname(src));
+      const name = writeUnique(out, stem + '_超分', b.ext, b.buf);
+      written.push(name);
+    }
+    const name = written[0];
+    const abs = path.join(out, name);
+    const after = await probeVideo(abs);
+    const elapsedMs = Date.now() - tSubmit;
+    logger.done('超分完成：' + name + '（' + (after.width || tw) + 'x' + (after.height || th) + '）', elapsedMs);
+    return {
+      file: name, path: abs,
+      width: after.width || tw, height: after.height || th,
+      srcWidth: meta.width, srcHeight: meta.height, elapsedMs
+    };
+  } finally {
+    armVramFree();
+    _activePid = null;
+    _cancelPid = null;
+  }
 }
 
 /** 取一个可用的底模文件名（ComfyUI 的 checkpoints 目录，只认文件名） */
@@ -1799,6 +2573,43 @@ function analyzeShot(ffmpeg, file) {
   });
 }
 
+/**
+ * ffprobe 读一个视频的完整流规格（导出用）。
+ * 用途有两个：①「自动分辨率」取第一个镜头的真实画布；② 判断能否零转码拼接
+ * （所有段的 宽高/帧率/视频编码/像素格式/音频编码/采样率/声道 必须完全一致）。
+ * 探测失败返回 null（调用方一律当「不可 copy」处理）。
+ */
+function probeStreamInfo(ffmpeg, file) {
+  return new Promise(resolve => {
+    const ffprobe = path.join(path.dirname(ffmpeg), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+    if (!fs.existsSync(ffprobe)) return resolve(null);
+    const args = ['-v', 'error', '-show_entries',
+      'stream=codec_type,codec_name,width,height,pix_fmt,r_frame_rate,sample_rate,channels',
+      '-show_entries', 'format=duration', '-of', 'json', file];
+    try {
+      execFile(ffprobe, args, { windowsHide: true, timeout: 30000, maxBuffer: 1 << 21 }, (err, stdout) => {
+        if (err) return resolve(null);
+        try {
+          const j = JSON.parse(String(stdout || '{}'));
+          const ss = j.streams || [];
+          const v = ss.find(s => s.codec_type === 'video') || null;
+          const a = ss.find(s => s.codec_type === 'audio') || null;
+          if (!v || !v.width) return resolve(null);
+          const d = parseFloat((j.format || {}).duration);
+          resolve({
+            w: +v.width, h: +v.height,
+            vcodec: String(v.codec_name || ''), pixfmt: String(v.pix_fmt || ''), fps: String(v.r_frame_rate || ''),
+            hasAudio: !!a,
+            acodec: a ? String(a.codec_name || '') : '',
+            sr: a ? String(a.sample_rate || '') : '', ch: a ? String(a.channels || '') : '',
+            dur: Number.isFinite(d) ? d : 0
+          });
+        } catch (_) { resolve(null); }
+      });
+    } catch (_) { resolve(null); }
+  });
+}
+
 /** ffprobe 读单个文件的时长（母片真实总时长，用来校正按镜累加的误差） */
 function probeDuration(ffmpeg, file) {
   return new Promise(resolve => {
@@ -1858,20 +2669,33 @@ function runFfmpeg(ffmpeg, args, cwd) {
  * 真实拼接导出：concat + 统一输出分辨率 + 可选逐镜响度归一 + 可选字幕烧录。
  * videos: [{file, dialogue, dur}]（绝对路径）
  * opts.width/height：输出分辨率（剧集「输出分辨率」配置），默认 1920x1080。
+ * opts.autoRes：true = 忽略 width/height，取**第一个镜头**的实际分辨率（下拉里的「自动」）。
  * opts.normalize：**逐镜响度归一（方案 D）** —— concat 之前把每一镜的音频归到同一目标响度，
  *   治「镜间 BGM 音量忽大忽小」（《真人剧4》第 4 集实测差 19.6 dB）；关掉则与改造前逐字一致。
  */
-async function exportVideo(outDir, outName, videos, { subtitles = true, width = 1920, height = 1080, scope = '', normalize = true } = {}) {
+async function exportVideo(outDir, outName, videos, { subtitles = true, width = 1920, height = 1080, autoRes = false, scope = '', normalize = true } = {}) {
   // 导出是一次性长任务：这里同步确认一次 ffmpeg（避免「预热没跑完」被误判成没装）
   const ffmpeg = findFfmpeg({ forceSync: true });
   if (!ffmpeg) throw new Error('未找到 ffmpeg。软件自带的 tools/ffmpeg/bin/ffmpeg.exe 不见了，'
     + '请重新安装，或把 ffmpeg 放进系统 PATH。');
   fs.mkdirSync(outDir, { recursive: true });
   if (!videos.length) throw new Error('没有可拼接的视频片段');
-  const W = Math.max(16, Math.round(Number(width) || 1920));
-  const H = Math.max(16, Math.round(Number(height) || 1080));
+  let W = Math.max(16, Math.round(Number(width) || 1920));
+  let H = Math.max(16, Math.round(Number(height) || 1080));
+  // 🔴 成片分辨率「自动」（2026-10-19）：取**第一个镜头文件的真实画布**（不是生成时选的档位字符串）。
+  //    目的：导出不再对每个镜头做一次 bicubic 放大/补边 —— 生成多大，成片就多大。
+  if (autoRes) {
+    const first = await probeStreamInfo(ffmpeg, videos[0].file);
+    if (first && first.w && first.h) {
+      // yuv420p / libx264 要求偶数边长，奇数向下取偶
+      W = Math.max(16, first.w - (first.w % 2));
+      H = Math.max(16, first.h - (first.h % 2));
+    } else {
+      logger.warn('成片分辨率=自动，但第一个镜头的分辨率探测失败 → 回退 ' + W + 'x' + H);
+    }
+  }
   const tExport = Date.now();
-  logger.info('ffmpeg 组装成片：' + videos.length + ' 个镜头，输出 ' + W + 'x' + H
+  logger.info('ffmpeg 组装成片：' + videos.length + ' 个镜头，输出 ' + W + 'x' + H + (autoRes ? '（自动：跟第一个镜头）' : '')
     + (normalize ? ' + 响度归一' : '') + (subtitles ? ' + 字幕烧录' : ''));
 
   const tmp = path.join(outDir, '_tmp_' + Date.now());
@@ -1916,15 +2740,41 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
     const finalPath = path.join(outDir, finalName);
     const concatArgs = ['-y', '-f', 'concat', '-safe', '0', '-i', listFile];
 
+    // ---- 能否「零转码拼接」（2026-10-19）----
+    // 条件：所有段规格**完全一致**、且就等于目标分辨率 —— 此时 scale/pad 是空操作，
+    // 直接 `-c:v copy` 拼接 ⇒ 视频流一次都不重编（省一代有损 + 快几倍）。
+    // 只要有一项不一致（换了档位 → 某镜是 864x480、某镜 1344x768），就必须走重编码。
+    const segInfo = await mapLimit(segs, 4, p => probeStreamInfo(ffmpeg, p));
+    const s0 = segInfo[0] || null;
+    const copyable = !!(s0 && s0.hasAudio && segInfo.every(i => i
+      && i.w === W && i.h === H && i.fps === s0.fps && i.vcodec === s0.vcodec && i.pixfmt === s0.pixfmt
+      && i.acodec === s0.acodec && i.sr === s0.sr && i.ch === s0.ch));
+    // 重编码兜底（画质档：crf 17 —— 比原来的 20 明显更实，文件约 +30%）
+    const reencodeNoSubs = () => runFfmpeg(ffmpeg, [...concatArgs, '-vf', vfBase, '-c:v', 'libx264', '-preset', 'medium',
+      '-crf', '17', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', finalPath], tmp);
+
     if (!subtitles) {
-      const res = await runFfmpeg(ffmpeg, [...concatArgs, '-vf', vfBase, '-c:v', 'libx264', '-preset', 'medium',
-        '-crf', '20', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', finalPath], tmp);
-      if (res.code !== 0 || !fs.existsSync(finalPath)) throw new Error('ffmpeg 导出失败：' + res.err.slice(-500));
+      let done = false;
+      if (copyable) {
+        const rc = await runFfmpeg(ffmpeg, [...concatArgs, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+          '-movflags', '+faststart', finalPath], tmp);
+        if (rc.code === 0 && fs.existsSync(finalPath)) {
+          done = true;
+          logger.info('零转码拼接：' + videos.length + ' 段规格一致 → 视频流 copy，未产生新的压缩世代');
+        } else {
+          logger.warn('零转码拼接失败，回退重编码：' + rc.err.slice(-300));
+          try { fs.rmSync(finalPath, { force: true }); } catch (_) {}
+        }
+      }
+      if (!done) {
+        const res = await reencodeNoSubs();
+        if (res.code !== 0 || !fs.existsSync(finalPath)) throw new Error('ffmpeg 导出失败：' + res.err.slice(-500));
+      }
     } else {
-      // ---- pass1：先拼出无字幕母片（CRF 16，中间产物尽量少掉一代画质）----
+      // ---- pass1：先拼出无字幕母片（CRF 12，中间产物几乎不掉画质）----
       const mutePath = path.join(tmp, 'mute.mp4');
       const r1 = await runFfmpeg(ffmpeg, [...concatArgs, '-vf', vfBase, '-c:v', 'libx264', '-preset', 'veryfast',
-        '-crf', '16', '-c:a', 'aac', '-b:a', '160k', mutePath], tmp);
+        '-crf', '12', '-c:a', 'aac', '-b:a', '192k', mutePath], tmp);
       if (r1.code !== 0 || !fs.existsSync(mutePath)) throw new Error('ffmpeg 拼接母片失败：' + r1.err.slice(-500));
 
       // ---- A + B：逐镜实测时长（A）+ 镜内响度窗定位人声（B）----
@@ -1949,7 +2799,7 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
         // ---- pass2：把字幕烧到母片上（母片已是目标分辨率，不再 scale/pad）----
         const r2 = await runFfmpeg(ffmpeg, ['-y', '-i', 'mute.mp4', '-vf',
           `subtitles=subs.srt:force_style='FontSize=${SUBTITLE_FONT_SIZE}'`,
-          '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-c:a', 'copy',
+          '-c:v', 'libx264', '-preset', 'medium', '-crf', '17', '-c:a', 'copy',
           '-movflags', '+faststart', finalPath], tmp);
         if (r2.code !== 0 || !fs.existsSync(finalPath)) throw new Error('ffmpeg 烧录字幕失败：' + r2.err.slice(-500));
         logger.info('字幕 ' + cues.length + ' 条 / ' + videos.length + ' 镜（实测时长 + 响度窗定位）');
@@ -2081,6 +2931,7 @@ async function probeVideo(abs) {
 module.exports = {
   init, health, llmChat, extractJson, pickArray, endpoint, setEndpoint,
   comfyGenerate, cancelComfy, workflowPath, ensureDefaultTemplates, findFfmpeg, exportVideo,
+  upscaleVideo,
   extractLastFrame,
   applyParams, findPlaceholders, h3Params, forgetWorkspace, listVideosWithMeta,
   // 模型方案驱动的部分（换模型只改配置，下面是代码侧入口）
@@ -2092,6 +2943,9 @@ module.exports = {
   parseLoudnessSummary, normGain, normalizeShot,
   // 导出仅为离线自测（test/h3-inject-check.cjs 直接验证连线，不需要显卡/ComfyUI）
   injectH3Media,
+  // 放大二采（离线自测用；生产链路只经 comfyGenerate）
+  __twoPassOf: twoPassOf, __applyTwoPass: applyTwoPass, __dropTwoPass: dropTwoPass,
+  __firstPassCanvas: firstPassCanvas,
   // 纯函数（离线自测用）
   contentLen,
   // 提示词反推（图片 → 正向提示词）

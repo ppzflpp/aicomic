@@ -81,7 +81,13 @@ export const useProject = defineStore('project', {
     promptTarget: null,
     /** 库引用快照（一次扫全库）：{ projectId, map: { [entryId]: usage[] } }——库视图整页铺卡共用 */
     libUsage: { projectId: '', map: {} },
-    error: null           // 最近一次 IPC 错误（App 监听后 toast）
+    error: null,          // 最近一次 IPC 错误（App 监听后 toast）
+    /**
+     * 首屏是否已经完成（工作区 + 左树 + 恢复上次打开的集）。
+     * 2026-10-19 新增：各模块用它区分「还在启动」和「真的没有内容」——
+     * 启动期显示「正在加载…」，启动完才显示各自的空态文案（否则用户会以为要自己操作）。
+     */
+    booted: false
   }),
   actions: {
     fail(e) { this.error = (e && e.message) || String(e) },
@@ -90,11 +96,13 @@ export const useProject = defineStore('project', {
         this.workspace = await window.studio.getWorkspace()
         if (!this.workspace) this.workspace = await window.studio.chooseWorkspace()
         await this.refresh()
-        this.models = await window.studio.checkModels()
-        this.health = await window.studio.inferHealth()
-        await this.refreshCaps()
-        // 分辨率档位 / 视频档位清单也随模型方案走（方案声明自己的分辨率与档位表）
-        await this.loadResOptions()
+        // 🔴 2026-10-19（Dragon：「打开软件时角色&场景空白一会才显示」）：
+        //    环境类信息（模型检测 / 健康探测 / 方案能力 / 分辨率档位）原来**串在启动链上**，
+        //    把「恢复上次打开的集数」往后推了 4 个 await —— 首屏挂载本来就有一段主线程长任务，
+        //    这些 await 全排在它后面，实测让角色卡晚出来 ~1s 以上（卡片要靠 current 集才能生成）。
+        //    这些信息不参与「有哪些卡」的渲染（拿不到时各 UI 按「未声明 = 不禁用」兜底），
+        //    改为后台补齐；refreshEnv 内部已逐个兜底，失败只是信息不全，不影响启动。
+        this.refreshEnv().catch(() => { /* 环境信息失败不影响启动 */ })
       } catch (e) { this.fail(e) }
     },
     async refresh() {
@@ -590,13 +598,30 @@ export const useProject = defineStore('project', {
   /**
    * 三个分辨率的推荐值。
    *   图片 = 视频分辨率（Dragon 要求「图片分辨率与视频分辨率一致」；且图片档位已补齐 544p / 768p 两族）
-   *   成片 = 按比例取常见交付档（成片清单与模型无关，不参与档位）
+   *   成片 = **auto**（2026-10-19 起默认「跟第一个镜头」，不再推荐 1920x1080 ——
+   *          固定交付档会让导出对每个镜头多一次 bicubic 放大，反而更糊）
    * @returns {{img,vid,out}|null} 推荐画布取不到时返回 null（调用方回退到「不联动」）
    */
   recRes(tier, aspect) {
     const vid = this.recCanvas(tier, aspect);
     if (!vid) return null;
-    return { img: vid, vid, out: aspect === '9:16' ? '1080x1920' : '1920x1080' };
+    return { img: vid, vid, out: 'auto' };
+  },
+
+  /**
+   * 当前剧集「锁定」后的图片/视频分辨率（2026-10-21）。
+   * 🔴 切换视频质量档位后，图片分辨率与视频分辨率**锁定 = 档位推荐画布**，用户不可手改。
+   *    档位 tier / 比例 aspect 是项目级、随剧集对象下发（getEpisodeFull 补进 res.tier / res.aspect）。
+   *    取不到（老库 / 未加载）→ 退回剧集自带的 res.img / res.vid（行为与改造前一致，不锁）。
+   * @returns {{img,vid}|null}
+   */
+  lockedRes() {
+    const r = this.current && this.current.res;
+    if (!r || !r.tier) return null;
+    const rec = this.recRes(r.tier, r.aspect || this.aspectOfRes(r.vid));
+    if (!rec) return null;
+    // 档位推荐值取不到时退回剧集自身快照，避免把分辨率清空
+    return { img: rec.img || r.img, vid: rec.vid || r.vid };
   },
 
   /** 下拉选项按比例过滤：只留与该比例同向的档位（w>h = 横版）。取不到比例时原样返回。 */
@@ -628,6 +653,16 @@ export const useProject = defineStore('project', {
       const p = (this.tree || []).find(x => x.id === Number(projectId))
       const s = p && p.res && p.res.style
       if (s && this.current && Number(this.current.projectId) === Number(projectId)) this.current.style = s
+      // 🔴 2026-10-21：档位 / 比例锁定分辨率 —— 改档位后必须就地刷新当前集的 tier/aspect/img/vid，
+      //    否则 StageShots/StageChars 的锁定分辨率（st.lockedRes()）会停在旧档位。
+      if (p && p.res && this.current && Number(this.current.projectId) === Number(projectId)) {
+        const nr = this.current.res || {}
+        if (p.res.tier) nr.tier = p.res.tier
+        if (p.res.aspect) nr.aspect = p.res.aspect
+        if (p.res.img) nr.img = p.res.img
+        if (p.res.vid) nr.vid = p.res.vid
+        this.current.res = nr
+      }
     } catch (_) { /* 刷新失败不影响「已保存」这个事实 */ }
     return r
   },

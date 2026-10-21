@@ -2,8 +2,6 @@
   <div>
     <div v-if="busy" class="progress"><div class="bar indeterminate"></div></div>
 
-    <llm-source-tag :stages="['library']" where="素材库提示词" />
-
     <div class="grp">
       <!-- 空库引导：不能只靠「没有卡就不渲染网格」——新增入口（虚线卡）在网格里，
            空库时把它一起藏掉就再也建不出条目了（树节点进来 → 空白页 → 死锁） -->
@@ -98,7 +96,7 @@
             </div>
 
             <label class="card-res">分辨率
-              <select v-model="e.res" :disabled="busy" @change="saveField(e, 'res', e.res)">
+              <select :value="resOf(e)" :disabled="true" title="分辨率由视频质量档位决定（在「新建项目 / 项目配置」里切换档位）">
                 <option v-for="o in optsFor(e)" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
             </label>
@@ -234,7 +232,6 @@ import { useProject as useProjectStore } from './stores/project.js'
 import { usePipeline, fmtMs } from './stores/pipeline.js'
 import { stepLog, secs } from './ulog.js'
 import { parseRes, resLabel, optsWith, joinPath } from './resutil.js'
-import LlmSourceTag from './LlmSourceTag.vue'
 import { overrideOf } from './llmSource.js'
 import {
   composeSystem, composeUser, readDefaultNegative, readEquipmentWords, readSceneKeeper,
@@ -280,7 +277,6 @@ function parsePcOut(text) {
 
 export default {
   name: 'StageLibrary',
-  components: { LlmSourceTag },
   data() {
     return {
       busy: false, _b64: {}, _dims: {}, askDel: null, askAdd: null, askBatch: null,
@@ -336,7 +332,12 @@ export default {
     /** 库条目自带的绝对目录（服务端算好放在 entry.dir） */
     absOf(e, f) { return joinPath(e && e.dir, f) },
     selFileOf(e) { return e && e.cur >= 0 ? (e.images[e.cur] || null) : null },
-    resOf(e) { return (e && e.res) || '1920x1080' },
+    /** 该条目当前生效的分辨率（2026-10-21 起锁定 = 档位推荐画布，不再取每条目独立值） */
+    resOf(e) {
+      const locked = this.st.lockedRes && this.st.lockedRes()
+      if (locked && locked.img) return locked.img
+      return (e && e.res) || '1920x1080'
+    },
     /** 档位按当前底模过滤；该条目已保存的值不在档位里时补进去（保证显示正确） */
     optsFor(e) { return optsWith((this.st.resOptions || {}).img, this.resOf(e)) },
     shown(e) { return (e.images || []).map((f, i) => ({ f, i })).slice(-SHOW_MAX) },

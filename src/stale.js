@@ -128,8 +128,12 @@ export function sigSame(a, b) {
   if (!a || !b) return false
   if (!sigEq(sigLegacyView(a), sigLegacyView(b))) return false
   const oa = a.order, ob = b.order
-  if (oa == null || ob == null) return true
-  return oa === ob
+  if (oa != null && ob != null && oa !== ob) return false
+  // 声音档位（2026-10-20）：与 order 同款语义 —— **任一侧没有就不比**
+  // （升级前生成的签名没记过 audio；宁可漏报也不让全库老提示词一升级就变脏）。
+  const aa = a.audio, ab = b.audio
+  if (aa != null && ab != null && aa !== ab) return false
+  return true
 }
 
 /**
@@ -153,6 +157,10 @@ export function staleReason(rec, cur) {
   const shotChanged = lr.shotRev !== lc.shotRev
   const assetsChanged = !sigEq(lr.assets, lc.assets) || !sigEq(lr.refs, lc.refs)
   const orderChanged = rec.order != null && cur.order != null && rec.order !== cur.order
+  const audioChanged = rec.audio != null && cur.audio != null && rec.audio !== cur.audio
+  // 声音档位（2026-10-20）：文案走用户视角 —— 界面上叫「禁止背景音」，别写「声音档位」这类实现词。
+  if (audioChanged && !shotChanged && !assetsChanged && !orderChanged) return '背景音开关改过了'
+  if (audioChanged) return '分镜、参考素材与背景音开关都改过了'
   const byShot = shotChanged || (!assetsChanged && !orderChanged)
   const byAsset = assetsChanged || orderChanged
   if (byShot && byAsset) return '分镜与参考素材都已变化'

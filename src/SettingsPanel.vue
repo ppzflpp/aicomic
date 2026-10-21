@@ -79,8 +79,8 @@
 
     <!-- 大模型来源（本地 / 云端）：决定每个环节的文字由谁来写。
          默认全部走本地（随软件内置的模型，不联网、不花钱）；想更快更稳就按环节切成云端。
-         🔴 这里是**唯一持久入口** —— 阶段页上那个「本次用云端」只影响本次打开，不落库
-         （见 src/llmSource.js）。切换粒度 = 环节，与 6 个 LLM 调用点一一对应（见 electron/llmProvider.cjs）。 -->
+         🔴 这里是**唯一入口**（2026-10-19 起功能区的临时开关已撤）：改了就长期生效。
+         切换粒度 = 环节，与 LLM 调用点一一对应（见 electron/llmProvider.cjs）。 -->
     <div class="set-card">
       <div class="set-head">
         <h3>大模型来源</h3>
@@ -151,23 +151,24 @@
         {{ llmTestOk ? '✓ ' : '✕ ' }}{{ llmTestMsg }}
       </div>
 
-      <!-- 环节开关（2026-10-15 改版）：原来是「本地/云端」二选下拉，现按用户口径改成**一个勾选框** ——
-           勾上 = 这个环节走云端；不勾 = 走本地内置模型（默认）。勾选态**不做 v-model 回写**，
-           每次渲染重新读 llmStages（主进程是真源），这样保存失败回滚也能立刻反映到框上。 -->
+      <!-- 环节开关（2026-10-19 改版）：勾选框 → 「云端生成」开关（Dragon 要求与功能区那个小开关同一套 UI）。
+           打开 = 这个环节走云端；关闭 = 走本地内置模型（默认）。开关态**不做 v-model 回写**，
+           每次渲染重新读 llmStages（主进程是真源），这样保存失败回滚也能立刻反映到开关上。 -->
       <div class="env-group">各环节用哪个</div>
       <div style="font-size:12px; opacity:.66; margin:-2px 0 8px; line-height:1.7">
-        勾上「云端」就走上面填的云端账号；<b>不勾的一律走本地内置模型</b>（默认，不联网）。
+        打开「云端生成」就走上面填的云端账号；<b>关闭的一律走本地内置模型</b>（默认，不联网）。
       </div>
       <div class="env-row" v-for="s in stageMeta" :key="s.id">
         <span class="env-name">{{ s.label }}</span>
-        <label class="llm-ck" :class="{ on: llmStages[s.id] === 'cloud', dis: llmBusy }">
+        <label class="llm-sw" :class="{ on: llmStages[s.id] === 'cloud', dis: llmBusy }">
           <!-- ⚠️ 元素级 :key 必须跟着「真源的状态」走：用户点一下会先改 DOM，
                若这次落库失败，llmStages 会回滚成原值，而 props 没变化时 Vue 不会 patch
-               回 :checked → 框就停在用户点出来的错误勾选态了。key 一变即重建元素，
+               回 :checked → 开关就停在用户点出来的错误状态了。key 一变即重建元素，
                DOM 强制与主进程的真源对齐。 -->
-          <input type="checkbox" :checked="llmStages[s.id] === 'cloud'" :key="'st:' + (llmStages[s.id] || 'local')" :disabled="llmBusy"
+          <input class="ls-box" type="checkbox" :checked="llmStages[s.id] === 'cloud'" :key="'st:' + (llmStages[s.id] || 'local')" :disabled="llmBusy"
                  @change="setStage(s.id, $event.target.checked ? 'cloud' : 'local')" />
-          <span class="llm-ck-txt">云端</span>
+          <span class="sw-txt">云端生成</span>
+          <span class="sw-track" aria-hidden="true"><span class="sw-knob"></span></span>
         </label>
         <span class="llm-ck-hint">{{ llmStages[s.id] === 'cloud' ? '用上面的云端账号' : '本地内置模型（不联网）' }}</span>
       </div>

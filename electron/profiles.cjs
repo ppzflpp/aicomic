@@ -43,13 +43,17 @@ let db = null;
 /** 扫描结果缓存：{ byId: {id: {profile, source, file}}, errors: [] }，reload() 清空 */
 let _cache = null;
 
-const KINDS = ['image', 'video'];
+/**
+ * upscale（超分）是第三个用途：成片环节把镜头视频放大一档。
+ * 它不参与分镜生成，只在自己那条链路里被用到（见 inference.upscaleVideo）。
+ */
+const KINDS = ['image', 'video', 'upscale'];
 /** 每种用途的激活方案设置键 */
-const SETTING = { image: 'profile.image', video: 'profile.video' };
+const SETTING = { image: 'profile.image', video: 'profile.video', upscale: 'profile.upscale' };
 /** 历史键：老版本只有生图模板这一个设置（imageTemplate）→ 迁移成 profile.image */
 const LEGACY_SETTING = { image: 'imageTemplate' };
 /** 用途的中文名（报错文案用） */
-const KIND_LABEL = { image: '生图', video: '视频' };
+const KIND_LABEL = { image: '生图', video: '视频', upscale: '超分' };
 
 /* ------------------------------------------------------------------ *
  * 文件读取
@@ -130,13 +134,19 @@ function validate(p) {
   }
 
   // 按用途校验「必须有的角色」—— 少了这些，生成流程没法装配
-  const need = p.kind === 'video'
-    ? [['conditioning', '主条件节点（承载提示词 / 首尾帧 / 参考媒体）'],
-       ['guider', '引导器节点（模型 → 条件）'],
-       ['samplerAdv', '高级采样器节点（把噪声 / 引导 / 调度接起来）'],
-       ['model', '模型加载节点（LoRA / σ-shift 都从它接下去）']]
-    : [['latent', '空潜变量节点（文生图时的 latent_image 来源）'],
-       ['save', '产物保存节点']];
+  const NEED = {
+    video: [['conditioning', '主条件节点（承载提示词 / 首尾帧 / 参考媒体）'],
+            ['guider', '引导器节点（模型 → 条件）'],
+            ['samplerAdv', '高级采样器节点（把噪声 / 引导 / 调度接起来）'],
+            ['model', '模型加载节点（LoRA / σ-shift 都从它接下去）']],
+    // 超分：读视频 → 加载超分模型 → 出视频。三个环节缺一个就装不起来
+    upscale: [['videoLoad', '视频读取节点（把镜头视频喂进工作流）'],
+              ['upscaleModel', '超分模型加载节点'],
+              ['save', '产物保存节点']],
+    image: [['latent', '空潜变量节点（文生图时的 latent_image 来源）'],
+            ['save', '产物保存节点']]
+  };
+  const need = NEED[p.kind] || NEED.image;
   const nodes = (p.nodes && typeof p.nodes === 'object') ? p.nodes : {};
   for (const [role, why] of need) if (!str2(nodes[role])) e.push(`nodes 缺角色「${role}」（${why}）`);
 
@@ -155,7 +165,6 @@ function validate(p) {
     if (!p.wiring || typeof p.wiring !== 'object') e.push('视频方案缺 wiring（首尾帧 / 参考媒体接线方式）');
   }
   return e;
-
   function str2(v) { return (typeof v === 'string' && v.trim()) ? v.trim() : ''; }
 }
 

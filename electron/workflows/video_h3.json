@@ -29,8 +29,39 @@
       "latent_image": ["__LATENT_ID__", 1]
     }
   },
-  "22": { "class_type": "VAEDecode", "inputs": { "samples": ["21", 0], "vae": ["12", 0] } },
+  "22": { "class_type": "VAEDecode", "inputs": { "samples": ["__OUT_LATENT__", 0], "vae": ["12", 0] } },
   "23": { "class_type": "VAEDecodeAudio", "inputs": { "samples": ["21", 0], "vae": ["13", 0] } },
   "24": { "class_type": "CreateVideo", "inputs": { "images": ["22", 0], "audio": ["23", 0], "fps": 24, "bit_depth": 8 } },
-  "25": { "class_type": "SaveVideo", "inputs": { "video": ["24", 0], "filename_prefix": "comic/shot", "format": "auto", "codec": "auto" } }
+  "25": { "class_type": "SaveVideo", "inputs": { "video": ["24", 0], "filename_prefix": "comic/shot", "format": "auto", "codec": "auto" } },
+
+  "30": { "class_type": "RandomNoise", "inputs": { "noise_seed": __SEED2__ } },
+  "31": { "class_type": "LTXVSeparateAVLatent", "inputs": { "av_latent": ["21", 0] } },
+  "32": { "class_type": "VAEDecode", "inputs": { "samples": ["31", 0], "vae": ["12", 0] } },
+  "33": { "class_type": "ImageScale", "inputs": { "image": ["32", 0], "upscale_method": "lanczos", "width": __TWOPASS_W__, "height": __TWOPASS_H__, "crop": "center" } },
+  "34": { "class_type": "VAEEncode", "inputs": { "pixels": ["33", 0], "vae": ["12", 0] } },
+  "35": { "class_type": "LTXVConcatAVLatent", "inputs": { "video_latent": ["34", 0], "audio_latent": ["31", 1] } },
+  "36": {
+    "class_type": "MiniMaxH3ImageToVideo",
+    "inputs": {
+      "clip": ["11", 0],
+      "vae": ["12", 0],
+      "prompt": "__PROMPT__",
+      "width": __TWOPASS_W__,
+      "height": __TWOPASS_H__,
+      "length": __LENGTH__
+    }
+  },  "37": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["10", 0], "lora_name": "__TWOPASS_LORA__", "strength_model": 1 } },
+  "38": { "class_type": "MiniMaxH3SigmaShift", "inputs": { "model": ["37", 0], "shift_video": __TWOPASS_SHIFT_V__, "shift_audio": __TWOPASS_SHIFT_A__ } },
+  "39": { "class_type": "BasicGuider", "inputs": { "model": ["38", 0], "conditioning": ["__COND2_ID__", 0] } },
+  "40": { "class_type": "ManualSigmas", "inputs": { "sigmas": "__TWOPASS_SIGMAS__" } },
+  "41": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": ["30", 0],
+      "guider": ["39", 0],
+      "sampler": ["19", 0],
+      "sigmas": ["40", 0],
+      "latent_image": ["__LATENT2_ID__", 1]
+    }
+  }
 }

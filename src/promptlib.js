@@ -2541,6 +2541,77 @@ export function settingBlock(setting, opt = {}) {
 }
 
 /**
+ * 声音档位（2026-10-20）：项目级 'full' | 'dialogue'。
+ * 纯对白档的存在理由：部分用户要「只有人物对白、没有任何背景音 / 场景音」的成片。
+ * H3 出的是**单轨混音**（人声与环境音在同一条轨道上，事后无法分离），所以只能从提示词源头控制 ——
+ * 让模型干脆不写 BGM 与环境音（两个声音字段都写 `N/A`）。
+ */
+export const AUDIO_MODES = ['full', 'dialogue'];
+export function normAudioMode(v) {
+  const s = String(v == null ? '' : v).trim().toLowerCase();
+  return (s === 'full' || s === 'dialogue') ? s : 'full';
+}
+
+/** 纯对白档：中文口径（写进素材块，模型逐条照做） */
+function dialogueOnlyRulesCn() {
+  return [
+    '🔴 **本片声音档位 = 纯对白（用户明确要求：不要任何背景音 / 环境音 / 配乐）**：',
+    '- `overall_soundscape` 一律只写 `N/A`（不写环境底噪、氛围音、人群声、风雨声、器物持续声）。',
+    '- `non_diegetic_music` 一律只写 `N/A`（全片没有配乐，也不写「安静的音乐」这类替代说法）。',
+    '- `dialogue` 照常写台词；角色有明确声源的发声（大笑、痛哭、惊呼、叹息、喘息）仍按「非语言人声」规则写成声音事件句 —— 那是**人物**发出的声音，不是环境音，必须保留。',
+    '- 唯一允许的非对白声音：与台词直接相关的**贴身**动作声（呼吸、衣料摩擦、脚步），且必须轻、不得盖住台词。',
+    '- 禁止：BGM、环境底噪、氛围音、人群 / 市集 / 风雨 / 器物持续声、`overlapping voices`。',
+    '⚠️ 不要写「环境音很低但仍存在」——本档位里它**不存在**，`N/A` 就是答案。',
+    '- **输出前必须自检声音（纯对白三问）**：① `overall_soundscape` 是否就是 `N/A`（没有偷偷写环境音、人群、风雨、器物声）？② `non_diegetic_music` 是否就是 `N/A`（没有换成「quiet score」之类的替代写法）？③ 台词是否完整、说话人正确、清晰可懂；除贴身轻响外没有任何非对白声音？任一项不合格，先改再输出。'
+  ].join('\n');
+}
+
+/** 纯对白档：英文素材块说明（模型输出英文，这段比中文更贴近实际指令） */
+function dialogueOnlyRulesEn(syncEvents) {
+  return 'AUDIO MODE: DIALOGUE ONLY. There is NO background ambience and NO music in this film. '
+    + 'Write `overall_soundscape` as exactly `N/A` and `non_diegetic_music` as exactly `N/A` — '
+    + 'do not describe room tone, crowd noise, weather, traffic, market sounds, ambient hum or any score. '
+    + (syncEvents ? 'Shot-synchronized sound events still belong in detailed_description as usual, ' : '')
+    + 'Keep every spoken line fully intelligible; the only non-dialogue sounds allowed are quiet, '
+    + 'line-adjacent body sounds (breath, cloth, footsteps) that never mask the dialogue. '
+    + 'Never invent ambience or overlapping voices.';
+}
+
+/**
+ * 拼 `{{audioRules}}` 槽文本（纯函数，2026-10-20）。**声音口径的唯一出口** ——
+ * 两套文案互斥，由开关决定下发哪一套；规范正文里不写任何「另一档不适用」的辩论。
+ *
+ * @param {'full'|'dialogue'} mode 声音档位
+ * @param {object|string} setting 集级设定（取 soundBase / bans）
+ * @param {string} [sceneAmbient] 本场环境音（场景档案「环境音」字段）
+ * @param {{syncEvents?:boolean}} [opts] syncEvents=true → h3ref（镜头内声音事件写在 detailed_description）
+ * @returns {string}
+ */
+export function audioRulesBlock(mode, setting, sceneAmbient, opts) {
+  const m = normAudioMode(mode);
+  const syncEvents = !!(opts && opts.syncEvents);
+  if (m === 'dialogue') {
+    return dialogueOnlyRulesCn() + '\n\n' + dialogueOnlyRulesEn(syncEvents);
+  }
+  return [
+    '声音档位 = 标准（保留 BGM 与环境底噪）——下面四条是硬规则：',
+    '· 🔴 **跨镜连续：底噪与配乐必须按「集级声音基底」照抄**：本镜是逐镜独立生成的，模型看不到别的镜头，所以一件在整集里持续存在的声音，必须在每一镜里都写成「它还在响」。`overall_soundscape` 里必须**持续**包含下面声景描述里的环境底噪，`non_diegetic_music` 里必须**持续**包含其中的配乐；同一集内不许给某一镜换一套底噪或换一种配乐。',
+    '· 🔴 **禁止每镜重新起头**：`non_diegetic_music` 里不得出现 `fades in` / `fades out` / `fade to silence` / `ends in silence` / `the music stops` / `very quiet` / `barely audible`。音乐要写成**已经在响、且会继续响**（`the low string score continues throughout, at a steady level`）；环境底噪同理写成一直存在。',
+    '· 🔴 **对白出现时 BGM 自动避让但不停止**：本镜有台词时，`non_diegetic_music` 必须写明配乐为对白让路（`the score stays present but ducks under the dialogue rather than stopping`）——不许写成「对白期间音乐暂停 / 消失」。',
+    '· 🔴 **对白出现时环境音同样让路**：`overall_soundscape` 必须写明底噪**在台词下方继续、不遮盖台词**（`the ambience continues beneath the dialogue without masking it; the spoken lines stay clearly intelligible above it`）。镜头内的一次性音效不得与台词同拍炸响（写成 `after the line has finished`，或轻到不抢戏）。人声类底噪只能写 `distant murmurs` / `muffled chatter`，**禁止** `overlapping voices`，并紧跟 `never louder than the dialogue`。⚠️ 让路 ≠ 变安静：只是音量层级下移，内容照旧、一直存在。',
+    '· **输出前必须自检声音（标准五问）**：① `overall_soundscape` 是否包含了「集级声音基底」里那段**持续底噪**、并且写成「一直在响」而不是「响起 / 消失」？② `non_diegetic_music` 是否与基底描述的配乐一致、并写明它**持续存在**？③ 两个声音字段里有没有 `fade in` / `fade out` / `fade to silence` / `ends in silence` / `the music stops` / `very quiet` / `barely audible` 这类**重新起头或归零**的写法（有就删掉、改成连续存在）？④ 本镜有台词时，`non_diegetic_music` 是否写了对白期间配乐**压低但不停止**？⑤ 本镜有台词时，`overall_soundscape` 是否也写了**在台词下方继续、不遮盖台词**，且没有 `overlapping voices` 这类与台词抢人声的写法、没有与台词同拍炸响的强音效（有就改成 `distant` / `muffled`，或挪到台词之后）？任一项不合格，先改再输出。',
+    '',
+    'Episode-level sound base — the SOUND of this whole episode. Whatever it says is already playing before this shot begins and keeps playing after it ends. '
+      + 'Write both sound fields as a continuation of it: never fade in, never fade out, never end in silence, never call it very quiet. '
+      + (syncEvents ? 'Shot-synchronized sound events still belong in detailed_description as usual. ' : '')
+      + 'If this shot has dialogue, BOTH layers sit under the dialogue without masking it: the music ducks under the dialogue but does NOT stop, '
+      + 'and the ambience stays continuous yet stays beneath the spoken lines — the dialogue must remain clearly intelligible, so write crowd or market noise '
+      + 'as distant murmurs rather than overlapping voices, and keep one-off effects off the same beat as a line:',
+    audioBaseBlock(setting, sceneAmbient)
+  ].join('\n');
+}
+
+/**
  * 拼 `{{audioBase}}` 槽文本（纯函数）：集级声音基底 + 该场环境音。
  * 为什么两块都要：集级管「整集是什么配乐」（BGM 不许重启），场级管「这一场在响什么」（底噪不许消失），
  * 二者合起来才是「这件声音一直在响」的完整交代 —— 只给一半，另一半点会空。

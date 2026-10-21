@@ -54,6 +54,14 @@
  *   sigmas —— 直接给采样序列（逗号分隔的 σ 列表，模板用 ManualSigmas 节点接）。
  *             蒸馏模型的 sigma 网格是训练时定死的（LTX-2.5），给序列比给步数更准确；
  *             走 LoRA 步数派的模型（H3）不声明这一项。
+ *   twoPass —— true = 这一档走「放大二采」：第一遍按本档的 LoRA / 步数 / 画布出一版，
+ *             第二遍把 latent 放大到方案 wiring.twoPass 声明的画布再采一次（补细节）。
+ *             细节全在方案里（第二遍的 LoRA / σ 序列 / 画布 / 节点 id），本模块只透传 enabled。
+ *   unet    —— 本档指定用哪个基模（正则，从 unet / unetRef 槽位的文件清单里挑）。
+ *             用于「同目录并存多套底模」时按档位配对（如剪枝版 vs 原始版）。
+ *             未声明 = 沿用 models.cjs 的默认解析（不覆盖）。
+ *   loraKind —— 'pdd' = 该 LoRA 走 MiniMaxH3PDDLoRA 节点（输出 model+sigmas），
+ *             不是普通 LoraLoaderModelOnly。未声明 = 普通 LoRA。
  *
  * 🔴 蒸馏 LoRA 的「步数 / shift」是训练时定死的配对参数，换任何一个都必须同步换另一个。
  */
@@ -87,6 +95,11 @@ function defaultTier(p) {
  *    它是「档位 + 比例 → 图片 / 视频 / 成片三个分辨率推荐值」的**唯一真相源** ——
  *    前端不硬编码这张表，否则改档位时两处会漂。键不存在时为 {}，前端当「无推荐」处理。
  *
+ * 🔴 2026-10-18：走「放大二采」的档位，`canvas` 换成二采段的 canvas（即**成片画布**）。
+ *    理由：二采档的第一遍只是内部的构图草稿，用户选分辨率 / 图片分辨率要的是「最终成片多大」；
+ *    如果把第一遍的小画布当推荐值下发，角色图会被一起压小 —— 那正是二采要消灭的损失。
+ *    第一遍画布由 inference 内部按成片画布折算，用户完全不必知道。
+ *
  * ⚠️ canvas 里的画布必须与 tiers 里该档位实际挂的那个 LoRA 的**训练分辨率**一致：
  *    768p 训练的 LoRA 配小画布会让镜头构图漂到全景（2026-10-15 实测，见 2026-10-15.md §21）。
  *
@@ -96,13 +109,21 @@ function list(p) {
   const v = videoProfile(p);
   const d = defaultTier(p);
   const canvasOf = (v && v.tierCanvas) || {};
-  return orderOf(p).map(k => ({
-    key: k,
-    label: labelOf(p)[k] || k,
-    desc: descOf(p)[k] || '',
-    default: k === d,
-    canvas: canvasOf[k] || {}
-  }));
+  const tp = (v && v.wiring && v.wiring.twoPass) || null;
+  return orderOf(p).map(k => {
+    // 二采档：优先用它自己声明的成片画布；没声明再退回 tierCanvas
+    const table = tiersOf(v)[k] || {};
+    const hasTwoPass = !!(tp && tp.enabled !== false &&
+      Object.values(table).some(fam => Array.isArray(fam) && fam.some(s => s && s.twoPass)));
+    const c = (hasTwoPass && tp.canvas && Object.keys(tp.canvas).length) ? tp.canvas : (canvasOf[k] || {});
+    return {
+      key: k,
+      label: labelOf(p)[k] || k,
+      desc: descOf(p)[k] || '',
+      default: k === d,
+      canvas: c
+    };
+  });
 }
 
 /** 某档位在指定比例下的推荐画布（渲染层联动用）；没声明 / 比例不支持 → null */
@@ -144,9 +165,15 @@ function safeRe(src) {
  * @param {string} tier            档位 key（非法值回默认档）
  * @param {string} family          支路 key（见方案的 branches 段）
  * @param {string[]} loraFiles     LoRA 目录文件名列表（models.cjs 提供）
- * @returns {{tier, family, lora, steps, shift, downgraded}}
+ * @returns {{tier, family, lora, steps, shift, twoPass, unet, loraKind, sampler, downgraded}}
  *    lora       —— LoRA 文件名；null = 基础模型直跑（工作流摘掉 LoRA 节点）
  *    shift      —— [v, a] 需注入 σ-shift 节点；null = 模型默认调度，不注入
+ *    twoPass    —— true = 本档走放大二采（细节由方案 wiring.twoPass 声明）
+ *    unet       —— 本档指定基模匹配正则（spec.unet）；未声明 = null
+ *    loraKind   —— 'pdd' = PDD 节点加载；未声明 = 普通 LoraLoaderModelOnly
+ *    sampler    —— 采样器名（spec.sampler）；未声明 = null（沿用模板默认 res_multistep）
+ *                 🔴 蒸馏 LoRA（4step/8step turbo/PDD）训练采样器是 euler，用 res_multistep
+ *                    会残影/拖影（2026-10-21 实测），必须显式透传 euler
  *    downgraded —— true = 候选 LoRA 全缺，已兜底成基础模型（按方案 params.steps）
  */
 function resolve(p, tier, family, loraFiles) {
@@ -161,7 +188,10 @@ function resolve(p, tier, family, loraFiles) {
     if (!spec || !spec.match) {
       return {
         tier: t, family, lora: null, steps: Number(spec && spec.steps) || baseSteps,
-        shift: null, sigmas: (spec && spec.sigmas) || null, downgraded: false
+        shift: null, sigmas: (spec && spec.sigmas) || null, twoPass: (spec && spec.twoPass) || false,
+        unet: (spec && spec.unet) || null, loraKind: (spec && spec.loraKind) || null,
+        sampler: (spec && spec.sampler) || null,
+        downgraded: false
       };
     }
     const re = safeRe(spec.match);
@@ -169,12 +199,19 @@ function resolve(p, tier, family, loraFiles) {
     if (hit) {
       return {
         tier: t, family, lora: hit, steps: Number(spec.steps) || baseSteps,
-        shift: spec.shift || null, sigmas: spec.sigmas || null, downgraded: false
+        shift: spec.shift || null, sigmas: spec.sigmas || null, twoPass: (spec.twoPass) || false,
+        unet: spec.unet || null, loraKind: spec.loraKind || null,
+        sampler: spec.sampler || null,
+        downgraded: false
       };
     }
   }
   // 候选 LoRA 全缺：兜底基础模型。步数必须抬到基础步数 —— 4/8 步打在无蒸馏的底模上画面会崩
-  return { tier: t, family, lora: null, steps: baseSteps, shift: null, sigmas: null, downgraded: true };
+  return {
+    tier: t, family, lora: null, steps: baseSteps, shift: null, sigmas: null,
+    twoPass: fam.some(s => !!(s && s.twoPass)), unet: null, loraKind: null,
+    sampler: null, downgraded: true
+  };
 }
 
 /** 兼容旧签名（老调用 / 离线自测）：等价于「用当前激活的视频方案解析」 */

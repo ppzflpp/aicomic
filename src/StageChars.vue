@@ -10,9 +10,12 @@
       <span class="astep">{{ auto.step }}<em v-if="auto.detail">{{ auto.detail }}</em></span>
       <button class="btn ghost xs" :disabled="auto.stop" @click="stopAuto()">停止</button>
     </div>
-    <llm-source-tag :stages="['chars']" where="角色与场景档案" />
 
-    <div v-if="!busy && !shotsGening && !cards.length" class="placeholder">确认分镜后，从分镜中自动提取角色与场景（含各自的档案与美术提示词）。</div>
+    <!-- 🔴 2026-10-19（Dragon：「打开软件时这块空白一会」）：启动期先给一句「正在加载」。
+         两段时间会走到这里：① 首屏还没恢复上次的集（st.booted=false）；② 集已恢复、卡片正在构建。
+         没有它的时候，这段就是**纯空白**（.placeholder 要求 cards 为空且非 busy，看着像卡死）。 -->
+    <div v-if="(!st.booted || loadPending) && !cards.length" class="loading-hint"><i class="spin"></i>正在加载角色与场景…</div>
+    <div v-else-if="!busy && !shotsGening && !cards.length" class="placeholder">确认分镜后，从分镜中自动提取角色与场景（含各自的档案与美术提示词）。</div>
 
     <!-- 单一网格：先摆角色、再摆场景，末尾常驻三张「新增入口」虚线卡；卡片左右结构（左：大图+档案 / 右：提示词 → 参数），无锁定随时可编辑
          脏标签（改编稿改过 → 建议重新出图）统一显示在本模块标题后面，见 App.vue 的 stage-head -->
@@ -150,8 +153,8 @@
               <div class="pf-head">
                 <label>{{ it.c.kind === 'scene' ? '场景档案' : '角色档案' }}</label>
                 <span style="flex:1"></span>
-                <span v-if="profStale(it.c)" class="stale" title="档案改动后提示词还没重算；点这里先消除提示"
-                      @click="ackProfile(it.i)">档案已改 · 提示词待更新</span>
+                <!-- 2026-10-19 Dragon：「档案已改 · 提示词待更新」不再只给一句提示语 ——
+                     需要重做的那颗「刷新提示词」按钮（右栏标题行）直接变琥珀色，点它即按新档案重算。 -->
               </div>
               <textarea v-model="it.c.profile" :rows="it.c.kind === 'scene' ? 5 : 7"
                         :readonly="isLibRo(it.c)"
@@ -194,9 +197,11 @@
                         @click="askDelCard(sc)">✕</button>
                 <!-- 刷新提示词：🔴 视角变体卡共用主体卡的档案（档案区本身也是隐藏的）→ 它上面不给这个入口；
                      按下标取卡用 idxOf(sc)，不用 it.i —— it.i 是「这一格」的下标，与 sc 不一定是同一张 -->
-                <button v-if="!isVariantCard(sc)" class="btn icon" :class="{ regen: sc._profRevAt > 0 }"
+                <button v-if="!isVariantCard(sc)" class="btn icon" :class="{ regen: sc._profRevAt > 0, 'stale-need': profStale(sc) }"
                         :disabled="busy || isLibRo(sc) || !String(sc.profile || '').trim()"
-                        title="刷新提示词（按本卡档案重新生成正向 / 负向提示词，会覆盖当前提示词，之后仍可手改）"
+                        :title="profStale(sc)
+                          ? '档案改过，提示词还没跟上 → 点这里按新档案重算正向 / 负向提示词'
+                          : '刷新提示词（按本卡档案重新生成正向 / 负向提示词，会覆盖当前提示词，之后仍可手改）'"
                         @click="genPromptFromProfile(idxOf(sc))">
                   <span v-if="sc._pgGen" class="busy-txt"><i class="spin"></i></span>
                   <svg v-else viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor"
@@ -285,7 +290,7 @@
               <!-- 第 1 行：分辨率 + 3 视图开关（.card-tv 靠 margin-left:auto 顶到行尾） -->
               <div class="ops-res-row">
                 <label class="card-res">分辨率
-                  <select v-model="sc.res" :disabled="busy || isLibRo(sc)" @change="saveAll()">
+                  <select :value="resOf(sc)" :disabled="true" title="分辨率由视频质量档位决定（在「新建项目 / 项目配置」里切换档位）">
                     <option v-for="o in optsFor(sc)" :key="o.value" :value="o.value">{{ o.label }}</option>
                   </select>
                 </label>
@@ -348,16 +353,26 @@
          必须 mounted + nextTick 后再渲染（tpReady），否则内容被静默丢弃。
          空闲 = 「批量生成提示词 / 批量生成图片」；跑动中 = 「停止批量」；已请求停止 = 「停止中…」（禁点） -->
     <Teleport v-if="tpReady" to="#chars-batch">
-      <button class="btn sm" :class="{ regen: !batchP && !batchPStop && cards.some(c => String(c.profile || '').trim()), danger: batchP || batchPStop }"
-              :disabled="batchPStop || batchI"
-              :title="batchP ? '点击停止：当前条目跑完后，剩余条目不再执行' : '按档案批量重新生成提示词，或只处理档案有变动 / 还没有提示词的条目'"
+      <!-- 批量填充（2026-10-19 Dragon）：把**所有已生成的图**按每镜的角色/场景一次填进参考图区。
+           放在最前面 = 显示在「批量生成提示词」左边。 -->
+      <button class="btn sec sm"
+              :disabled="batchFill || batchP || batchPStop || batchI || batchIStop || !cards.length || !((ep && ep.shots) || []).length"
+              title="把所有已生成的图（角色 + 场景）按每镜分镜行里的「角色 / 场景」自动匹配，一次填进全部镜头的参考图区；只填参考图，不动首尾帧，已有其它参考图不会被删"
+              @click="batchFillRefs">
+        <span v-if="batchFill" class="busy-txt"><i class="spin"></i>填充中…</span>
+        <span v-else>批量填充角色图</span>
+      </button>
+      <button class="btn sm" :class="{ regen: !batchP && !batchPStop && cards.some(c => String(c.profile || '').trim()), danger: batchP || batchPStop, 'stale-need': !batchP && !batchPStop && anyProfStale }"
+              :disabled="batchPStop || batchI || batchFill"
+              :title="anyProfStale && !batchP ? '有卡片的档案改过、提示词还没跟上 → 点这里批量重算' : (batchP ? '点击停止：当前条目跑完后，剩余条目不再执行' : '按档案批量重新生成提示词，或只处理档案有变动 / 还没有提示词的条目')"
               @click="batchPrompts">
         <span v-if="batchPStop" class="busy-txt"><i class="spin"></i>停止中…</span>
         <span v-else-if="batchP">停止批量({{ batchPN }}/{{ batchPTotal }})</span>
         <span v-else>批量生成提示词</span>
       </button>
-      <button class="btn sm" :class="{ regen: !batchI && !batchIStop && cards.some(c => c.candidates.length), danger: batchI || batchIStop }"
-              :disabled="batchIStop || batchP"
+      <!-- 本模块的主操作 = 出图；标题栏里只有它是实心蓝（pro），其余两只是描边 -->
+      <button class="btn sm pro" :class="{ regen: !batchI && !batchIStop && cards.some(c => c.candidates.length), danger: batchI || batchIStop }"
+              :disabled="batchIStop || batchP || batchFill"
               :title="batchI ? '点击停止：当前条目跑完后，剩余条目不再执行' : '依次生成所有还没有图的角色图与场景图（已有图的跳过）'"
               @click="batchImages">
         <span v-if="batchIStop" class="busy-txt"><i class="spin"></i>停止中…</span>
@@ -601,7 +616,6 @@ import {
   sceneCardIssues, outfitShotBrief, parseOutfitList, tidyOutfitDesc, shotHasChar,
   outfitPlan, mergeOutfitList, outfitKnownBrief
 } from './promptlib.js'
-import LlmSourceTag from './LlmSourceTag.vue'
 import { overrideOf } from './llmSource.js'
 
 // 🔴 生图环节的三份兜底（负向词表 / 空镜必备句 / 生图模板）全部来自项目规范 md
@@ -722,10 +736,9 @@ async function fallbackTemplates() {
 
 export default {
   name: 'StageChars',
-  components: { LlmSourceTag },
   data() {
     return {
-      cards: [], busy: false, _b64: {}, _dims: {}, ask: null, _keeper: SCENE_KEEPER_DEFAULT,
+      cards: [], busy: false, loadPending: false, _b64: {}, _dims: {}, ask: null, _keeper: SCENE_KEEPER_DEFAULT,
       // 视角浮层里当前**正在看**的那张（2026-10-13 二改，Dragon）：存**视角卡名**，
       // 空串 = 看主体卡自己那张（浮层里的「正面」）。纯界面态，不落库。
       // 🔴 它只决定「屏幕上在看哪张图」—— **不动物体卡的 cur**，所以一键填充 / 存到项目 /
@@ -736,6 +749,7 @@ export default {
       //   batch*N/Total=按钮上的进度（正在处理第 N 个 / 共 Total 个），跑完/停止归零
       batchP: false, batchPStop: false, batchPN: 0, batchPTotal: 0,
       batchI: false, batchIStop: false, batchIN: 0, batchITotal: 0,
+      batchFill: false,   // 「批量填充角色图」跑动中（只锁按钮，不参与停止队列）
       askBatch: null,
       // 项目角色场景库相关的四个弹窗：手动新增 / 从库导入 / 写入镜头 / 批量入库
       askAdd: null, askImport: null, askWrite: null, askLibSave: null, askDerive: null,
@@ -759,6 +773,8 @@ export default {
     st() { return useProjectStore() },
     pl() { return usePipeline() },
     ep() { return this.st.current },
+    /** 是否有卡片的档案改过、提示词还没重算（标题栏「批量生成提示词」的琥珀态，2026-10-19） */
+    anyProfStale() { return this.cards.some(c => profileDirty(c)) },
     /** 当前生图方案是否支持图生图（不支持时点缩略图只预览、不当底图） */
     capsI2i() { const c = this.st.caps && this.st.caps.image; return !c || c.i2i !== false },
     /**
@@ -1240,6 +1256,13 @@ export default {
       for (const c of this.cards) {
         if (!c || c.kind !== 'character') continue
         if (baseOf(c.name) !== base) continue
+        // 🔴 2026-10-20（Dragon 报障「H10 产品图一键填充整组总是失败」的根因）：
+        //    这里以前只判 variantOf(name)，把**视角变体卡**（`主体--正面/侧面/背面`）也算成了装扮卡 ——
+        //    两种变体都用双横杠，只差 `_varKind` 一个字段。后果是一条链：
+        //      view 卡 → outfitListOf 非空 → fillRefs 误判「这角色有装扮」→ 走逐镜装扮口径
+        //      → 清单里全是 base:false（视角卡）→ 「没有标出基线装束」直接放弃 → 一个镜头都填不进去。
+        //    修法：装扮卡只认 `isOutfitVar`（`_varKind === 'outfit'`，派生装扮卡时写入）。
+        if (!this.isOutfitVar(c)) continue
         const v = variantOf(c.name)
         if (!v) continue                       // 主体卡自己（定妆图）不是装扮
         out.push({ name: v, desc: c._varDesc || '', kw: [v], base: false })
@@ -1656,6 +1679,11 @@ export default {
      *        下次打开又当首次命中，「库已更新」永远检不出来
      */
     async init(ep) {
+      // 加载态：只在「一张卡都还没有」的首次构建里才看得见（重建时 cards 非空，不会闪）
+      this.loadPending = true
+      // 兜底：init 里若有异常导致没走到下面的 `loadPending=false`，也不要把「正在加载」永久挂住
+      clearTimeout(this._lpT)
+      this._lpT = setTimeout(() => { this.loadPending = false }, 8000)
       const olds = []
       for (const o of ep.chars || []) olds.push({ ...o, kind: 'character' })
       for (const o of ep.scenes || []) olds.push({ ...o, kind: 'scene' })
@@ -1674,15 +1702,18 @@ export default {
       // 已有档案但分镜没提到的名字也保留（可能用户手动加过图）
       for (const o of olds) if (names[o.kind].indexOf(o.name) < 0) names[o.kind].push(o.name)
 
-      const tpl = await fallbackTemplates()
-      this._keeper = tpl.keeper || SCENE_KEEPER_DEFAULT   // 场景图的空镜必备句（来自 scenes.md）
-
-      // 项目角色场景库（命中即只读加载；主进程首次访问会自动迁移老项目）
-      let lib = null
-      try { lib = await this.st.loadLibrary(ep.projectId) } catch (_) { lib = null }
-      const byName = new Map()
-      for (const e of ((lib && lib.entries) || [])) byName.set(e.kind + '|' + e.name, e)
-      const aligned = []
+      // 🔴 2026-10-19（Dragon：「打开软件时角色&场景空白一会才显示」）：
+      //    这两件事原来是**串行等待**，而且都挡在 `this.cards = out` 之前 —— 实测冷启动第一趟
+      //    `readPrompt`（要播种内置 md）≈ 1.4s、`loadLibrary`（要迁移老项目）≈ 1.1s，
+      //    这 2.5s 里网格中一张卡都没有，只剩顶部一条细进度条 → 看起来就是「空白」。
+      //    现在改成：① 两个 IPC **并行**发起；② 卡片先用本集已有数据上屏；③ 模板与库在之后增量补齐。
+      //    这两个数据都不影响「有哪些卡」：模板只决定生图时的空镜句 / 负向默认，库只决定只读标记与图源。
+      //    `_initSeq` 是竞态哨兵：并发 init（保存 → watch → 150ms 重建）时，旧的那次不再回写。
+      const seq = (this._initSeq = (this._initSeq || 0) + 1)
+      const deps = Promise.all([
+        fallbackTemplates().catch(() => null),
+        this.st.loadLibrary(ep.projectId).catch(() => null)
+      ])
 
       const out = []
       for (const kind of ['character', 'scene']) {
@@ -1754,30 +1785,59 @@ export default {
       // 逐张卡分辨率默认值（未单独设置过 → 取剧集配置）；清掉上次会话的运行态字段
       const defRes = (ep.res && ep.res.img) || '1920x1080'
       this.cards = out
+      // 卡片数据已就绪 → 加载态到此结束（下面只剩模板/库的增量补齐）
+      this.loadPending = false
       // 🔴 这里**不能**清 viewSel（2026-10-13 e2e 实测）：init 是由「保存 → watch → 150ms 后重建」
       //    常规触发的，用户刚点开某个视角查看、右栏任何一次保存都会触发它 → 预览会自己跳回正面。
       //    清理只放在真正该清的两处：切集（watch 'st.current'）与删卡（doDelCard）。
       this.cards.forEach(c => {
         delete c._gen; delete c._genAt; delete c._pgGen; delete c._pgAt
         if (!c.res) c.res = defRes
-        // ---- 库命中判定 ----
-        const e = byName.get(c.kind + '|' + c.name)
-        if (!e) return
-        c.libId = e.id
-        c._libRevNow = e.libRev || 1
-        if (c.libRevAt) return              // 以前对齐过：保留本集副本，只读；版本落后则亮黄标
-        c.libRevAt = e.libRev || 1          // 首次命中：整卡从库加载
-        c.libReadonly = true                // 且是只读副本（要改去库编辑区，别在本集改）
-        if (e.role) c.role = e.role
-        if (e.profile) c.profile = normalizeProfile(e.profile)
-        if (e.prompt) c.prompt = e.prompt
-        if (e.negative) c.negative = e.negative
-        if (e.res) c.res = e.res
-        if (Array.isArray(e.images) && e.images.length) c.candidates = e.images.slice()
-        if (typeof e.cur === 'number' && e.cur >= 0) c.cur = e.cur
-        c._imgRev = (c._imgRev || 1) + 1    // 素材来自库 → 引用它的镜头提示词会亮 ⚠（预期行为）
-        aligned.push(c.name)
       })
+
+      // ---- 等上面并行发起的两件事（卡片此时已经上屏，这里只做增量补齐）----
+      const [tpl, lib] = await deps
+      if (this._initSeq !== seq) return        // 期间又跑了一次 init → 本次结果作废，别覆盖新的
+      if (tpl) {
+        this._keeper = tpl.keeper || SCENE_KEEPER_DEFAULT   // 场景图的空镜必备句（来自 scenes.md）
+        // 模板晚到：上面建卡时用的 `DEFAULT_NEG` 还是模块级初值（空串）→ 空负向按新模板补一次
+        for (const c of this.cards) if (!String(c.negative || '').trim()) c.negative = DEFAULT_NEG
+      }
+
+      // 项目角色场景库（命中即只读加载；主进程首次访问会自动迁移老项目）
+      const byName = new Map()
+      for (const e of ((lib && lib.entries) || [])) byName.set(e.kind + '|' + e.name, e)
+      if (!byName.size) return
+      const aligned = []
+
+      // 🔴 库对齐会改写「只读标记 / 档案 / 提示词 / 图片 / 当前图」——这零点几秒里**禁掉编辑入口**，
+      //    否则用户抢先改完的内容会被紧接着的对齐覆盖（卡片已经可见，这个窗口是真实存在的）
+      const wasBusy = this.busy
+      this.busy = true
+      try {
+        for (const c of this.cards) {
+          // ---- 库命中判定 ----
+          const e = byName.get(c.kind + '|' + c.name)
+          if (!e) continue
+          c.libId = e.id
+          c._libRevNow = e.libRev || 1
+          if (c.libRevAt) continue            // 以前对齐过：保留本集副本，只读；版本落后则亮黄标
+          c.libRevAt = e.libRev || 1          // 首次命中：整卡从库加载
+          c.libReadonly = true                // 且是只读副本（要改去库编辑区，别在本集改）
+          if (e.role) c.role = e.role
+          if (e.profile) c.profile = normalizeProfile(e.profile)
+          if (e.prompt) c.prompt = e.prompt
+          if (e.negative) c.negative = e.negative
+          if (e.res) c.res = e.res
+          if (Array.isArray(e.images) && e.images.length) c.candidates = e.images.slice()
+          if (typeof e.cur === 'number' && e.cur >= 0) c.cur = e.cur
+          c._imgRev = (c._imgRev || 1) + 1    // 素材来自库 → 引用它的镜头提示词会亮 ⚠（预期行为）
+          aligned.push(c.name)
+        }
+      } finally {
+        this.busy = wasBusy
+      }
+      if (this._initSeq !== seq) return
       if (aligned.length) {
         await this.saveAll()
         this.$root.toast('已从项目角色场景库加载：' + aligned.join('、'))
@@ -1822,8 +1882,12 @@ export default {
       if (c._pgAt) return '生成提示词 已用 ' + fmtMs(Date.now() - c._pgAt)
       return c.promptAt ? '提示词 ' + agoText(c.promptAt) : ''
     },
-    /** 该卡当前生效的分辨率（未单独设置过 → 剧集配置） */
-    resOf(c) { return c.res || (this.ep && this.ep.res && this.ep.res.img) || '1920x1080' },
+    /** 该卡当前生效的分辨率（2026-10-21 起锁定 = 档位推荐画布，不再取每卡独立值） */
+    resOf(c) {
+      const locked = this.st.lockedRes && this.st.lockedRes()
+      if (locked && locked.img) return locked.img
+      return c.res || (this.ep && this.ep.res && this.ep.res.img) || '1920x1080'
+    },
     /** 档位按当前底模过滤；该卡已保存的值不在档位里时补进去（保证显示正确） */
     optsFor(c) { return optsWith((this.st.resOptions || {}).img, this.resOf(c)) },
     /** 大预览当前图片的实际分辨率（读到为止显示空） */
@@ -2105,6 +2169,8 @@ export default {
         this.$root.toast('「' + c.name + '」还没有档案，先填写档案或重新生成分镜')
         return false
       }
+      // 2026-10-19：单卡点刷新 = 接受重算 → 琥珀色立刻收掉（批量传了 ctx，逐卡靠生成完成自然清除）
+      if (!ctx && profileDirty(c)) { c._profAck = c._profRev || 0; await this.saveAll() }
       const isScene = c.kind === 'scene'
       const what = isScene ? '场景提示词' : '角色提示词'
       // 记录本次生成所属的集（收尾写库守卫的比对基准；切集哨兵 'SWITCHED' 不覆盖）
@@ -2796,13 +2862,23 @@ export default {
       }
       return { picks, noImg, sameName }
     },
-    async fillRefs(i) {
+    /**
+     * 把某张卡的图填进「包含它的所有镜头」的参考图区。
+     * @param {number} i 卡片下标
+     * @param {{quiet?:boolean}} [opt] quiet=true 时不弹单卡 toast（批量填充用，最后只报一条汇总）
+     */
+    async fillRefs(i, opt) {
+      const quiet = !!(opt && opt.quiet)
+      const say = (m) => { if (!quiet) this.$root.toast(m) }
       const c = this.liveCard(this.cards[i])
       if (!c) return
       // 🔴 2026-10-16 二次拍板（Dragon）：**主体卡 + 本集已识别过装扮** → 「一键填充」改走**逐镜**口径
       //    —— 穿常服的镜填主体卡整组图、换装的镜填那套装扮卡（见 fillByOutfits）。
       //    没有装扮清单 / 点的是变体卡的单卡填充 → 走下面的原整组/单卡逻辑，行为与改造前逐字一致。
-      if (this.isParentCard(c) && this.outfitListOf(baseOf(c.name)).length) return this.fillByOutfits(i)
+      // 2026-10-20 加固：必须**有基线装束（base:true）**才走逐镜口径 —— 只认清单/卡的「有没有装扮」不够：
+      //    清单若缺基线，fillByOutfits 只会提示「没有标出基线装束」然后一个镜头都不填（用户看到的就是
+      //    「一键填充整组总是失败」）。这种情况退回整组口径，至少能把图填进去。
+      if (this.isParentCard(c) && this.outfitListOf(baseOf(c.name)).some(o => o.base)) return this.fillByOutfits(i, opt)
       // 🔴 整组填充只挂在**父卡**按钮上（2026-10-08 Dragon 拍板）：
       //    父卡（名字正好等于主体名，如「魏牌 V9X」）的「一键填充整组」把**整组**的图一次写入
       //    —— 父卡自己那张 + 全部视角变体，父卡排第一（与 ordered() 显示顺序、<Picture N> 编号一致）；
@@ -2811,10 +2887,10 @@ export default {
       const g = this.refPicksOf(c)
       const picks = g.picks
       const noImg = g.noImg, sameName = g.sameName
-      if (!picks.length) { this.$root.toast('请先在小预览图里选中一张，再点「一键填充」'); return }
+      if (!picks.length) { say('请先在小预览图里选中一张，再点「一键填充」'); return }
       const ep = this.ep
       const shots = (ep && ep.shots) || []
-      if (!shots.length) { this.$root.toast('还没有镜头；先在第 4 块生成分镜再填充'); return }
+      if (!shots.length) { say('还没有镜头；先在第 4 块生成分镜再填充'); return }
       // 🔴 工件在 store 里，必须整份复制出来改完再落库（改同引用会漏存）
       const prompts = JSON.parse(JSON.stringify(ep.prompts || []))
       while (prompts.length < shots.length) prompts.push({ text: '', refs: EMPTY_REFS() })
@@ -2840,7 +2916,7 @@ export default {
         const why = []
         if (dup) why.push(dup + ' 处已有这些图')
         if (full) why.push(full + ' 处参考图已满 ' + MAX_REF_IMG + ' 张')
-        this.$root.toast(why.length ? '没有可填充的位置（' + why.join('、') + '）'
+        say(why.length ? '没有可填充的位置（' + why.join('、') + '）'
           : '没有镜头包含「' + baseOf(c.name) + '」，未填充')
         return
       }
@@ -2858,8 +2934,49 @@ export default {
       if (full) skip.push(full + ' 处已满 ' + MAX_REF_IMG + ' 张')
       if (noImg) skip.push(noImg + ' 张卡没选图')
       if (sameName) skip.push(sameName + ' 张卡图名重复')
-      this.$root.toast('已把' + who + '写入参考图区（' + what.join('、') + '）' +
+      say('已把' + who + '写入参考图区（' + what.join('、') + '）' +
         (skip.length ? '，跳过 ' + skip.join('、') : '') + '；相关镜头提示词已标 ⚠，记得重新生成')
+    },
+    /**
+     * 批量填充角色图（2026-10-19 Dragon）：一次把所有**已生成的图**（角色 + 场景）按每镜分镜行里的
+     * 「角色 / 场景」匹配好，填进全部镜头的参考图区。
+     * 🔴 复用单卡「一键填充」的整套口径（整组 / 装扮逐镜 / applyRef 判重 / 参考图区上限），
+     *    只是把逐卡 toast 静音，最后报一条汇总 —— 这样批量行为与单卡行为**永远一致**，
+     *    不会出现两套填充规则。只填参考图，不动首尾帧与参考视频。
+     * 只跑**父卡 / 场景主体卡**：视角变体由父卡的「整组」一并带入，避免同一主体被写两遍。
+     */
+    async batchFillRefs() {
+      const ep = this.ep
+      const shots = (ep && ep.shots) || []
+      if (!shots.length) { this.$root.toast('还没有镜头；先在第 3 块生成分镜再填充'); return }
+      const targets = this.cards.filter(c => this.isParentCard(c) && this.selFile(this.liveCard(c)))
+      if (!targets.length) {
+        this.$root.toast('还没有可用的图：先「批量生成图片」，或在小预览图里选中一张再填充')
+        return
+      }
+      const before = JSON.stringify(ep.prompts || [])
+      const noShot = []          // 一个镜头都没匹配上的主体（如实报出来，不静默）
+      this.batchFill = true
+      try {
+        for (const c of targets) {
+          const i = this.cards.indexOf(c)
+          if (i < 0) continue
+          if (!this.hitShotCount(this.liveCard(c))) noShot.push(baseOf(c.name))
+          await this.fillRefs(i, { quiet: true })
+        }
+      } finally { this.batchFill = false }
+      const changed = JSON.stringify(ep.prompts || []) !== before
+      const skip = noShot.length ? '；这些主体没有出现在任何镜头里：' + [...new Set(noShot)].join('、') : ''
+      this.$root.toast(changed
+        ? '已把 ' + targets.length + ' 个主体的图按镜头填进参考图区' + skip
+          + '；相关镜头提示词已标 ⚠，记得重新生成'
+        : '没有发生填充：这些图已经填好了（或参考图区已满 ' + MAX_REF_IMG + ' 张）' + skip)
+    },
+    /** 某个主体卡在本集分镜里出现了几个镜头（批量填充的汇总提示用） */
+    hitShotCount(c) {
+      let n = 0
+      for (const s of ((this.ep && this.ep.shots) || [])) if (this.shotHas(c, s)) n++
+      return n
     },
     /* ================= 按装扮把参考图填进每一镜（2026-10-16，Dragon） =================
        「有哪几套装扮、每套长什么样」由生成分镜时的自动识别解决；这一块解决「哪一镜穿哪套」。
@@ -2875,8 +2992,9 @@ export default {
      * 该装扮还没建卡或还没出图 → 跳过该装扮的镜头，并在 toast 里**如实报出来**（不静默）。
      * @returns {number} 填充到的镜数（0 = 一处都没填）
      */
-    async fillByOutfits(i) {
-      const say = (m) => this.$root.toast(m)
+    async fillByOutfits(i, opt) {
+      const quiet = !!(opt && opt.quiet)
+      const say = (m) => { if (!quiet) this.$root.toast(m) }
       const root = this.liveCard(this.cards[i])
       if (!root) return 0
       const base = baseOf(root.name)

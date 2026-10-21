@@ -513,6 +513,9 @@ const RES_VID_GENERIC = [
   ['1024x1024', '1024×1024（1:1）']
 ];
 const RES_OUT = [
+  // 🔴 2026-10-19：'auto' = 成片跟随**第一个镜头**视频的实际分辨率（不缩放、不补边）。
+  //    它是默认档：分镜生成用多大画布，成片就是多大 —— 避免导出时被 bicubic 放大一次。
+  ['auto',      '自动（跟第一个镜头）'],
   ['1920x1080', '1920×1080（16:9）'],
   ['1280x720',  '1280×720（16:9）'],
   ['2560x1440', '2560×1440（16:9）'],
@@ -548,10 +551,13 @@ function check() {
   const root = modelsRoot();
   const imgP = profiles.active('image');
   const vidP = profiles.active('video');
+  // 超分方案（kind='upscale'）也要在模型管家里可见 —— 否则用户不知道该往
+  // diffusion_models / vae 里补那两个 SeedVR2 文件，只能在点「超分」时才发现缺模型。
+  const upP = profiles.active('upscale');
 
   // 当前方案要求哪些目录（决定下面那 6 个目录项的「必需」标记）
   const needDirs = new Set();
-  for (const p of [imgP, vidP]) {
+  for (const p of [imgP, vidP, upP]) {
     if (!p) continue;
     for (const a of p.assets) if (a.required) needDirs.add(a.dir);
   }
@@ -572,7 +578,7 @@ function check() {
 
   // 方案要求的具体模型文件 —— 同一个目录里可能混放多套方案的权重（如 diffusion_models 里
   // 既放生图主模型又放视频主模型），只看目录项看不出到底缺哪一个，所以逐个列出来。
-  for (const p of [imgP, vidP]) {
+  for (const p of [imgP, vidP, upP]) {
     if (!p) continue;
     for (const a of p.assets) {
       const r = resolveAsset(a);

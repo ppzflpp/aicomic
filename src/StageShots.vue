@@ -2,8 +2,6 @@
   <div>
     <div v-if="busy || pBusy || vBusy" class="progress"><div class="bar indeterminate"></div></div>
 
-    <llm-source-tag :stages="['shots', 'prompt', 'split']" where="分镜页" />
-
     <div v-if="!shots.length && !adapted && !busy" class="placeholder" style="margin-bottom:8px">尚无分镜。先在第 2 块完成改编稿再点「生成分镜」，或直接手动添加镜头。</div>
 
     <!-- 分镜自检横幅（2026-10-09）：规范写了镜头量上限（广告 = 段落数 × 1.5 / 总时长 ±20%），
@@ -171,9 +169,6 @@
             <span class="zone-tag">{{ promptZoneName() }}</span>
             <span v-if="genTextP(i)" class="gen-ms" :class="{ live: prompts[i] && prompts[i]._genAt }">{{ genTextP(i) }}</span>
             <span style="flex:1"></span>
-            <span v-if="promptStale(i)" class="stale" @click="ackPrompt(i)" title="点击消除提示">
-              {{ staleWhatPrompt(i) }} · <b>生成</b>后消失
-            </span>
           </div>
           <!-- 2026-10-10（Dragon）：本区标题下方的文案整块移除 ——
                原来还有「角色 · 时长 · 动作/对白摘要」摘要行与「正在生成提示词…」；
@@ -247,10 +242,16 @@
           <div class="f ta-main"><textarea v-model="prompts[i].text" rows="6" :placeholder="promptPlaceholder()"
                                            @change="touchPrompt(i)"></textarea></div>
 
-          <!-- 「生成提示词」（次级功能：绿色）：在提示词框下方，靠左单独一行 -->
+          <!-- 「生成提示词」（次级功能：绿色）：在提示词框下方，靠左单独一行。
+               2026-10-19 Dragon：上游（分镜 / 参考素材）变过 → 这颗按钮直接变琥珀色（.stale-need），
+               点下去就把提示词重做一遍，按钮随即恢复绿色。 -->
           <div class="cops gen-p-row">
             <button class="btn sec sm"
-                    :disabled="pBusy || !prompts[i]" :title="'按本行分镜与参考素材重新生成本镜头的 ' + promptZoneName()"
+                    :class="{ 'stale-need': promptStale(i) }"
+                    :disabled="pBusy || !prompts[i]"
+                    :title="promptStale(i)
+                      ? ('需要重新生成：' + staleWhatPrompt(i) + '（点这里按当前分镜与素材重做本镜提示词）')
+                      : ('按本行分镜与参考素材重新生成本镜头的 ' + promptZoneName())"
                     @click="genP(i)">
               <span v-if="prompts[i] && prompts[i]._gen" class="busy-txt"><i class="spin"></i>生成中…</span>
               <span v-else>生成提示词</span>
@@ -264,11 +265,11 @@
               <span v-if="prompts[i]" class="hint">{{ modeOf(prompts[i], i).text }}</span>
             </span>
             <span style="flex:1"></span>
-            <!-- 视频分辨率（从提示词上方移入；宽度按内容自适应，不撑满父布局）。
-                 🔴 只在批量跑动中禁用——「已采用」不算锁定（2026-09-23 起采用按钮已移除、点选即选中），
-                 生成过视频后仍要能换分辨率重新生成（旧版挂在 confirmed 上是锁定工作流残留） -->
+            <!-- 视频分辨率（2026-10-21：跟随视频质量档位锁定 —— 值 = 档位推荐画布，不可手改。
+                 🔴 只在批量跑动中禁用——「已采用」不算锁定（2026-09-23 起采用按钮已移除、点选即选中）；
+                 生成过视频后仍要能换分辨率重新生成（旧版挂在 confirmed 上是锁定工作流残留）已由档位锁定取代） -->
             <label class="card-res res-fit" v-if="vstate[i]">视频分辨率
-              <select v-model="vstate[i].res" :disabled="vBusy" @change="saveVideos()">
+              <select :value="resOf(i)" :disabled="true" title="分辨率由视频质量档位决定（在「新建项目 / 项目配置」里切换档位）">
                 <option v-for="o in optsFor(i)" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
             </label>
@@ -281,8 +282,10 @@
               <span v-if="stopBusy" class="busy-txt"><i class="spin"></i>停止中…</span>
               <span v-else>停止生成</span>
             </button>
-            <button v-else class="btn sm" :class="{ regen: vstate[i] && vstate[i].files.length }"
-                    :disabled="vBusy || !prompts[i] || !prompts[i].text.trim()" @click="genV(i)">
+            <button v-else class="btn sm" :class="{ regen: vstate[i] && vstate[i].files.length, 'stale-need': videoStale(i) }"
+                    :disabled="vBusy || !prompts[i] || !prompts[i].text.trim()"
+                    :title="videoStale(i) ? ('需要重新生成：' + staleWhatVideo(i)) : ''"
+                    @click="genV(i)">
               生成视频
             </button>
           </div>
@@ -320,10 +323,7 @@
                「镜头 N · 角色 · 时长」摘要、生成耗时胶囊、本次参考素材三行文案全部移除；
                每条视频自己的生成耗时改成视频框右上角的角标（.vid-ms）。 -->
           <div class="vmeta">
-            <!-- 脏标记：提示词/分镜/素材图在上次视频生成之后又变了 -->
-            <div v-if="videoStale(i)" class="stale" style="margin-top:4px" @click="ackVideo(i)" title="点击消除提示">
-              {{ staleWhatVideo(i) }} · <b>生成视频</b>后消失
-            </div>
+            <!-- 2026-10-19：视频「需要重生成」不再用一句提示语 —— 由左下角「生成视频」按钮的琥珀色表示 -->
           </div>
         </div>
       </div>
@@ -352,22 +352,39 @@
                不带括号取值，Vue 会把这个 bind 到实例上的方法原样渲染成原生函数字符串。 -->
     <Teleport v-if="tpReady" to="#shots-total">
       <span v-if="shots.length" class="total-dur"
-            :title="'本集 ' + shots.length + ' 个镜头的时长合计（单镜上限 15s；成片还含转场与片头片尾，实际会略长）'">
+            :title="'本集 ' + shots.length + ' 个镜头加起来 ' + totalDur + ' 秒（单个镜头最长 15 秒；成片还会加上转场和片头片尾，实际更长）'">
         总时长 {{ totalDur }}s
       </span>
     </Teleport>
+    <Teleport v-if="tpReady" to="#shots-audio">
+      <!-- 禁止背景音开关（2026-10-20）：项目级、一个开关控制本集全部镜头。
+           开 = 视频提示词的两个声音字段都写 N/A（无配乐、无环境声，只留人物说话）；
+           关 = 标准（配乐与环境底噪按集级声音基底写，对白出现时让路）。
+           🔴 文案一律用户视角：不出现「档位 / 声音基底 / 字段 / 照抄」这类实现词。
+           🔴 不手动置脏：切完档 curPromptSig 里的 audio 变了 → 已生成的提示词自动变琥珀。 -->
+      <label class="llm-sw audio-sw" :class="{ on: audioSwOn, dis: busy }"
+             :title="audioSwOn
+               ? '已开启：生成的视频只有人物说话声，没有配乐和环境声。点一下恢复原来的声音。'
+               : '打开后，生成的视频只有人物说话声，没有配乐和环境声。'">
+        <input class="ls-box" type="checkbox" :checked="audioSwOn" :key="'am:' + audioMode" :disabled="busy"
+               @change="setAudioMode($event.target.checked)" />
+        <span class="sw-txt">禁止背景音</span>
+        <span class="sw-track" aria-hidden="true"><span class="sw-knob"></span></span>
+      </label>
+    </Teleport>
     <Teleport v-if="tpReady" to="#shots-batch">
-      <button class="btn sm" :class="{ regen: !batchP && !batchPStop && prompts.some(p => p.text.trim()), danger: batchP || batchPStop }"
+      <button class="btn sm" :class="{ regen: !batchP && !batchPStop && prompts.some(p => p.text.trim()), danger: batchP || batchPStop, 'stale-need': !batchP && !batchPStop && anyPromptStale }"
               :disabled="batchPStop || batchV"
-              :title="batchP ? '点击停止：当前镜头跑完后，剩余镜头不再执行' : '重新生成所有镜头的提示词，或只补缺失的'"
+              :title="anyPromptStale && !batchP ? '有镜头的提示词过期了（分镜或素材改过）→ 点这里批量重做，也可以只补还没生成的' : (batchP ? '点击停止：当前这个镜头跑完就停，剩下的不再执行' : '重新生成所有镜头的提示词，也可以只补还没生成的')"
               @click="batchPrompts">
         <span v-if="batchPStop" class="busy-txt"><i class="spin"></i>停止中…</span>
         <span v-else-if="batchP">停止批量({{ batchPN }}/{{ batchPTotal }})</span>
         <span v-else>批量生成提示词</span>
       </button>
-      <button class="btn sm" :class="{ regen: !batchV && !batchVStop && shots.some((_, i) => vstate[i] && vstate[i].files.length), danger: batchV || batchVStop }"
+      <!-- 本模块的主操作 = 出视频；标题栏里只有它是实心蓝（pro），提示词 / 合并都是描边 -->
+      <button class="btn sm pro" :class="{ regen: !batchV && !batchVStop && shots.some((_, i) => vstate[i] && vstate[i].files.length), danger: batchV || batchVStop, 'stale-need': !batchV && !batchVStop && anyVideoStale }"
               :disabled="batchVStop || batchP || (!batchV && !prompts.some(p => p && p.text.trim()))"
-              :title="batchV ? '点击立刻停止：中断当前镜头的生成任务并释放显存，剩余镜头不再执行（当前进度丢弃）' : (prompts.some(p => p && p.text.trim()) ? '重新生成所有镜头的视频，或只补没有视频的镜头' : '当前没有任何 H3 提示词：请先逐镜头生成提示词，或用左边的「批量生成提示词」')"
+              :title="anyVideoStale && !batchV ? '有镜头的视频过期了（提示词或素材改过）→ 点这里批量重做，也可以只补还没生成的' : (batchV ? '点击立刻停止：当前这一镜马上中断，显存会释放，这一镜的进度会丢弃' : (prompts.some(p => p && p.text.trim()) ? '重新生成所有镜头的视频，也可以只补还没生成视频的镜头' : '还没有任何镜头提示词：先逐镜生成提示词，或点左边的「批量生成提示词」'))"
               @click="batchVideos">
         <span v-if="batchVStop" class="busy-txt"><i class="spin"></i>停止中…</span>
         <span v-else-if="batchV">停止生成({{ batchVN }}/{{ batchVTotal }})</span>
@@ -376,8 +393,11 @@
       <!-- 一键合并可合并镜头（2026-10-09）：把行内黄标标出的「可与上一镜合并」一次并掉 ——
            此前只能逐镜点黄标 → 弹窗 → 确认，实测 12 镜里有 8 处可合并 = 手点 8 次。
            判据与黄标同源（promptlib.mergeAllShots），没有可合并的时按钮自动禁用。
-           2026-10-09（Dragon）：**点一下直接执行**，不再弹确认框（生成后自检超限时也是同一个方法自动跑）。 -->
-      <button class="btn sm" :disabled="!mergePlan.count || batchP || batchV || busy"
+           2026-10-09（Dragon）：**点一下直接执行**，不再弹确认框（生成后自检超限时也是同一个方法自动跑）。
+           2026-10-20（Dragon）：入口隐藏（v-if="false"）—— 暂时不需要这个功能；
+           mergeShotsAll / mergePlan 与生成后自检的自动合并逻辑原样保留，改回 v-if 即可恢复
+           （与「一键续接首帧」「整理镜头」同一手法）。 -->
+      <button v-if="false" class="btn sm" :disabled="!mergePlan.count || batchP || batchV || busy"
               :title="mergePlan.count ? '把行内标出「可与上一镜合并」的相邻镜头一次合并（共 ' + mergePlan.count + ' 处），点一下直接执行' : '没有可合并的相邻镜头'"
               @click="mergeShotsAll()">合并镜头{{ mergePlan.count ? '(' + mergePlan.count + ')' : '' }}</button>
       <!-- 首帧接力（2026-10-09）：把第 2 个及之后每个镜头的首帧设成上一镜视频的最后一帧。
@@ -517,11 +537,10 @@ import { useProject as useProjectStore } from './stores/project.js'
 import { usePipeline, fmtMs } from './stores/pipeline.js'
 import { stepLog, secs, dbgPrompt } from './ulog.js'
 import { composeSystem, composeUser, normalizeProfile, currentStyleLimits } from './prompts.js'
-import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, mergeShotPair, mergeAllShots, fitDurs, fitShotCount, pacingPlan, shotCheck, storyUnits, sceneKey, sceneAlign, sceneCardIssues, sceneDeclIssues, charAlign, stripTailEnNote, profileBrief, splitShot, splitAll, splitTag, auditModelArchive, normSetting, settingBlock, audioBaseBlock, anchorBrief, pickProfileField } from './promptlib.js'
+import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, mergeShotPair, mergeAllShots, fitDurs, fitShotCount, pacingPlan, shotCheck, storyUnits, sceneKey, sceneAlign, sceneCardIssues, sceneDeclIssues, charAlign, stripTailEnNote, profileBrief, splitShot, splitAll, splitTag, auditModelArchive, normSetting, settingBlock, audioBaseBlock, audioRulesBlock, anchorBrief, pickProfileField } from './promptlib.js'
 import { parseRes, resLabel, optsWith, clampDur, seg, joinPath } from './resutil.js'
 import { baseOf, variantOf, groupProfiles } from './variant.js'
 import { touchRevs, sigStale, staleReason, refOrderSig, SIG_V } from './stale.js'
-import LlmSourceTag from './LlmSourceTag.vue'
 import { overrideOf } from './llmSource.js'
 
 // 🔴 提示词全部来自项目 prompts/ 下的规范 md：shots.md 承载任务身份与 JSON 输出契约，
@@ -542,7 +561,6 @@ const REFV_KEEP = 6
 
 export default {
   name: 'StageShots',
-  components: { LlmSourceTag },
   data() {
     return {
       shots: [], busy: false,
@@ -611,6 +629,9 @@ export default {
     /** 依赖每秒自增的 tick，让「生成中 已用 X」实时刷新 */
     live() { return this.pl.tick },
     allPromptsFilled() { return this.prompts.length > 0 && this.prompts.every(p => p.text.trim()) },
+    /** 本页是否有「上游变过、需要重做」的提示词 / 视频（标题栏批量按钮的琥珀态，2026-10-19） */
+    anyPromptStale() { return this.prompts.some((_, i) => this.promptStale(i)) },
+    anyVideoStale() { return this.shots.some((_, i) => this.videoStale(i)) },
     /** 参考素材上限（模板里显示「最多 N 张/个」用；method 里放常量不会挂到实例上，必须走 computed） */
     maxRefImg() { return MAX_REF_IMG },
     maxRefVid() { return MAX_REF_VID },
@@ -641,6 +662,18 @@ export default {
       const p = (this.st.tree || []).find(x => x.id === this.epProjectId)
       return Math.max(0, Math.round(Number(p && p.res && p.res.targetSec) || 0))
     },
+    /**
+     * 声音档位（2026-10-20）：项目级 'full' | 'dialogue'，与 db 的 projects.audio_mode 同步。
+     * 🔴 必须从**项目行**实时读（剧集不带快照）—— 改一次对本项目所有剧集立即生效，与档位 / 风格同款语义。
+     * 开关本体放在「分镜脚本」模块标题行（App.vue 的 #shots-audio）：那是模块级唯一实例，
+     * 一个开关控制本集全部镜头；绝不能放进每行的 .row-head（那里每镜渲染一次 = N 个开关）。
+     */
+    audioMode() {
+      const p = (this.st.tree || []).find(x => x.id === this.epProjectId)
+      const m = (p && p.res && p.res.audioMode) || 'full'
+      return m === 'dialogue' ? 'dialogue' : 'full'
+    },
+    audioSwOn() { return this.audioMode === 'dialogue' },
     /**
      * 节奏体检卡的数据（双轨配时，2026-10-13）。
      * 返回 null = 当前体裁**没声明** limits.pacing（广告）→ 卡片恒不渲染，一行都不影响它。
@@ -818,13 +851,31 @@ export default {
       catch (_) { this.limits = {} }
     },
     /** 落库单集目标时长（项目级）。0 = 不启用；只写这一个字段，不做整树刷新（免得扰动正在编辑的分镜）。 */
-    async saveTarget() {
-      const pid = this.epProjectId
+    async saveTarget() {      const pid = this.epProjectId
       if (!pid) return
       const v = Math.max(0, Math.min(1800, Math.round(Number(this.targetSec) || 0)))
       this.targetSec = v
       await this.st.setProjectTargetSec(pid, v)
       this.$root.toast(v ? ('已设置单集目标时长 ' + v + ' 秒 —— 生成分镜时镜数由它推导') : '已关闭目标时长（镜数回到由内容决定）')
+    },
+    /**
+     * 切换声音档位（2026-10-20）：项目级 → 对本项目所有剧集立即生效。
+     * 🔴 不手动「置脏」：脏标记走签名比对（curPromptSig 里带 audio），切完档所有已生成的
+     *    视频提示词签名自然对不上 → 行内「生成提示词」与批量按钮自动变琥珀（stale-need）。
+     * 🔴 不刷新整棵树（与 saveTarget 同款理由）：只就地改树上那一项，避免扰动正在编辑的分镜。
+     */
+    async setAudioMode(on) {
+      const pid = this.epProjectId
+      if (!pid) return
+      const next = on ? 'dialogue' : 'full'
+      try {
+        const r = await window.studio.setProjectRes(pid, { audioMode: next })
+        const p = (this.st.tree || []).find(x => x.id === Number(pid))
+        if (p && p.res) p.res.audioMode = (r && r.audioMode) || next
+        this.$root.toast(on
+          ? '已开启「禁止背景音」：之后重新生成的视频只有人物说话声。已生成的提示词已标为需要重做。'
+          : '已关闭「禁止背景音」：视频会重新带上配乐和环境声。')
+      } catch (e) { this.st.fail(e) }
     },
     initShots(ep) {
       this.shots = JSON.parse(JSON.stringify(ep.shots || []))
@@ -907,8 +958,8 @@ export default {
         const text = await window.studio.llmChat([
           { role: 'system', content: system },
           { role: 'user', content: user }
-        ], { temperature: 0.5, maxTokens: 12288, json: true, stage: 'shots', providerOverride: overrideOf('shots'), label: '阶段3 分镜脚本', thinking: 'low' })
-        const parsed = JSON.parse(require_json(text))
+        ], { temperature: 0.5, maxTokens: 12288, json: true, stage: 'shots', providerOverride: overrideOf('shots'), label: '阶段3 分镜脚本', thinking: 'low', timeoutMs: 600000 })
+        const parsed = parse_json(text)
         const used = new Set()
         const shots = pickArr(parsed, ['shots', '镜头', '镜头列表'], used)
         if (!shots || !shots.length) throw new Error('LLM 未返回镜头数组')
@@ -1397,7 +1448,9 @@ export default {
     asigOf(p) { return (p && this.asig[p]) || '' },
     /** 提示词「应该」匹配的上游签名（分镜版本 + 素材版本 + 素材构成 + 素材顺序/内容，见 stale.js） */
     curPromptSig(i) {
-      const refs = (this.prompts[i] && this.prompts[i].refs) || {}
+      const p0 = this.prompts[i] || {}
+      const refs = p0.refs || {}
+      const rec = p0._sig || null
       return {
         v: SIG_V,
         shotRev: (this.shots[i] && this.shots[i]._rev) || 1,
@@ -1406,7 +1459,10 @@ export default {
         refs: { img: (refs.images || []).length, vid: (refs.videos || []).length, first: refs.first ? 1 : 0, last: refs.last ? 1 : 0 },
         // 素材顺序 + 文件内容（v2 新增）：拖动排序、换图、素材被删都算「变了」。
         // 指纹还没取回来 → null（sigSame 见到 null 就不比这一项，绝不放假 ⚠）
-        order: this.asigReady ? refOrderSig(refs, p => this.asigOf(p)) : null
+        order: this.asigReady ? refOrderSig(refs, p => this.asigOf(p)) : null,
+        // 声音档位（2026-10-20）：切开关 → 全部已生成提示词的签名对不上 → 自动变脏。
+        // 🔴 兼容存量：升级前生成的签名没有 audio 键 → 给 null（不比），否则一升级就全屏琥珀。
+        audio: (rec && rec.audio == null) ? null : this.audioMode
       }
     },
     /** 提示词是否过期：生成后分镜/素材变过，且用户没有点掉提示 */
@@ -1424,11 +1480,11 @@ export default {
       const v = this.vstate[i]
       return staleReason(v && v._sig, this.curVideoSig(i))
     },
-    async ackPrompt(i) {
+    async ackPrompt(i, quiet) {
       const p = this.prompts[i]
       p._ack = this.curPromptSig(i)
       await this.savePrompts()
-      this.$root.toast('提示已消除')
+      if (!quiet) this.$root.toast('提示已消除')
     },
     /** 手动编辑提示词：版本 +1（已生成的视频随之过期） */
     async touchPrompt(i) {
@@ -1453,11 +1509,11 @@ export default {
       if (!v || !v._sig || !v.files.length) return false
       return sigStale(v._sig, this.curVideoSig(i), v._ack)
     },
-    async ackVideo(i) {
+    async ackVideo(i, quiet) {
       const v = this.vstate[i]
       v._ack = this.curVideoSig(i)
       await this.saveVideos()
-      this.$root.toast('提示已消除')
+      if (!quiet) this.$root.toast('提示已消除')
     },
     /** 模块级脏标记（改编稿在分镜生成之后又被改过）统一显示在模块标题行，见 App.vue 的 stage-head */
     /* ---- 参考素材（都可不选；选什么用什么） ---- */
@@ -1823,6 +1879,8 @@ export default {
       const s = this.shots[i]
       if (!s) return false
       const p = this.prompts[i]
+      // 2026-10-19：单镜点「生成提示词」= 接受重做 → 按钮立刻褪掉琥珀色（批量传了 ctx，逐条靠新签名自然清除）
+      if (!ctx && this.promptStale(i)) await this.ackPrompt(i, true)
       // 记录本次生成所属的集（收尾写库守卫的比对基准；切集哨兵 'SWITCHED' 不覆盖）
       if (this._busyEpId !== 'SWITCHED') this._busyEpId = this.st.current && this.st.current.id
       this.pBusy = true
@@ -1914,7 +1972,9 @@ export default {
           // 🔴 集级声音基底 + 本场环境音（rev28）：h3.md / h3ref.md 的「## 素材格式」新增的槽。
           //    它治的是「每镜各写 very quiet + 首尾渐隐、拼起来四次重新起头」（《真人剧4》实测
           //    镜 1 只有 −34.6 LUFS）。两块都没有时给 `（无）`，不让模板留空。
-          audioBase: audioBaseBlock(this.epSetting, this.sceneAmbientOf(s)),
+          // 🔴 声音档位（2026-10-20）：纯对白档下这块不拼声音基底/环境音，改写成「两个字段都写 N/A」。
+          //    口径文字与素材**同一个槽**（{{audioRules}}）—— 规范正文里不再有任何「另一档不适用」的辩论。
+          audioRules: audioRulesBlock(this.audioMode, this.epSetting, this.sceneAmbientOf(s), { syncEvents: mode === 'Ref2VA' }),
           change: chg,
           refAssets,
           frames
@@ -2063,8 +2123,10 @@ export default {
       // 首帧接力：切集/重开时重算一次「首帧是否过期」（模板里只读结果，不在渲染路径改状态）
       this.refreshFrameStale()
     },
-    /** 该镜头当前生效的分辨率（未单独设置过 → 剧集配置） */
+    /** 该镜头当前生效的分辨率（2026-10-21 起锁定 = 档位推荐画布，不再取每镜头独立值） */
     resOf(i) {
+      const locked = this.st.lockedRes && this.st.lockedRes()
+      if (locked && locked.vid) return locked.vid
       const s = this.vstate[i]
       return (s && s.res) || (this.st.current && this.st.current.res && this.st.current.res.vid) || '864x480'
     },
@@ -2244,7 +2306,7 @@ export default {
           { role: 'system', content: system },
           { role: 'user', content: user }
         ], { temperature: 0.7, maxTokens: 3072, json: true, stage: 'split', providerOverride: overrideOf('split'), label: '拆分镜头重写' })
-        const parsed = JSON.parse(require_json(text))
+        const parsed = parse_json(text)
         const list = Array.isArray(parsed) ? parsed : pickArr(parsed, ['shots', '镜头', '镜头列表'], new Set())
         if (!Array.isArray(list) || list.length !== idx.length) {
           throw new Error('模型返回 ' + (Array.isArray(list) ? list.length : 0) + ' 段，与拆分段数 ' + idx.length + ' 不符，本次结果已放弃')
@@ -2502,6 +2564,8 @@ export default {
       const pr = ((this.st.current.prompts || [])[i] || {})
       const prompt = pr.text
       if (!prompt) { this.st.fail(new Error('镜头 ' + (i + 1) + ' 缺少 ' + this.promptZoneName() + '，请先生成本镜头的提示词')); return false }
+      // 2026-10-19：单镜点「生成视频」= 接受重做 → 按钮立刻褪掉琥珀色（批量走签名自然清除）
+      if (!ctx && this.videoStale(i)) await this.ackVideo(i, true)
       // 参考素材全部来自本行该镜头的设置（可不选）
       // 🔴 2026-10-14：与提示词**同一份**过滤结果（按本镜 chars / scene）
       //    —— 否则提示词里的 <Picture N> 与实际注入 ComfyUI 的图对不上。
@@ -2673,14 +2737,95 @@ export default {
 
 function emptyRefs() { return { images: [], videos: [], first: null, last: null } }
 
-function require_json(text) {
-  const m = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-  const raw = m ? m[1] : text
+/* ---------------- JSON 宽松解析（与主进程 extractJson 同一套口径） ---------------- *
+ * 🔴 2026-10-19 修：旧实现用 `lastIndexOf('}')` 切到「最后一次闭合括号」，模型输出
+ *    「一个完整 JSON + 后面又续写一段」时会把两段一起包进来，直接报
+ *    `Unexpected non-whitespace character after JSON at position N`（分镜白等 124s）。
+ *    现在按**括号配平**逐段扫描：先试整段；失败就取出所有完整顶层值并合并。
+ *    必须字符串感知 —— 台词里的 `}` `]` `"` 与转义 `\"` 都不能算括号。
+ */
+function matchBracket(s, i0) {
+  let depth = 0
+  let inStr = false
+  let esc = false
+  for (let i = i0; i < s.length; i++) {
+    const c = s[i]
+    if (inStr) {
+      if (esc) { esc = false; continue }
+      if (c === '\\') { esc = true; continue }
+      if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') { inStr = true; continue }
+    if (c === '{' || c === '[') { depth++; continue }
+    if (c === '}' || c === ']') {
+      depth--
+      if (depth === 0) return i
+    }
+  }
+  return -1
+}
+
+/** 扫描 start 之后的全部顶层 JSON 值（值之间允许夹杂说明文字 / 逗号 / 换行） */
+function scanJsonValues(raw, start) {
+  const parts = []
+  let truncated = false
+  let i = start
+  while (i < raw.length) {
+    if (raw[i] !== '{' && raw[i] !== '[') { i++; continue }
+    const end = matchBracket(raw, i)
+    if (end < 0) { truncated = true; break }   // 最后一段没闭合 = 输出被截断
+    parts.push(raw.slice(i, end + 1))
+    i = end + 1
+  }
+  return { parts, truncated }
+}
+
+/** 多段 JSON 合并：对象按键合并（数组拼接、标量以先出现的为准），纯数组直接拼接 */
+function mergeJsonValues(vals) {
+  const objs = vals.filter(v => v && typeof v === 'object' && !Array.isArray(v))
+  const arrs = vals.filter(Array.isArray)
+  if (!objs.length) return arrs.length === 1 ? arrs[0] : [].concat(...arrs)
+  const out = {}
+  for (const o of objs) {
+    for (const k of Object.keys(o)) {
+      const cur = out[k]
+      const next = o[k]
+      if (cur === undefined) { out[k] = next; continue }
+      if (Array.isArray(cur) && Array.isArray(next)) { out[k] = cur.concat(next); continue }
+      // 同名标量 / 对象冲突：保留**先出现**的那份（前半段是主结构，后半段多为重复输出）
+    }
+  }
+  // 独立的裸数组（模型把某一类数据另起一段输出）+ 对象里没有任何数组 → 挂到 data，pickArr 认得这个键
+  if (arrs.length && !Object.keys(out).some(k => Array.isArray(out[k]))) {
+    out.data = arrs.length === 1 ? arrs[0] : [].concat(...arrs)
+  }
+  return out
+}
+
+function parse_json(text) {
+  const src = String(text == null ? '' : text)
+  const m = src.match(/```(?:json)?\s*([\s\S]*?)```/)
+  const raw = m ? m[1] : src
   const start = raw.search(/[[{]/)
   if (start < 0) throw new Error('LLM 输出中未找到 JSON')
-  // 切到最后一次闭合括号，容忍 JSON 后面的多余文字
-  const end = Math.max(raw.lastIndexOf(']'), raw.lastIndexOf('}'))
-  return raw.slice(start, end > start ? end + 1 : undefined)
+
+  // ① 最快路径：整段就是一个 JSON（绝大多数情况）
+  try { return JSON.parse(raw.slice(start)) } catch (_) {}
+
+  // ② 逐段扫描：模型「输出完整 JSON 后再续写一段」，或把 shots / characters 分成两个对象发
+  const { parts, truncated } = scanJsonValues(raw, start)
+  const vals = []
+  let lastErr = null
+  for (const p of parts) {
+    try { vals.push(JSON.parse(p)) } catch (e) { lastErr = e }
+  }
+  if (vals.length) return vals.length === 1 ? vals[0] : mergeJsonValues(vals)
+  if (truncated) {
+    throw new Error('LLM 输出的 JSON 在结尾处不完整（多半被字数上限截断，已生成 ' +
+      src.length + ' 字）：建议把这一集拆成多集后重试，或在设置里调大输出上限。')
+  }
+  throw new Error('LLM 输出不是合法 JSON：' + ((lastErr && lastErr.message) || '解析失败'))
 }
 /** 兼容两种返回：裸数组，或（JSON 对象模式下的）按 key 解析；used 记录已取用的键避免误取 */
 function pickArr(v, keys, used) {

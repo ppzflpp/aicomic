@@ -94,51 +94,83 @@
     { "key": "ref2v", "when": "ref", "label": "参考图 / 参考视频支路" }
   ],
 
-  "tierOrder": ["fast", "balanced", "hq"],
-  "defaultTier": "balanced",
-  "tierLabels": { "fast": "速度优先", "balanced": "平衡", "hq": "质量最优" },
+  "tierOrder": ["fasta", "fastb", "balanceda", "balancedb", "hqa", "hqb"],
+  "defaultTier": "fasta",
+  "tierLabels": { "fasta": "速度优先A", "fastb": "速度优先B", "balanceda": "平衡A", "balancedb": "平衡B", "hqa": "质量最优A", "hqb": "质量最优B" },
   "tierDescs": {
-    "fast": "出片最快，清晰度略低，适合先看分镜效果",
-    "balanced": "速度与清晰度均衡，日常出片推荐",
-    "hq": "画面最清晰，但耗时最长，适合关键镜头与最终成片"
+    "fasta": "剪枝模型 + 4步 turbo LoRA · 480p。显存低于 16G 推荐",
+    "fastb": "原始模型 + PDD 8步 LoRA · 480p。显存高于 16G 推荐",
+    "balanceda": "剪枝模型 + 8步 turbo LoRA · 544p。显存低于 16G 推荐",
+    "balancedb": "原始模型 + PDD 8步 LoRA · 544p。显存高于 16G 推荐",
+    "hqa": "剪枝模型 + 8步 LoRA · 768p 单遍。清晰且最快，显存低于 16G 推荐",
+    "hqb": "原始模型 + PDD 二采 768p。细节最足、最慢，显存高于 16G 推荐"
   },
 
   "tiers": {
-    "fast": {
+    "fasta": {
       "fl2v": [
-        { "match": "fl2v.*4step", "steps": 4, "shift": [6, 3] },
-        { "match": "fl2v.*8step(?!.*768p)", "steps": 8, "shift": [12, 3] }
+        { "match": "fl2v.*4step", "steps": 4, "shift": [6, 3], "unet": "pruned", "sampler": "euler" }
       ],
       "ref2v": [
-        { "match": "ref2v.*4step", "steps": 4, "shift": null },
-        { "match": "ref2v.*8step.*768p", "steps": 8, "shift": [6, 3] },
-        { "match": null, "steps": 20, "shift": null }
+        { "match": "ref2v.*4step", "steps": 4, "shift": null, "unet": "pruned", "sampler": "euler" },
+        { "match": null, "steps": 20, "shift": null, "unet": "pruned" }
       ]
     },
-    "balanced": {
+    "fastb": {
       "fl2v": [
-        { "match": "fl2v.*8step.*768p", "steps": 8, "shift": [6, 3] },
-        { "match": "fl2v.*8step", "steps": 8, "shift": [12, 3] }
+        { "match": null, "steps": 20, "shift": null }
       ],
       "ref2v": [
-        { "match": "fl2v.*8step(?!.*768p)", "steps": 8, "shift": [12, 3] },
-        { "match": "ref2v.*4step", "steps": 4, "shift": null },
-        { "match": null, "steps": 20, "shift": null }
+        { "match": "pdd.*8step", "steps": 8, "shift": null, "unet": "ref2va_int8_convrot", "loraKind": "pdd", "sampler": "euler" },
+        { "match": null, "steps": 20, "shift": null, "unet": "ref2va_int8_convrot" }
       ]
     },
-    "hq": {
+    "balanceda": {
+      "fl2v": [
+        { "match": "fl2v.*8step(?!.*768p)", "steps": 8, "shift": [12, 3], "unet": "pruned", "sampler": "euler" },
+        { "match": null, "steps": 20, "shift": null, "unet": "pruned" }
+      ],
+      "ref2v": [
+        { "match": "fl2v.*8step(?!.*768p)", "steps": 8, "shift": [12, 3], "unet": "pruned", "sampler": "euler" },
+        { "match": "ref2v.*4step", "steps": 4, "shift": null, "unet": "pruned", "sampler": "euler" },
+        { "match": null, "steps": 20, "shift": null, "unet": "pruned" }
+      ]
+    },
+    "balancedb": {
+      "fl2v": [
+        { "match": null, "steps": 20, "shift": null, "unet": "ref2va_int8_convrot" }
+      ],
+      "ref2v": [
+        { "match": "pdd.*8step", "steps": 8, "shift": null, "unet": "ref2va_int8_convrot", "loraKind": "pdd", "sampler": "euler" },
+        { "match": null, "steps": 20, "shift": null, "unet": "ref2va_int8_convrot" }
+      ]
+    },
+    "hqa": {
+      "fl2v": [ { "match": null, "steps": 20, "shift": null, "unet": "pruned" } ],
+      "ref2v": [
+        { "match": "ref2v.*8step.*768p", "steps": 8, "shift": [6, 3], "unet": "pruned", "sampler": "euler" },
+        { "match": null, "steps": 20, "shift": null, "unet": "pruned" }
+      ]
+    },
+    "hqb": {
       "fl2v": [ { "match": null, "steps": 20, "shift": null } ],
       "ref2v": [
-        { "match": "ref2v.*8step.*768p", "steps": 8, "shift": [6, 3] },
-        { "match": null, "steps": 20, "shift": null }
+        {
+          "match": "pdd.*8step", "steps": 8, "shift": null, "unet": "ref2va_int8_convrot", "loraKind": "pdd", "sampler": "euler",
+          "twoPass": { "lora": "pdd.*8step", "loraKind": "pdd", "steps": 8, "shift": null, "sigmas": "0.55, 0.48, 0.41, 0.34, 0.27, 0.20, 0.13, 0.06, 0", "canvas": { "16:9": "1344x768", "9:16": "768x1344" } }
+        },
+        { "match": null, "steps": 20, "shift": null, "unet": "ref2va_int8_convrot" }
       ]
     }
   },
 
   "tierCanvas": {
-    "fast":     { "16:9": "864x480",  "9:16": "480x864",  "accept": ["864x480", "480x864", "960x544", "544x960"] },
-    "balanced": { "16:9": "960x544",  "9:16": "544x960",  "accept": ["864x480", "480x864", "960x544", "544x960"] },
-    "hq":       { "16:9": "1344x768", "9:16": "768x1344", "accept": ["1344x768", "768x1344"] }
+    "fasta":    { "16:9": "864x480",  "9:16": "480x864",  "accept": ["864x480", "480x864"] },
+    "fastb":    { "16:9": "864x480",  "9:16": "480x864",  "accept": ["864x480", "480x864"] },
+    "balanceda":{ "16:9": "960x544",  "9:16": "544x960",  "accept": ["864x480", "480x864", "960x544", "544x960"] },
+    "balancedb":{ "16:9": "960x544",  "9:16": "544x960",  "accept": ["864x480", "480x864", "960x544", "544x960"] },
+    "hqa":      { "16:9": "1344x768", "9:16": "768x1344", "accept": ["1344x768", "768x1344"] },
+    "hqb":      { "16:9": "1344x768", "9:16": "768x1344", "accept": ["1344x768", "768x1344"] }
   },
 
   "wiring": {
@@ -166,10 +198,38 @@
       "vaeRole": "videoVae",
       "anchorFrame": { "first": 0, "last": -1 }
     },
+    "attentionBoost": {
+      "enabled": true,
+      "settingKey": "h3.attentionBoost",
+      "label": "加速优化",
+      "desc": "INT8 注意力 + BlockCache（约省 30%，画面可能有轻微差异）",
+      "attention": { "class": "ModelAttentionBackend", "backend": "comfy kitchen attention" },
+      "blockCache": { "class": "MiniMaxH3BlockCacheT8" }
+    },
     "nodeIds": {
       "firstImg": 200, "firstScale": 201,
       "lastImg": 202, "lastScale": 203,
       "refImg": 220, "refImgScale": 250, "refVid": 230, "refVidComp": 240, "guide": 90
+    },
+
+    "twoPass": {
+      "enabled": true,
+      "steps": 8,
+      "lora": "ref2v.*8step.*768p",
+      "shift": [6, 3],
+      "sigmas": "0.55, 0.48, 0.41, 0.34, 0.27, 0.20, 0.13, 0.06, 0",
+      "noiseSeedOffset": 1,
+      "canvas": {
+        "16:9": "1344x768",
+        "9:16": "768x1344",
+        "1:1": "1024x1024",
+        "accept": ["1344x768", "768x1344", "1024x1024"]
+      },
+      "nodes": {
+        "noise": "30", "splitAv": "31", "decode": "32", "scale": "33", "encode": "34",
+        "concatAv": "35", "conditioning": "36", "lora": "37", "shift": "38",
+        "guider": "39", "sigmas": "40", "sampler": "41"
+      }
     }
   },
 

@@ -1,0 +1,81 @@
+{
+  "1": { "class_type": "LoadVideo", "inputs": { "file": "__VIDEO__" } },
+
+  "2": { "class_type": "GetVideoComponents", "inputs": { "video": ["1", 0] } },
+
+  "3": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "image": ["2", 0], "upscale_method": "lanczos",
+      "width": __WIDTH__, "height": __HEIGHT__, "crop": "disabled"
+    }
+  },
+
+  "4": { "class_type": "SeedVR2Preprocess", "inputs": { "resized_images": ["3", 0] } },
+
+  "5": { "class_type": "VAELoader", "inputs": { "vae_name": "__SEEDVR2_VAE__" } },
+  "6": { "class_type": "UNETLoader", "inputs": { "unet_name": "__SEEDVR2_UNET__", "weight_dtype": "default" } },
+
+  "7": {
+    "class_type": "VAEEncodeTiled",
+    "inputs": {
+      "pixels": ["4", 0], "vae": ["5", 0],
+      "tile_size": __TILE_SIZE__, "overlap": __TILE_OVERLAP__,
+      "temporal_size": __TEMPORAL_SIZE__, "temporal_overlap": __TEMPORAL_OVERLAP__
+    }
+  },
+
+  "8": {
+    "class_type": "SeedVR2TemporalChunk",
+    "inputs": { "latent": ["7", 0], "temporal_overlap": 0, "chunking_mode": "auto" }
+  },
+
+  "9": { "class_type": "SeedVR2Conditioning", "inputs": { "model": ["6", 0], "vae_conditioning": ["8", 0] } },
+
+  "10": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["6", 0], "seed": __SEED__,
+      "steps": __STEPS__, "cfg": __CFG__,
+      "sampler_name": "__SAMPLER__", "scheduler": "__SCHEDULER__",
+      "positive": ["9", 0], "negative": ["9", 1],
+      "latent_image": ["8", 0], "denoise": __DENOISE__
+    }
+  },
+
+  "11": {
+    "class_type": "SeedVR2TemporalMerge",
+    "inputs": { "latents": ["10", 0], "temporal_overlap": ["8", 1] }
+  },
+
+  "12": {
+    "class_type": "VAEDecodeTiled",
+    "inputs": {
+      "samples": ["11", 0], "vae": ["5", 0],
+      "tile_size": __TILE_SIZE__, "overlap": __TILE_OVERLAP__,
+      "temporal_size": __TEMPORAL_SIZE__, "temporal_overlap": __TEMPORAL_OVERLAP__
+    }
+  },
+
+  "13": {
+    "class_type": "SeedVR2PostProcessing",
+    "inputs": {
+      "images": ["12", 0],
+      "original_resized_images": ["3", 0],
+      "color_correction_method": "__COLOR__"
+    }
+  },
+
+  "14": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": ["13", 0], "audio": ["2", 1], "fps": ["2", 2],
+      "bit_depth": ["2", 3], "color_space": ["2", 4]
+    }
+  },
+
+  "15": {
+    "class_type": "SaveVideo",
+    "inputs": { "video": ["14", 0], "filename_prefix": "__PREFIX__", "format": "auto", "codec": "auto" }
+  }
+}

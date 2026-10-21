@@ -5,3 +5,8 @@ vite.config.mjs.timestamp-*.mjs
 logs/
 tools/
 release/
+release-new/
+
+# 调试临时产物
+test/_cdp-*
+test/_live-*.json

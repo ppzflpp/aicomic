@@ -351,6 +351,16 @@ function normRes(v) {
 }
 
 /**
+ * 成片分辨率专用规整（2026-10-19）：多认一个 **'auto'**。
+ * `'auto'` = 成片跟随**第一个镜头视频的实际分辨率**，不缩放、不补边（导出时由 inference 探测）。
+ * 🔴 只有 out 这一路允许 auto：img / vid 是生成输入，必须是具体画布。
+ */
+function normOutRes(v) {
+  if (String(v || '').trim().toLowerCase() === 'auto') return 'auto';
+  return normRes(v);
+}
+
+/**
  * 视频比例（2026-10-15）：只有 16:9 与 9:16 两档（1:1 已按 Dragon 要求去掉）。
  *   它是「档位 + 比例 → 图片 / 视频 / 成片三个分辨率推荐值」的两个上游输入之一。
  */
@@ -379,21 +389,32 @@ function normTargetSec(v) {
   return n;
 }
 
-/** 规整 {img,vid,out,tier,targetSec} 五元组；全部非法则返回 null（tier 非法 → 回默认档） */
+/** 声音档位（2026-10-20）：'full'（默认，保留 BGM / 环境底噪）| 'dialogue'（纯对白）。
+ *  非法值返回 null（COALESCE 语义：不写这一项就不改）；只认这两个字面量，避免脏值落库。 */
+function normAudioMode(v) {
+  const s = String(v == null ? '' : v).trim().toLowerCase();
+  return (s === 'full' || s === 'dialogue') ? s : null;
+}
+
+/** 规整 {img,vid,out,tier,targetSec,aspect,audioMode} 配置元组；全部非法则返回 null（tier 非法 → 回默认档） */
 function normResAll(res) {
   if (!res || typeof res !== 'object') return null;
-  const img = normRes(res.img), vid = normRes(res.vid), out = normRes(res.out);
+  const img = normRes(res.img), vid = normRes(res.vid), out = normOutRes(res.out);
   // style 与分辨率同路提交，但它**不是分辨率** —— 所以不能进那个「三个都空就返回 null」的判断
   const style = res.style == null ? null : (String(res.style).trim() || null);
   // 目标时长同理走同一条提交路径（渲染层一次提交多个项目级设置）
   const targetSec = normTargetSec(res.targetSec);
-  if (!img && !vid && !out && !style && targetSec == null) return null;
-  // tier 是项目级视频档位，与分辨率同路存取（渲染层一次提交多个项目级设置）
+  // 🔴 2026-10-18 修：`tier` 以前只在 return 里出现，**没有参与「是不是空提交」的判定** ——
+  //    `setProjectRes(db, id, { tier:'hq' })` 这种「只改质量档」的提交会在这里被判成非法
+  //    （那一行也要求 img/vid/out 有一个非空），明明 tier 合法却抛「项目配置格式不合法」。
+  //    渲染层每次都带三套分辨率所以没露出来，但任何只改档位 / 只改比例的调用都会中招。
   const tier = res.tier == null ? null : videoTiers.normalizeTier(res.tier);
   // 比例（2026-10-15）：只有用户在弹窗里**显式点过**才写；缺省 = null（读时按 res_vid 推断）
   const aspect = normAspect(res.aspect);
-  if (!img && !vid && !out && !style && targetSec == null && !aspect) return null;
-  return { img, vid, out, tier, style, targetSec, aspect };
+  // 声音档位（2026-10-20）：同上，只在显式提交时写
+  const audioMode = normAudioMode(res.audioMode);
+  if (!img && !vid && !out && !style && targetSec == null && !aspect && !tier && !audioMode) return null;
+  return { img, vid, out, tier, style, targetSec, aspect, audioMode };
 }
 
 function readRes(row) {
@@ -405,6 +426,9 @@ function readRes(row) {
   if (row.style != null) r.style = String(row.style || '').trim() || styles.defaultId();
   // 同理只有 projects 有 target_sec 列（单集目标时长，双轨配时用）
   if (row.target_sec != null) r.targetSec = Math.max(0, Math.round(Number(row.target_sec) || 0));
+  // 声音档位（2026-10-20）：只有 projects 有 audio_mode 列（剧集实时读所属项目，不做集级快照）。
+  // 老库该列为 NULL 的理论情况按 'full' 兜底 —— 与改造前逐字一致。
+  if (row.audio_mode !== undefined) r.audioMode = normAudioMode(row.audio_mode) || 'full';
   // 同理只有 projects 有 aspect 列（视频比例 16:9 / 9:16）。
   // 🔴 存量项目该列为 NULL → **按 res_vid 的宽高推断**，而不是给个默认值：
   //    这样老项目打开配置弹窗时看到的是它实际在用的比例，且老项目行不会被迁移改写。
@@ -427,9 +451,9 @@ function getProjectRes(db, projectId) {
  */
 function setProjectRes(db, projectId, res) {
   const n = normResAll(res);
-  if (!n) throw new Error('项目配置格式不合法：分辨率应为 宽x高（如 864x480），单集目标时长应为 0~1800 的整数秒');
-  db.raw.prepare('UPDATE projects SET res_img=COALESCE(?,res_img), res_vid=COALESCE(?,res_vid), res_out=COALESCE(?,res_out), res_tier=COALESCE(?,res_tier), style=COALESCE(?,style), target_sec=COALESCE(?,target_sec), aspect=COALESCE(?,aspect) WHERE id=?')
-    .run(n.img, n.vid, n.out, n.tier, n.style, n.targetSec, n.aspect, projectId);
+  if (!n) throw new Error('项目配置格式不合法：分辨率应为 宽x高（如 864x480），单集目标时长应为 0~1800 的整数秒，声音档位应为 full / dialogue');
+  db.raw.prepare('UPDATE projects SET res_img=COALESCE(?,res_img), res_vid=COALESCE(?,res_vid), res_out=COALESCE(?,res_out), res_tier=COALESCE(?,res_tier), style=COALESCE(?,style), target_sec=COALESCE(?,target_sec), aspect=COALESCE(?,aspect), audio_mode=COALESCE(?,audio_mode) WHERE id=?')
+    .run(n.img, n.vid, n.out, n.tier, n.style, n.targetSec, n.aspect, n.audioMode, projectId);
   return getProjectRes(db, projectId);
 }
 
@@ -443,8 +467,9 @@ function getEpisodeRes(db, episodeId) {
 function setEpisodeRes(db, episodeId, kind, value) {
   const col = { img: 'res_img', vid: 'res_vid', out: 'res_out' }[kind];
   if (!col) throw new Error('未知的分辨率类型：' + kind);
-  const v = normRes(value);
-  if (!v) throw new Error('分辨率格式不合法（应为 宽x高，如 864x480）');
+  // 成片允许 'auto'（跟随第一个镜头）；图片 / 视频画布必须是具体值
+  const v = kind === 'out' ? normOutRes(value) : normRes(value);
+  if (!v) throw new Error('分辨率格式不合法（应为 宽x高，如 864x480' + (kind === 'out' ? '，成片可选 auto' : '') + '）');
   db.raw.prepare('UPDATE episodes SET ' + col + '=?, updated_at=datetime(\'now\',\'localtime\') WHERE id=?').run(v, episodeId);
   return getEpisodeRes(db, episodeId);
 }
@@ -485,7 +510,8 @@ function createProject(db, workspace, name, res) {
   // 🔴 兜底默认值必须**与比例自洽**：比例选了 9:16 却把 vid 落成横版，后续联动推荐就会打架。
   const img = n.img || (portrait ? '480x864' : '1920x1080');
   const vid = n.vid || (portrait ? '480x864' : '864x480');
-  const out = n.out || (portrait ? '1080x1920' : '1920x1080');
+  // 成片默认 "auto"（跟随第一个镜头的实际分辨率）——2026-10-19 起不再固定 1920x1080
+  const out = n.out || 'auto';
   const tier = n.tier || videoTiers.DEFAULT_TIER;   // 视频档位：项目级，随项目一起落库
   const style = n.style || styles.defaultId();      // 风格包：项目级，新建时选定
   const targetSec = n.targetSec == null ? 0 : n.targetSec;   // 单集目标时长：项目级，0 = 不启用双轨配时
@@ -510,7 +536,7 @@ function addFolder(db, workspace, projectId, parentId, name) {
 function addEpisode(db, workspace, projectId, folderId, name) {
   // 新建剧集：分辨率用项目当前配置初始化（项目配置改了只影响从现在起新建的剧集）
   const p = db.raw.prepare('SELECT * FROM projects WHERE id=?').get(projectId);
-  const img = (p && p.res_img) || '1920x1080', vid = (p && p.res_vid) || '864x480', out = (p && p.res_out) || '1920x1080';
+  const img = (p && p.res_img) || '1920x1080', vid = (p && p.res_vid) || '864x480', out = (p && p.res_out) || 'auto';
   // 🔴 扁平化后集名就是磁盘文件名前缀：同项目内必须唯一，否则两集的 shots / 视频会互相覆盖。
   //    重名自动加序号（「第1集」→「第1集 (2)」），并把最终名字返回给渲染层。
   const base = sanitize(name);
@@ -704,13 +730,16 @@ function getEpisodeFull(db, workspace, episodeId) {
   };
   const videoFiles = mine(sDir, new RegExp('^' + escRe(pre) + '_', 'i'));
   const exportFiles = mine(fDir, new RegExp('^' + escRe(pre) + '_' + '.*\\.mp4$', 'i'));
+  // 项目级配置（档位 / 比例实时读所属项目，不做集级快照）—— 渲染层据此把图片/视频分辨率
+  // 锁死到档位推荐画布（2026-10-21：切换视频质量档位后，图片/视频分辨率联动锁定、用户不可手改）。
+  const projRes = getProjectRes(db, ep.project_id) || {};
   return {
     id: ep.id, name: ep.name, projectId: ep.project_id, dir, prefix: pre,
     projectDir: pRoot, assetsDir: aRoot, epAssetsDir: epRoot, shotDir: sDir, filmDir: fDir,
     // 风格包（项目级）：渲染层每次读提示词规范都要用它，所以随集对象一起下发 ——
     // 免得每读一份规范都回主进程查一次项目行。
     style: (db.raw.prepare('SELECT style FROM projects WHERE id=?').get(ep.project_id) || {}).style || styles.defaultId(),
-    res: readRes(ep),
+    res: { ...readRes(ep), tier: projRes.tier, aspect: projRes.aspect },
     chapter: read('chapter.txt'),
     adapted: read('adapted.md'),
     revs: readJson(dir, pre + '.revs.json', {}),

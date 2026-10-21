@@ -6,7 +6,6 @@
       <div v-if="busy" class="progress"><div class="bar indeterminate"></div></div>
     </Teleport>
     <!-- 脏标记（章节改过 → 建议重新改编）已统一显示在本模块标题后面，见 App.vue 的 stage-head -->
-    <llm-source-tag :stages="['adapt']" where="改编稿" />
 
     <textarea v-model="adapted" rows="12" :placeholder="chapter ? '点击「改编」，LLM 将基于本章内容生成改编稿' : '请先在左侧「原文输入」粘贴章节原文'"></textarea>
 
@@ -23,7 +22,11 @@
       <span v-if="pl.timeText(1)" class="gen-ms" :class="{ live: pl.genStartAt[1] }">{{ pl.timeText(1) }}</span>
     </Teleport>
     <Teleport v-if="tpReady" to="#adapt-ops">
-      <button class="btn h-sm" :disabled="!adapted.trim() || busy" @click="nextToShots">生成分镜</button>
+      <!-- 本模块的主操作 = 往下一步；标题栏里它保持唯一的实心蓝（pro），「改编」是描边次要按钮 -->
+      <button class="btn h-sm pro" :class="{ 'stale-need': needShots }"
+              :disabled="!adapted.trim() || busy"
+              :title="needShots ? '改编稿在上次生成分镜后又改过 → 这里点下去会重做分镜与角色&场景档案' : ''"
+              @click="nextToShots">生成分镜</button>
     </Teleport>
 
     <!-- 字数胶囊：Teleport 到本模块标题行右侧（App.vue 的 #adapt-count）。
@@ -67,15 +70,13 @@ import { usePipeline } from './stores/pipeline.js'
 import { stepLog, dbgPrompt } from './ulog.js'
 import { composeSystem, composeUser } from './prompts.js'
 import { listCoverage } from './promptlib.js'
-import { revsOf, touchRevs } from './stale.js'
-import LlmSourceTag from './LlmSourceTag.vue'
+import { revsOf, touchRevs, moduleStale, ackModule } from './stale.js'
 import { overrideOf } from './llmSource.js'
 
 // 🔴 提示词全部来自项目 prompts/adapt.md：角色与任务、规则、输出格式都写在那份 md 里，代码不再硬编码任何提示词片段
 
 export default {
   name: 'StageAdapt',
-  components: { LlmSourceTag },
   data() { return { adapted: '', busy: false, tpReady: false, askRegen: null } },
   computed: {
     st() { return useProjectStore() },
@@ -87,6 +88,16 @@ export default {
     coverage() {
       if (!this.adapted || !this.adapted.trim()) return { checked: false, missing: [], missingScenes: [] }
       return listCoverage(this.chapter, this.adapted)
+    },
+    /**
+     * 「生成分镜」按钮是否该显示琥珀色（= 上游改编稿改过，分镜/档案需要重做）。
+     * 2026-10-19 Dragon：脏标记不再只挂一句提示语 —— 直接把**要重做的那个按钮**染成提示色，
+     * 用户扫一眼就知道哪里需要重生。分镜与「角色&场景」档案是同一次 LLM 调用产出的，
+     * 所以 chars 脏（改编稿改过、档案没跟上）也落在这个按钮上。
+     */
+    needShots() {
+      const r = revsOf(this.st)
+      return moduleStale(r, 'shots') || moduleStale(r, 'chars')
     }
   },
   watch: {
@@ -177,6 +188,9 @@ export default {
     async doNextToShots() {
       this.askRegen = null
       await this.st.saveArtifact('adapted', this.adapted)
+      // 2026-10-19：点下「生成分镜」= 接受重做 → 按钮立刻褪掉琥珀色（不等 LLM 跑完）。
+      // 分镜与「角色&场景」档案同源，两个脏标记一起收掉；失败时日志里有完整原因。
+      try { await ackModule(this.st, 'shots'); await ackModule(this.st, 'chars') } catch (_) { /* 本地内存态失败不阻塞生成 */ }
       this.pl.confirm(1, this.ep.id)
       this.pl.autoShots = true          // 由 StageShots 消费（它可能晚一步才挂载/解锁）
       this.$root.toast('改编稿已确认，正在生成分镜…')

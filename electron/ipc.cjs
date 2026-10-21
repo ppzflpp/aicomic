@@ -591,11 +591,24 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     logger.setTag('停止生成');
     return inference.cancelComfy();
   });
-  ipcMain.handle('export:video', async (e, { outDir, outName, videos, subtitles, width, height, scope, normalize }) => {
+  // 成片超分（SeedVR2 · ComfyUI 内置节点）：一条镜头视频 → 放大一档 → 落到 outDir。
+  // 与生成同一条前置闸门：先确保 ComfyUI 起来、再探一次在线，缺了给明确出路。
+  ipcMain.handle('comfy:upscale', async (e, { file, outDir, scale }) => {
+    await orchestrator.ensureComfy('阶段7 超分');
+    const h = await inference.health();
+    if (!h.comfyui) {
+      const m = 'ComfyUI 还没有启动，无法做超分。第一次使用请先手动打开 ComfyUI，等它完全启动后再试。';
+      logger.error(m);
+      throw new Error(m);
+    }
+    return inference.upscaleVideo({ file, outDir, scale });
+  });
+  ipcMain.handle('export:video', async (e, { outDir, outName, videos, subtitles, width, height, autoRes, scope, normalize }) => {
     logger.setTag('阶段7 组装成片');
     await orchestrator.ensure(6);
     // normalize：方案 D 逐镜响度归一（缺省按 true，老渲染层不传也走新行为）
-    return inference.exportVideo(outDir, outName, videos, { subtitles, width, height, scope, normalize });
+    // autoRes：成片分辨率「自动」= 跟随第一个镜头的实际分辨率（缺省 false 保持老调用方行为）
+    return inference.exportVideo(outDir, outName, videos, { subtitles, width, height, autoRes, scope, normalize });
   });
   ipcMain.handle('ffmpeg:find', () => inference.findFfmpeg());
   // 取「上一镜末帧」→ 图片（首帧接力，2026-10-09）：

@@ -163,6 +163,8 @@ contextBridge.exposeInMainWorld('studio', {
   setLlmStage: (id, provider) => ipcRenderer.invoke('llm:stage:set', id, provider),
   testLlm: () => ipcRenderer.invoke('llm:test'),
   comfyGenerate: (args) => ipcRenderer.invoke('comfy:generate', args),
+  // 成片超分（SeedVR2）：{ file, outDir, scale } → { file, path, width, height, elapsedMs }
+  comfyUpscale: (args) => ipcRenderer.invoke('comfy:upscale', args),
   // 强制停止生成（2026-10-09）：中断当前任务 + 清排队 + 释放显存
   comfyCancel: () => ipcRenderer.invoke('comfy:cancel'),
   exportVideo: (args) => ipcRenderer.invoke('export:video', args),

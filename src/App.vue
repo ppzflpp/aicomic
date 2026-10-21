@@ -313,7 +313,7 @@
 
     <!-- 仪表盘视图（🔴 必须是 v-else-if 不是 v-else：图片生成页已从这条链里拿出来做常驻挂载，
          留个 v-else 兜底会让 imggen 同时命中仪表盘 → 上面半屏是工作台、下面半屏才是图片生成） -->
-    <div class="content" v-else-if="st.view==='dash'">
+    <div class="content dash-content" v-else-if="st.view==='dash'">
       <div v-if="!st.current" class="placeholder" style="margin-top:60px">
         左侧选择或新建一个集数开始
       </div>
@@ -322,21 +322,23 @@
              只是显示上分组成：①剧本创作（原文输入+AI优化稿 一卡两栏）②角色&场景 ③分镜脚本(每行=分镜|H3提示词|视频) ④组装成片 -->
         <!-- 块1：剧本创作（2026-09-27 合并：原「内容输入」+「内容AI优化」两卡并排 → 一卡两栏；
              「改编」与「生成分镜」合并到卡片底部同一条操作条，StageAdapt 通过 Teleport 把耗时+生成分镜挂到 #adapt-ops） -->
-        <section class="stage" :class="blkCls(0, 1)" :key="stageKey('duo')">
+        <section class="stage" :class="blkCls(0, 1)" :key="stageKey('duo')" data-nav="1">
           <div class="stage-head">
             <span class="s-num">1</span>
             <span class="s-title">剧本创作</span>
             <span class="s-sub">原文输入 → AI 优化成可分镜剧本</span>
-            <!-- 脏标签：显示在模块标题后面（上游变化提示） -->
-            <span v-if="headStale('adapt')" class="stale head-stale" title="点击消除提示"
-                  @click="ackHead('adapt')">{{ headStale('adapt') }}</span>
             <span style="flex:1"></span>
             <!-- 字数：原文一个胶囊（与耗时同款式）；改编稿字数由 StageAdapt 通过 Teleport 挂到 #adapt-count -->
             <span class="head-ms" title="章节原文字数">{{ chapter.trim().length }} 字</span>
             <span id="adapt-count" style="display:inline-flex;align-items:center"></span>
             <!-- 2026-09-27 二改（Dragon）：「改编」「生成分镜」按钮移到模块标题栏右边（耗时挂改编左边） -->
             <span id="adapt-ms" style="display:inline-flex;align-items:center"></span>
-            <button class="btn h-sm" :disabled="chapter.trim().length<50" @click="startAdapt">改编</button>
+            <!-- 分隔线：左边是信息（字数 / 耗时），右边全是按钮 -->
+            <span class="head-sep"></span>
+            <button class="btn h-sm" :class="{ 'stale-need': !!headStale('adapt') }"
+                    :disabled="chapter.trim().length<50"
+                    :title="headStale('adapt') ? '章节在上次改编后又改过 → 这里点下去会按新章节重新改编' : ''"
+                    @click="startAdapt">改编</button>
             <span id="adapt-ops" style="display:inline-flex;align-items:center"></span>
           </div>
           <div class="stage-body">
@@ -366,13 +368,12 @@
         </section>
 
         <!-- 块2：角色 & 场景（无锁定，随时可编辑；上游变化由脏标记提示） -->
-        <section class="stage" :class="blkCls(3)" :key="stageKey('chars')">
+        <section class="stage" :class="blkCls(3)" :key="stageKey('chars')" data-nav="2">
           <div class="stage-head">
             <span class="s-num">2</span>
             <span class="s-title">角色 &amp; 场景</span>
-            <span v-if="headStale('chars')" class="stale head-stale" title="点击消除提示"
-                  @click="ackHead('chars')">{{ headStale('chars') }}</span>
             <span style="flex:1"></span>
+            <span class="head-sep"></span>
             <!-- 2026-09-27 三改（Dragon）：批量按钮回到模块标题栏右边（StageChars 通过 Teleport 挂进来） -->
             <span id="chars-batch" style="display:inline-flex;gap:8px;align-items:center"></span>
           </div>
@@ -383,7 +384,7 @@
 
         <!-- 块3：分镜脚本（列表化：每行从左到右 = 该镜头的分镜 | H3提示词 | 视频生成；
              无锁定；上游（改编稿/分镜/提示词/素材图）变化由 ⚠ 脏标记提示） -->
-        <section class="stage" :class="blkCls(2, 4, 5)" :key="stageKey('shots')">
+        <section class="stage" :class="blkCls(2, 4, 5)" :key="stageKey('shots')" data-nav="3">
           <div class="stage-head">
             <span class="s-num">3</span>
             <span class="s-title">分镜脚本</span>
@@ -391,9 +392,12 @@
                  实时跟随编辑。行头那颗「分镜 X」后面的单镜秒数已删除 —— 汇总放模块标题、明细在编辑区，
                  同一屏不重复两遍。 -->
             <span id="shots-total" style="display:inline-flex;align-items:center"></span>
-            <span v-if="headStale('shots')" class="stale head-stale" title="点击消除提示"
-                  @click="ackHead('shots')">{{ headStale('shots') }}</span>
             <span style="flex:1"></span>
+            <span class="head-sep"></span>
+            <!-- 声音档位开关落点（2026-10-20，Dragon）：模块级唯一实例 —— 一个开关控制本集全部镜头的
+                 BGM / 环境音。🔴 绝不能放进每行的 .row-head（那里每镜渲染一次 = N 个开关）。
+                 紧挨批量按钮：切完档 → 批量按钮变琥珀（签名变了）→ 一键重做，动线一条直线。 -->
+            <span id="shots-audio" style="display:inline-flex;align-items:center"></span>
             <!-- 批量按钮落点：StageShots 通过 Teleport 把「批量生成提示词 / 批量生成视频」挂到这里（2026-09-27 三改：回到标题栏右边，按钮恢复普通 .btn 样式） -->
             <span id="shots-batch" style="display:inline-flex;gap:8px;align-items:center"></span>
           </div>
@@ -403,11 +407,15 @@
         </section>
 
         <!-- 块4：组装成片（进入即自动组装） -->
-        <section class="stage" :class="blkCls(6)" :key="stageKey('export')">
+        <section class="stage" :class="blkCls(6)" :key="stageKey('export')" data-nav="4">
           <div class="stage-head">
             <span class="s-num">4</span>
             <span class="s-title">组装成片</span>
+            <!-- 镜头数与总时长（2026-10-20，Dragon）：靠左显示「共 N 个镜头 · 共 X 分 Y 秒」。
+                 StageExport 通过 Teleport 挂到这里，实时跟随分镜增删与 dur 编辑。 -->
+            <span id="export-stats" style="display:inline-flex;align-items:center"></span>
             <span style="flex:1"></span>
+            <span class="head-sep"></span>
             <!-- 2026-09-27：输出分辨率 / 添加字幕 / 导出成片 移到标题栏靠右（StageExport 通过 Teleport 挂到 #export-ops） -->
             <span id="export-ops" style="display:inline-flex;gap:10px;align-items:center"></span>
           </div>
@@ -417,6 +425,10 @@
         </section>
       </div>
     </div>
+
+    <!-- 工作台右侧悬浮导航（2026-10-19 Dragon）：只在工作台出现，
+         四项 = 上面的四块卡片；有生成任务在跑的块 → 名称右侧闪烁绿点。 -->
+    <app-nav-rail v-if="st.view==='dash' && st.current" />
 
     <!-- 图片生成独立功能页（Qwen-Image 2.1：文生图 / 原生编辑 / 图生图）
          🔴 常驻挂载（v-show），不参与上面那条 v-if/v-else-if 链：切菜单只 display:none 不销毁，
@@ -447,7 +459,7 @@
       <span class="sb-log" :class="{on: logs.open}" @click="logs.toggle()">
         运行日志<b v-if="logs.unreadErr" class="sb-badge">{{ logs.unreadErr > 99 ? '99+' : logs.unreadErr }}</b>
       </span>
-      <span>v0.3.1-m5</span>
+      <span>v0.3.2-m6</span>
     </div>
   </div>
   </div>
@@ -480,20 +492,41 @@
       <input v-if="projModal.mode === 'create'" class="proj-name" type="text" v-model="projModal.name"
              placeholder="项目名称" @keyup.enter="confirmProj" />
 
-      <!-- 视频质量 / 视频比例 / 三个分辨率（2026-10-15）：
-           质量与比例是**上游两个输入**，选定后下面三个分辨率自动带出推荐值（带「推荐」角标）。
+      <!-- 视频质量 / 视频比例（2026-10-15；2026-10-21 改版：三档 × A/B 方案 + 分辨率并进比例文案）：
+           质量与比例是**上游两个输入**，选完档位后，推荐画布分辨率自动拼到「视频比例」选项标题上（如「横版 16:9 · 864×480」）。
            推荐画布不在前端硬编码 —— 随档位表由主进程 tierCanvas 下发（见 stores/project.js 的 recCanvas）。 -->
       <div class="proj-grid">
         <div class="proj-row col">
           <span class="proj-kind">视频质量</span>
-          <div class="popt-grid proj-tier-grid">
-            <button type="button" v-for="t in st.tierOptions" :key="t.key"
-                    class="popt" :class="{on: projModal.tier === t.key}"
-                    :data-tier="t.key" @click="pickTier(t.key)">
-              <b>{{ t.label }}</b>
-              <span v-if="t.desc">{{ t.desc }}</span>
-            </button>
+          <div class="tier-group-list">
+            <div class="tier-group" v-for="g in tierGroups" :key="g.base">
+              <div class="tier-group-head">{{ g.a ? g.a.label.replace(/[AB]$/, '') : g.base }}</div>
+              <div class="tier-ab-row">
+                <button type="button" v-if="g.a"
+                        class="popt tier-ab" :class="{on: projModal.tier === g.a.key}"
+                        :data-tier="g.a.key" @click="pickTier(g.a.key)">
+                  <span class="tier-ab-rec" v-if="!vramRecommendB">推荐</span>
+                  <b class="tier-ab-name">剪枝版</b>
+                  <span class="tier-ab-desc">{{ g.a.desc }}</span>
+                </button>
+                <button type="button" v-if="g.b"
+                        class="popt tier-ab" :class="{on: projModal.tier === g.b.key}"
+                        :data-tier="g.b.key" @click="pickTier(g.b.key)">
+                  <span class="tier-ab-rec" v-if="vramRecommendB">推荐</span>
+                  <b class="tier-ab-name">原始版</b>
+                  <span class="tier-ab-desc">{{ g.b.desc }}</span>
+                </button>
+              </div>
+            </div>
           </div>
+        </div>
+        <!-- 加速优化开关（全局，2026-10-21）：INT8 注意力 + BlockCache，默认开。画面可能有轻微差异 -->
+        <div class="proj-row accel-row">
+          <span class="proj-kind">加速优化</span>
+          <button type="button" class="accel-toggle" :class="{on: accelOn}" @click="toggleAccel">
+            <span class="accel-knob"></span>
+          </button>
+          <span class="accel-label">{{ accelOn ? '已开启（约省 30%，画面可能有轻微差异）' : '已关闭（画面更稳定）' }}</span>
         </div>
         <div class="proj-row col">
           <span class="proj-kind">视频比例</span>
@@ -501,36 +534,9 @@
             <button type="button" v-for="a in st.aspectOptions" :key="a.id"
                     class="popt" :class="{on: projModal.aspect === a.id}"
                     :data-aspect="a.id" @click="pickAspect(a.id)">
-              <b>{{ a.label }}</b>
+              <b>{{ a.label }}<em class="aspect-res" v-if="aspectResLabel(a.id)">{{ aspectResLabel(a.id) }}</em></b>
               <span v-if="a.desc">{{ a.desc }}</span>
             </button>
-          </div>
-        </div>
-        <!-- 三个分辨率：下拉按当前比例过滤（横版只列横版档位），避免选出比例对不上的值 -->
-        <div class="proj-two">
-          <div class="proj-row">
-            <span class="proj-kind">图片分辨率</span>
-            <select v-model="projModal.img" @change="onResPick('img')">
-              <option v-for="o in st.resOptsFor('img', projModal.aspect)" :key="o.value" :value="o.value">{{ o.label }}</option>
-            </select>
-            <em class="proj-rec" v-if="isRec('img')">推荐</em>
-            <button type="button" class="proj-recbtn" v-else-if="touched('img')" @click="restoreRec('img')">恢复推荐</button>
-          </div>
-          <div class="proj-row">
-            <span class="proj-kind">视频分辨率</span>
-            <select v-model="projModal.vid" @change="onResPick('vid')">
-              <option v-for="o in st.resOptsFor('vid', projModal.aspect)" :key="o.value" :value="o.value">{{ o.label }}</option>
-            </select>
-            <em class="proj-rec" v-if="isRec('vid')">推荐</em>
-            <button type="button" class="proj-recbtn" v-else-if="touched('vid')" @click="restoreRec('vid')">恢复推荐</button>
-          </div>
-          <div class="proj-row">
-            <span class="proj-kind">成片分辨率</span>
-            <select v-model="projModal.out" @change="onResPick('out')">
-              <option v-for="o in st.resOptsFor('out', projModal.aspect)" :key="o.value" :value="o.value">{{ o.label }}</option>
-            </select>
-            <em class="proj-rec" v-if="isRec('out')">推荐</em>
-            <button type="button" class="proj-recbtn" v-else-if="touched('out')" @click="restoreRec('out')">恢复推荐</button>
           </div>
         </div>
         <!-- 🔴 2026-10-13：此处原来的「单集目标时长」输入**已删除**（用户要求）。
@@ -665,6 +671,7 @@ import StageShots from './StageShots.vue'
 import StageChars from './StageChars.vue'
 import StageLibrary from './StageLibrary.vue'
 import StageExport from './StageExport.vue'
+import AppNavRail from './AppNavRail.vue'
 import PromptsView from './PromptsView.vue'
 import ImageGen from './ImageGen.vue'
 import LogPanel from './LogPanel.vue'
@@ -674,13 +681,14 @@ import { mediaUrl } from './mediaUrl.js'
 import { moduleStale, ackModule, MODULE_STALE_KINDS } from './stale.js'
 
 export default {
-  components: { FolderNode, SettingsPanel, StageAdapt, StageShots, StageChars, StageLibrary, StageExport, PromptsView, ImageGen, LogPanel },
+  components: { FolderNode, SettingsPanel, StageAdapt, StageShots, StageChars, StageLibrary, StageExport, AppNavRail, PromptsView, ImageGen, LogPanel },
   data() {
     return {
       chapter: '',
       igState,               // 图片生成任务跨页可见状态（侧栏小圆点用，见 imggenState.js）
       sideCollapsed: false,   // 左侧菜单栏收起态（窄条只留展开按钮）
       projModal: null,   // 项目配置弹窗 {mode:'create'|'edit', id, name, img, vid, out}
+      accelOn: true,     // 加速优化开关（全局）：INT8 注意力 + BlockCache，默认开
       preview: null,     // 媒体预览弹窗 {kind:'image'|'video', file, sub, src, path}
       toastMsg: null,
       m: null,          // 系统指标快照 { cpu, mem, gpu }
@@ -704,6 +712,47 @@ export default {
     /** 分辨率档位（按当前模型过滤）；选项未加载完时空列表，select 自然回退默认值 */
     resOpts() {
       return this.st.resOptions || { img: [], vid: [], out: [] }
+    },
+    /**
+     * 视频质量档位按「档」分组（2026-10-21）：tierOptions 里 a/b 两两成对（fasta/fastb…），
+     * 视觉上折叠成 3 档，每档内 A（≤16G）/ B（>16G）两个方案左右并排。
+     * 分组依据：key 去掉尾部 a/b 后同名前缀归一组，按 tierOrder 顺序（天然 a、b 相邻）扫描配对。
+     * @returns {Array<{base, a:{key,label,desc}, b:{key,label,desc}}>}
+     */
+    tierGroups() {
+      const opts = this.st.tierOptions || []
+      const groups = []
+      const seen = new Set()
+      for (const t of opts) {
+        if (seen.has(t.key)) continue
+        const m = /^(.*?)([ab])$/.exec(t.key)
+        if (!m) { groups.push({ base: t.key, a: { key: t.key, label: t.label, desc: t.desc }, b: null }); continue }
+        const base = m[1]
+        const other = opts.find(x => x.key === base + (m[2] === 'a' ? 'b' : 'a'))
+        const a = m[2] === 'a' ? t : other
+        const b = m[2] === 'a' ? other : t
+        seen.add(t.key); if (other) seen.add(other.key)
+        groups.push({
+          base,
+          a: a ? { key: a.key, label: a.label, desc: a.desc } : null,
+          b: b ? { key: b.key, label: b.label, desc: b.desc } : null
+        })
+      }
+      return groups
+    },
+    /**
+     * 本机显卡显存总量（GB）。拿不到（非 NVIDIA / nvidia-smi 不可用）返回 null。
+     * 用现有 metrics 快照 `this.m.gpu.totalMiB`，不额外探测。
+     */
+    vramTotalGB() {
+      const g = this.m && this.m.gpu
+      if (!g || !g.ok || g.totalMiB == null) return null
+      return g.totalMiB / 1024
+    },
+    /** 是否推荐 B 方案（显存 > 16G）；显存未知时推荐 A（16G 以下方案是通用安全默认）。 */
+    vramRecommendB() {
+      const v = this.vramTotalGB
+      return v != null && v > 16
     },
     /**
      * 状态栏模型胶囊：只显示「目录 / 引擎」级项。
@@ -797,6 +846,10 @@ export default {
   mounted() {
     this.bootUp()
     this.logs.init()
+    // 加速优化开关：读全局设置（'0' = 关，缺省/其他 = 开）
+    window.studio.getSetting('h3.attentionBoost').then(v => {
+      this.accelOn = String(v || '').trim() !== '0'
+    }).catch(() => {})
     // 实时系统指标
     this._offMet = window.studio.onMetrics(s => { this.m = s })
     window.studio.metricsOnce().then(s => { if (s) this.m = s }).catch(() => {})
@@ -840,6 +893,16 @@ export default {
   },
   methods: {
     fmtMs,
+    /** 当前「档位 + 比例」的推荐画布文案（如「864×480」），拼在视频比例选项标题上。
+     *  取不到（档位/比例未声明画布）返回空串 → 不显示。
+     *  🔴 必须是 method（带参数），不能放 computed —— computed 是无参 getter，
+     *     放错会导致「aspectResLabel is not a function」运行时错误 → 整组件渲染失败黑屏。 */
+    aspectResLabel(aspectId) {
+      const m = this.projModal
+      if (!m) return ''
+      const c = this.st.recCanvas(m.tier, aspectId)
+      return c ? c.replace(/x/gi, '×') : ''
+    },
     /**
      * 启动顺序很重要：先加载工作区与项目树 → 再恢复上次的页面（现场）→ 最后才装上自动保存。
      * 反过来的话，默认状态（首页/无集数）会先把现场覆盖掉。
@@ -850,6 +913,8 @@ export default {
       try {
         if (await restoreSession()) this.toast('已恢复上次的页面')
       } catch (_) { /* 现场损坏不阻塞启动 */ }
+      // 首屏「启动中」到此结束：各模块从「正在加载…」切到真正的空态文案（2026-10-19）
+      this.st.booted = true
       // 启动即把「当前集所属项目」展开并拉一遍媒体：左边菜单打开就有内容，
       // 不再出现「软件刚打开时左侧是空的、得逐个点开才看到」的情况
       const cur = this.st.current
@@ -892,10 +957,10 @@ export default {
       if (!this.st.current) return ''
       return moduleStale(this.st.current.revs, kind) ? MODULE_STALE_KINDS[kind].text : ''
     },
-    /** 点击脏标签 → 消除（不重新生成也消失） */
-    async ackHead(kind) {
+    /** 点击脏标签 → 消除（不重新生成也消失）；quiet 用于「点生成按钮」时静默收掉琥珀色 */
+    async ackHead(kind, quiet) {
       await ackModule(this.st, kind)
-      this.toast('提示已消除')
+      if (!quiet) this.toast('提示已消除')
     },
     /** 展示块的 key：换集时变化 → 强制重挂载，清空上一集残留（角色库/视频/提示词…） */
     stageKey(suffix) {
@@ -914,6 +979,8 @@ export default {
     async startAdapt() {
       if (!this.st.current) return
       await this.st.saveChapter(this.chapter)
+      // 2026-10-19：点「改编」= 接受按新章节重做 → 按钮立刻褪掉琥珀色（不等 LLM 跑完）
+      if (this.headStale('adapt')) await this.ackHead('adapt', true)
       this.pl.confirm(0, this.st.current.id)
       this.pl.autoAdapt = true
       this.toast('已确认原文，正在自动改编…')
@@ -932,7 +999,7 @@ export default {
         mode: 'create', id: null, name: '',
         img: rec ? rec.img : fb('img', '1920x1080'),
         vid: rec ? rec.vid : fb('vid', '864x480'),
-        out: rec ? rec.out : fb('out', '1920x1080'),
+        out: rec ? rec.out : fb('out', 'auto'),
         tier, aspect,
         /** 用户手动改过哪个分辨率 —— 联动（改档位 / 改比例）就不再覆盖它，避免把用户的选择冲掉 */
         touched: { img: false, vid: false, out: false },
@@ -957,15 +1024,20 @@ export default {
       const tier = r.tier || this.st.defaultTier()
       const aspect = r.aspect || this.st.aspectOfRes(r.vid)
       const rec = this.st.recRes(tier, aspect) || {}
-      const img = r.img || '1920x1080', vid = r.vid || '864x480', out = r.out || '1920x1080'
+      // 2026-10-21：img/vid 已锁定 = 档位推荐值，打开配置弹窗时强制对齐推荐（老项目旧值作废）。
+      //   out 仍是可手改的，按「与推荐值不同 = 自定义」判断 touched。
+      const img = (rec.img) || r.img || '1920x1080'
+      const vid = (rec.vid) || r.vid || '864x480'
+      const out = r.out || 'auto'
       this.projModal = {
         mode: 'edit', id: pid, name: p.name,
         img, vid, out, tier, aspect,
         /** 与推荐值不同 = 这一项历史上就是自定义的 → 视作 touched，改档位 / 改比例时不动它。
-         *  否则（例如老项目恰好等于推荐值）就跟默认值一样参与联动。 */
+         *  否则（例如老项目恰好等于推荐值）就跟默认值一样参与联动。
+         *  🔴 img/vid 已锁定，不再参与 touched（恒 false）。 */
         touched: {
-          img: !!rec.img && img !== rec.img,
-          vid: !!rec.vid && vid !== rec.vid,
+          img: false,
+          vid: false,
           out: !!rec.out && out !== rec.out
         },
         render: fix('render'), world: fix('world'), genre: fix('genre'), tone: fix('tone'),
@@ -982,19 +1054,26 @@ export default {
       m.tier = key
       this.applyRec()
     },
+    /** 加速优化开关（全局）：INT8 注意力 + BlockCache。切换立即写设置，对所有档位/项目生效 */
+    toggleAccel() {
+      this.accelOn = !this.accelOn
+      window.studio.setSetting('h3.attentionBoost', this.accelOn ? '1' : '0').catch(() => {})
+    },
     pickAspect(a) {
       const m = this.projModal
       if (!m || m.aspect === a) return
       m.aspect = a
       this.applyRec()
     },
-    /** 写回推荐值（只覆盖未 touched 的字段） */
+    /** 写回推荐值（2026-10-21：img/vid 已锁定 → 强制 = 推荐值，不再看 touched；out 仍按 touched 联动） */
     applyRec() {
       const m = this.projModal
       if (!m) return
       const rec = this.st.recRes(m.tier, m.aspect)
       if (!rec) return
-      for (const k of ['img', 'vid', 'out']) if (rec[k] && !m.touched[k]) m[k] = rec[k]
+      if (rec.img) m.img = rec.img
+      if (rec.vid) m.vid = rec.vid
+      if (rec.out && !m.touched.out) m.out = rec.out
     },
     /** 手动改分辨率：只标记 touched，互不联动。
      *  🔴 图片分辨率与视频分辨率是各自独立的 —— 用户手动改其中一个，另一个不动。

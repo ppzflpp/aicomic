@@ -1,0 +1,58 @@
+{
+  "id": "seedvr2",
+  "kind": "upscale",
+  "label": "SeedVR2（本地 · 视频超分）",
+  "desc": "成片环节把已选中的镜头视频放大一档并重建细节（音轨原样带过）；用 ComfyUI 内置的 SeedVR2 节点，模型走标准 diffusion_models / vae 目录",
+  "default": true,
+
+  "workflow": "workflows/video_upscale.json",
+
+  "assets": [
+    {
+      "slot": "seedvr2_unet", "role": "upscaleModel", "dir": "diffusion_models",
+      "match": "seedvr2.*3b", "exclude": "^(?!.*seedvr2)", "pick": "any", "required": true,
+      "importRe": "^seedvr2.*(3b|7b|int8|convrot)",
+      "label": "超分主模型（SeedVR2 · 优先 3B int8）", "short": "超分模",
+      "need": "举例：seedvr2_3b_int8_convrot.safetensors",
+      "why": "缺了无法做视频超分（放 ComfyUI 的 diffusion_models 目录）"
+    },
+    {
+      "slot": "seedvr2_vae", "role": "upscaleVae", "dir": "vae",
+      "match": "seedvr2.*vae", "pick": "strict", "required": true,
+      "importRe": "seedvr2.*vae",
+      "label": "超分 VAE（SeedVR2 专用）", "short": "超分V",
+      "need": "举例：seedvr2_ema_vae_fp16.safetensors",
+      "why": "缺了超分工作流跑不起来（放 ComfyUI 的 vae 目录）"
+    }
+  ],
+
+  "nodes": {
+    "videoLoad": "1", "components": "2", "scale": "3", "preprocess": "4",
+    "vae": "5", "upscaleModel": "6", "encode": "7", "chunk": "8",
+    "conditioning": "9", "sampler": "10", "merge": "11", "decode": "12",
+    "post": "13", "makeVideo": "14", "save": "15"
+  },
+
+  "classes": {
+    "preprocess": "SeedVR2Preprocess",
+    "conditioning": "SeedVR2Conditioning",
+    "post": "SeedVR2PostProcessing"
+  },
+
+  "params": {
+    "steps": 1,
+    "cfg": 1,
+    "denoise": 1,
+    "sampler": "euler",
+    "scheduler": "simple",
+    "scale": 2,
+    "capLongEdge": 1920,
+    "colorCorrection": "lab",
+    "tileSize": 512,
+    "tileOverlap": 128,
+    "temporalSize": 64,
+    "temporalOverlap": 8
+  },
+
+  "capabilities": { "upscale": true }
+}

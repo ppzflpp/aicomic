@@ -203,14 +203,14 @@ body{
   text-transform:uppercase; letter-spacing:.14em;
 }
 .btn-new{
-  width:100%; margin:0; padding:9px; border:1px solid rgba(59,130,246,.28);
-  background:rgba(59,130,246,.08); color:#a8c6ef; border-radius:var(--r-sm);
-  cursor:pointer; font-size:12.5px; font-weight:500; transition:all .16s;
+  width:100%; margin:0; padding:9px; border:1px solid rgba(59,130,246,.32);
+  background:transparent; color:#a8c6ef; border-radius:999px;
+  cursor:pointer; font-size:12.5px; font-weight:500;
+  transition:background .16s, border-color .16s, color .16s;
 }
 .btn-new:hover{
-  border-color:rgba(96,165,250,.75); color:#fff;
-  background:linear-gradient(135deg,rgba(37,99,235,.35),rgba(56,189,248,.2));
-  box-shadow:0 4px 16px rgba(37,99,235,.35);
+  border-color:rgba(96,165,250,.75); color:#dbeaff;
+  background:rgba(59,130,246,.12);
 }
 .side-foot{
   margin-top:auto;   /* 工作台收起时上面没有 flex:1 元素，靠它保证设置永远贴底 */
@@ -238,6 +238,58 @@ body{
 /* 图片生成独立页：满高两栏，画廊内部滚动（不用 content 的整页滚动） */
 .content.ig-content{display:flex; padding:14px; overflow:hidden;}
 .content.ig-content .ig-wrap{flex:1; min-height:0;}
+/* ============================================================
+   工作台右侧悬浮导航（2026-10-19 Dragon）
+   - .main 需要 position:relative 作为定位父级（导航条 absolute 挂在它上面，随窗口走、不随内容滚）
+   - 只在工作台（.dash-content）出现；**不占布局**，纯悬浮覆盖在功能块之上
+   ============================================================ */
+.main{position:relative;}
+/* 🔴 不占布局：内容区保持原有内边距，导航条纯悬浮盖在功能区之上（收起态也只压住右边缘 46px，不挤压卡片） */
+.nav-rail{
+  position:absolute; right:16px; top:50%; transform:translateY(-50%); z-index:6;
+  width:46px; overflow:hidden;
+  display:flex; flex-direction:column; gap:2px; padding:6px;
+  background:rgba(28,36,50,.97); backdrop-filter:blur(12px);
+  border:1px solid rgba(120,140,170,.42); border-radius:18px;
+  box-shadow:0 8px 26px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.35);
+  transition:width .18s ease, border-color .18s, box-shadow .18s, background .18s;
+}
+/* 有任务在跑时导航必须始终可见 —— 否则绿点就白闪了 */
+.nav-rail.has-task{border-color:rgba(34,197,94,.55); box-shadow:0 8px 26px rgba(0,0,0,.62), 0 0 14px rgba(34,197,94,.28);}
+.nav-rail:hover, .nav-rail:focus-within{
+  width:156px; background:rgba(32,41,57,.99);
+  border-color:rgba(140,165,200,.6);
+  box-shadow:0 16px 42px rgba(0,0,0,.7), 0 0 0 1px rgba(0,0,0,.4);
+}
+.nr-item{
+  position:relative; width:100%; display:flex; align-items:center; gap:8px;
+  padding:7px 8px; border:0; border-radius:12px; background:none; cursor:pointer;
+  font-family:inherit; font-size:12px; color:#c8d3e2; text-align:left;
+  white-space:nowrap; transition:background .15s, color .15s, box-shadow .15s;
+}
+.nr-item:hover{background:rgba(255,255,255,.1); color:#fff;}
+.nr-item.on{background:rgba(59,130,246,.28); color:#dbeafe; box-shadow:inset 0 0 0 1px rgba(96,165,250,.6);}
+.nr-item.on:hover{background:rgba(59,130,246,.36);}
+.nr-n{
+  position:relative; width:18px; height:18px; border-radius:50%; flex:none; font-size:11px;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(255,255,255,.14); color:inherit;
+}
+.nr-item.on .nr-n{background:#3b82f6; color:#fff;}
+/* 名称：收起时被胶囊裁掉（宽度由 .nav-rail 的 overflow 控制），展开时淡入 */
+.nr-t{
+  min-width:0; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis;
+  opacity:0; transition:opacity .14s ease .04s;
+}
+.nav-rail:hover .nr-t, .nav-rail:focus-within .nr-t{opacity:1;}
+/* 任务绿点：挂在序号角上（收起/展开都在同一位置，不会顶到文字） */
+.nr-dot{
+  position:absolute; top:-2px; right:-2px;
+  width:7px; height:7px; border-radius:50%; background:#22c55e;
+  box-shadow:0 0 0 2px rgba(20,26,37,.9), 0 0 0 4px rgba(34,197,94,.2);
+  animation:nr-blink 1.1s ease-in-out infinite;
+}
+@keyframes nr-blink{0%,100%{opacity:1; transform:scale(1);} 50%{opacity:.32; transform:scale(.72);}}
 .grid{display:grid; grid-template-columns:1fr; gap:16px; align-items:start;}
 /* 块1：剧本创作 = 一卡两栏（左 原文输入 | 右 AI 优化稿，中间细分隔线；窄窗口自动叠放） */
 .script-grid{display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:stretch;}
@@ -382,22 +434,29 @@ input[type=search]:focus{
   outline:none; border-color:var(--blue); background:#0b1017;
   box-shadow:0 0 0 3px rgba(59,130,246,.16);
 }
+/* ================= 按钮唯一形状（2026-10-20 Dragon · 方案 1「清爽描边」）=================
+   全应用只有一种按钮：透明底 + 1px 描边 + 全圆角胶囊，无渐变、无实心、无发光。
+   主次只靠「描边色 + 字色」区分：
+     蓝  = 主操作（每处唯一）
+     灰  = 次要操作（打开文件夹、添加素材、一键填充…）
+     琥珀 = 脏标记（该重做）/ 图标类
+     红  = 破坏性（删除、停止）
+   🔴 改这里等于改全应用 138 处按钮 —— 任何新的按钮都不要再写自己的底色。 */
 .btn{
-  background:var(--grad); color:#04101f; border:none; border-radius:var(--r-sm);
-  padding:8px 18px; font-size:13px; font-weight:600; cursor:pointer;
-  box-shadow:0 4px 16px rgba(37,99,235,.4);
-  transition:filter .15s, transform .1s, box-shadow .15s;
+  background:transparent; color:#8ec2ff;
+  border:1px solid #3b82f6; border-radius:999px;
+  padding:7px 18px; font-size:13px; font-weight:500; cursor:pointer;
+  box-shadow:none;
+  transition:background .15s, border-color .15s, color .15s, transform .1s;
 }
-.btn:hover{filter:brightness(1.1); box-shadow:0 6px 22px rgba(37,99,235,.55);}
-.btn:active{transform:translateY(1px);}
-.btn:disabled{opacity:.35; cursor:not-allowed; box-shadow:none; filter:none;}
+.btn:hover:not(:disabled){background:rgba(59,130,246,.12); border-color:#60a5fa; color:#d3e9ff;}
+.btn:active:not(:disabled){transform:translateY(1px);}
+.btn:disabled{opacity:.35; cursor:not-allowed;}
 .btn.ghost{
-  background:rgba(255,255,255,.04); border:1px solid var(--line); color:#c3cddd;
-  box-shadow:none; font-weight:500;
+  background:transparent; border-color:#3a4353; color:#c7d2e0; font-weight:400;
 }
-.btn.ghost:hover{
-  border-color:rgba(96,165,250,.6); background:rgba(59,130,246,.12);
-  color:#e8f1ff; filter:none; box-shadow:0 4px 14px rgba(37,99,235,.22);
+.btn.ghost:hover:not(:disabled){
+  border-color:#5b6b82; background:rgba(255,255,255,.055); color:#e8f1ff;
 }
 .hint{font-size:12px; color:var(--sub); line-height:1.6;}
 /* 重要警告（如 CUDA 未就绪 → 会用 CPU 推理） */
@@ -409,6 +468,14 @@ input[type=search]:focus{
 .placeholder{
   border:1.5px dashed #262f3e; border-radius:var(--r-md); padding:28px;
   text-align:center; color:var(--sub-2); font-size:13px; background:rgba(255,255,255,.015);
+}
+/* 加载态（2026-10-19）：启动时要先恢复「上次打开的集」再建卡，这段时间原来是一片空白，
+   看起来像卡死。用一条带转圈的提示占位，成本为零、不影响任何既有选择器（不用 .ccard）。
+   ⚠️ 必须与下方 .placeholder 互斥，且加载中不要再显示「确认分镜后…」那句（会误导）。 */
+.loading-hint{
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  border:1.5px dashed #262f3e; border-radius:var(--r-md); padding:34px;
+  color:var(--sub-2); font-size:13px; background:rgba(255,255,255,.015);
 }
 
 /* ================= 状态栏（阶段 / 引擎 / 模型 / 工作区 一行显示） ================= */
@@ -599,7 +666,14 @@ input[type=search]:focus{
 }
 .setcard .st-tag.on{color:#a5b4fc; background:rgba(99,102,241,.18); border-color:rgba(129,140,248,.36);}
 .setcard .st-sum{
-  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#8b95a9; font-size:11px;
+  /* 🔴 2026-10-19（Dragon）：这条汇总文本曾把整页撑出 1100+px 的横向滚动。
+     只写 min-width:0 / ellipsis / flex:1 1 0 都**挡不住**——横向溢出场景下容器宽度由
+     min-content 逐层上传决定，nowrap 文本的 min-content 就是整行宽（flex 收缩根本不发生）。
+     `contain:inline-size` 才让它的固有宽度真正归零：宽度完全由 flex 分配，长文本在自身内省略。
+     连带后果（已修）：角色&场景网格被拉宽成 5 列、每列 ~440px，卡上「生成3视图」文字
+     被挤出卡片边界，看起来只剩勾选框。 */
+  flex:1 1 0; min-width:0; contain:inline-size;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#8b95a9; font-size:11px;
 }
 .setcard .st-fold{flex-shrink:0; font-size:10.5px; color:#7c8798;}
 .setcard .st-body{display:flex; flex-direction:column; gap:7px; padding:2px 9px 9px;}
@@ -638,9 +712,10 @@ input[type=search]:focus{
 /* 拆镜黄标（第 2 批）：本镜由程序按台词边界拆开而来。用冷色区分于琥珀系的时长/合并提示，
    右侧同行的两个小按钮（AI 重写 / 撤回）比 .btn.sm 再小一档，不撑高提示行 */
 .shot-row .dur-warn.spl{color:#93c5fd; background:rgba(147,197,253,.10); border-color:rgba(147,197,253,.32);}
-.shot-row .shot-sub .btn.tiny{padding:2px 8px; font-size:11px; border-radius:5px; box-shadow:none; font-weight:500;}
-.shot-row .shot-sub .btn.tiny.ghost{background:rgba(255,255,255,.06); color:#a8bccf; box-shadow:none;}
-.shot-row .shot-sub .btn.tiny.ghost:hover:not(:disabled){background:rgba(255,255,255,.12); color:#dbe6f5;}
+.shot-row .shot-sub .btn.tiny{padding:2px 8px; font-size:11px; border-radius:999px; box-shadow:none; font-weight:500;}
+/* 🔴 极小按钮同样遵守「透明底 + 描边」（10-20 方案 1）：底色只留 hover 的轻填 */
+.shot-row .shot-sub .btn.tiny.ghost{background:transparent; border-color:#3a4353; color:#a8bccf; box-shadow:none;}
+.shot-row .shot-sub .btn.tiny.ghost:hover:not(:disabled){background:rgba(255,255,255,.07); border-color:#5b6b82; color:#dbe6f5;}
 .shot-row .shot-sub .btn.tiny:disabled{opacity:.4;}
 /* 合并确认弹窗：两镜并排 + 合并预览 */
 .merge-cols{display:flex; gap:8px;}
@@ -826,7 +901,10 @@ input[type=search]:focus{
       复用，给根容器加 column 会连带把那两个页面也竖过来。
    🔴 上一版用过的 .ops-col（竖排容器）已删除，别再混用两套。 */
 .ops-row.ops-stack{flex-direction:column; align-items:stretch; gap:6px;}
-.ops-row.ops-stack .ops-res-row{display:flex; align-items:center; gap:8px; min-width:0;}
+/* 🔴 2026-10-19（Dragon）：加 flex-wrap 保底 —— 列宽不足以同时放下「分辨率」和「生成3视图」时，
+   开关整体换到第二行靠右（文字始终完整可见），而不是被 nowrap 推出卡片边界外（被相邻卡盖住，
+   看起来「只剩勾选框」—— 实测列宽 <523px 时必现）。宽列时行为与从前完全一致。 */
+.ops-row.ops-stack .ops-res-row{display:flex; align-items:center; gap:8px; row-gap:6px; flex-wrap:wrap; min-width:0;}
 .ops-row.ops-stack .card-res{margin-right:0;}   /* 行内不再靠 margin-right:auto 推右，改由 .card-tv 顶 */
 .ops-row.ops-stack .card-tv{margin-left:auto;}
 .ops-row.ops-stack > .btn{align-self:flex-end;}
@@ -932,10 +1010,10 @@ input[type=search]:focus{
 .thumb-add:disabled{opacity:.4; cursor:not-allowed;}
 .cops{display:flex; gap:6px; flex-wrap:wrap;}
 /* 2026-10-08（需求）：块 1「改编」/「生成分镜」与块 2「批量生成提示词」(.btn.sm) 等高 ——
-   两边都显式声明 line-height，高度 = 上下 padding + 行盒 = 5+5+14 = 24px，可精确相等；
-   只改行高不动字号/内边距，主按钮仍是 13px 字号。 */
-.btn.sm{padding:5px 11px; font-size:12px; line-height:14px;}
-.btn.h-sm{padding:5px 18px; font-size:13px; line-height:14px;}
+   两边都显式声明 line-height，高度 = 上下 padding + 行盒 + 2×border = 4+4+14+2 = 24px，可精确相等；
+   🔴 2026-10-20 方案 1 给 .btn 加了 1px border，padding 由 5 降到 4 抵消，24px 高度不变。 */
+.btn.sm{padding:4px 11px; font-size:12px; line-height:14px;}
+.btn.h-sm{padding:4px 18px; font-size:13px; line-height:14px;}
 /* 锁定态：提示 + 解锁按钮同一行（锁定不再是死胡同） */
 .lock-row{display:flex; align-items:center; justify-content:center; gap:8px; padding:4px 0; flex-wrap:wrap;}
 .lock-row .hint{text-align:center;}
@@ -1167,23 +1245,45 @@ input[type=search]:focus{
    ② 密钥框：全局表单规则只覆盖 text/number/search 与「没写 type」的 input，
       **password 不在其中** → 改版前那个密钥框其实是浏览器默认的**白底**样式。
       这里自带整套深色样式，聚焦时整盒发光（用 :focus-within，不必额外加字段）。 */
-.llm-ck{
-  display:inline-flex; align-items:center; gap:7px; flex-shrink:0;
-  padding:5px 13px 5px 10px; border-radius:99px; cursor:pointer; user-select:none;
-  border:1px solid var(--line); background:rgba(255,255,255,.03);
-  transition:border-color .16s, background .16s, box-shadow .16s;
+/* 「云端生成」开关（设置 → 大模型来源）：2026-10-19 把原来的勾选框换成开关样式，
+   与功能区那个已撤掉的小开关同一套视觉（.llm-sw / .sw-track / .sw-knob）。
+   打开 = 该环节走云端，关闭 = 本地内置模型。 */
+.llm-sw{
+  position:relative; display:inline-flex; align-items:center; gap:8px; flex-shrink:0;
+  padding:4px 11px 4px 11px; border-radius:999px; cursor:pointer; user-select:none;
+  border:1px solid var(--line); background:rgba(255,255,255,.04);
+  font-size:12px; color:#9db0c6; white-space:nowrap;
+  transition:border-color .16s, background .16s, color .16s, box-shadow .16s;
 }
-.llm-ck:hover{border-color:#2c3646; background:rgba(255,255,255,.055);}
-.llm-ck input{accent-color:#38bdf8; width:14px; height:14px; margin:0; cursor:pointer;}
-.llm-ck-txt{font-size:12.5px; color:#c3cddd; transition:color .16s;}
-.llm-ck.on{
-  border-color:rgba(56,189,248,.55); background:rgba(56,189,248,.13);
+.llm-sw:hover{border-color:rgba(125,211,252,.45); color:#cfe6f8;}
+.llm-sw.on{
+  border-color:rgba(56,189,248,.55); background:rgba(56,189,248,.16); color:#e0f2fe;
   box-shadow:inset 0 0 0 1px rgba(56,189,248,.12);
 }
-.llm-ck.on .llm-ck-txt{color:#8fd0ff; font-weight:600;}
-.llm-ck.dis{opacity:.5; cursor:not-allowed;}
+.llm-sw.dis{opacity:.5; cursor:not-allowed;}
+/* 真身 checkbox 藏起来但保留可点（点胶囊任意位置都能切） */
+.llm-sw .ls-box{position:absolute; width:1px; height:1px; opacity:0; pointer-events:none;}
+.llm-sw .sw-track{
+  position:relative; flex:none; width:26px; height:14px; border-radius:999px;
+  background:rgba(255,255,255,.2); transition:background .18s;
+}
+.llm-sw .sw-knob{
+  position:absolute; top:2px; left:2px; width:10px; height:10px; border-radius:50%;
+  background:#cbd5e1; transition:transform .18s, background .18s;
+}
+.llm-sw.on .sw-track{background:#0ea5e9;}
+.llm-sw.on .sw-knob{transform:translateX(12px); background:#fff;}
+/* 声音档位开关（2026-10-20）：开 = 纯对白（特殊模式）→ 琥珀色。
+   它和「云端生成」那种常规开关不是一类东西（会改变成片的声音形态），配色必须能一眼分辨。 */
+.llm-sw.audio-sw.on{
+  border-color:rgba(251,191,36,.6); background:rgba(251,191,36,.16); color:#fde68a;
+  box-shadow:inset 0 0 0 1px rgba(251,191,36,.12);
+}
+.llm-sw.audio-sw.on:hover{border-color:rgba(251,191,36,.8); color:#fef3c7;}
+.llm-sw.audio-sw.on .sw-track{background:#d97706;}
+.llm-sw.audio-sw.on .sw-knob{background:#fffbeb;}
 .llm-ck-hint{font-size:12px; color:#7b8798;}
-.llm-ck.on + .llm-ck-hint{color:#8ab4f8;}
+.llm-sw.on + .llm-ck-hint{color:#8ab4f8;}
 
 .key-box{
   flex:1; min-width:0; display:flex; align-items:center; gap:8px;
@@ -1290,31 +1390,48 @@ input[type=search]:focus{
 
 /* ================= 按钮配色体系（2026-09-23 统一） =================
    蓝（.btn 默认）  = 各模块的顶级功能：改编 / 生图 / 生成视频 / 批量生成 / 导出成片
-   绿（.btn.sec）   = 次级功能：一键填充、打开所在文件夹、添加素材等
+   灰（.btn.sec / .btn.ghost）= 次级功能：一键填充、打开所在文件夹、添加素材等
    琥珀（.btn.icon）= 图标类功能按钮（刷新提示词…），只放图标不放文字
-   红（.btn.danger）= 破坏性操作（删除图片 / 停止批量） */
+   红（.btn.danger） = 破坏性操作（删除图片 / 停止批量）
+   🔴 2026-10-20：全部改为描边（方案 1），绿色已从按钮体系退场 —— 次级一律灰色描边。 */
 .btn.sec{
-  background:linear-gradient(135deg,#15803d,#22c55e); color:#03170b;
-  box-shadow:0 4px 16px rgba(34,197,94,.36);
+  background:transparent; border-color:#3a4353; color:#c7d2e0; font-weight:400;
+  box-shadow:none;
 }
-.btn.sec:hover:not(:disabled){filter:brightness(1.08); box-shadow:0 6px 22px rgba(34,197,94,.5);}
+.btn.sec:hover:not(:disabled){border-color:#5b6b82; background:rgba(255,255,255,.055); color:#e8f1ff;}
 .btn.icon{
-  background:linear-gradient(135deg,#b45309,#f59e0b); color:#241300;
+  background:transparent; border-color:#6b5426; color:#f0b95c;
   display:inline-flex; align-items:center; justify-content:center;
-  box-shadow:0 4px 14px rgba(245,158,11,.32);
 }
-.btn.icon:hover:not(:disabled){filter:brightness(1.1); box-shadow:0 6px 18px rgba(245,158,11,.5);}
-/* 顶级功能按钮在「已有内容、点了会重做」时的加强态：仍是蓝色，改用亮描边 + 更强辉光
-   （绿色已征用为「次级功能」的标识色，不再表示「再来一次」） */
+.btn.icon:hover:not(:disabled){border-color:#a37c30; background:rgba(245,158,11,.10); color:#ffd48a;}
+/* 顶级功能按钮在「已有内容、点了会重做」时的加强态：仍是蓝系，靠更亮的描边 + 淡底区分
+   （绿色已征用为「次级功能」的标识色，不再表示「再来一次」；描边体系下不再用辉光） */
 .btn.regen{
-  box-shadow:0 0 0 1.5px rgba(125,211,252,.55), 0 6px 20px rgba(56,189,248,.45);
+  border-color:#7dd3fc; color:#bfe6ff; background:rgba(56,189,248,.09);
 }
-.btn.regen:hover:not(:disabled){filter:brightness(1.08); box-shadow:0 0 0 1.5px rgba(125,211,252,.78), 0 8px 26px rgba(56,189,248,.6);}
-.btn.danger{
-  background:linear-gradient(135deg,#b91c1c,#ef4444); color:#1a0505;
-  box-shadow:0 4px 16px rgba(239,68,68,.36);
+.btn.regen:hover:not(:disabled){border-color:#a5e2ff; background:rgba(56,189,248,.16); color:#e2f4ff;}
+/* 「脏数据 → 该重新生成」的按钮（2026-10-19 Dragon / 10-20 改描边）：
+   上游数据变了，这个按钮就是重做入口 —— 琥珀字 + 琥珀边 + 缓慢呼吸，
+   一眼能看出哪些要重做；点下去（或重新生成完成）后类名消失，按钮恢复本来的蓝/灰。
+   🔴 .btn 现在自带 1px border，脏标记直接改 border-color，不再用 box-shadow 假装描边。 */
+.btn.stale-need{
+  background:rgba(251,191,36,.07); border-color:#c08a1e; color:#f8d47a;
+  animation:stale-need-pulse 1.9s ease-in-out infinite;
 }
-.btn.danger:hover:not(:disabled){filter:brightness(1.08); box-shadow:0 6px 22px rgba(239,68,68,.5);}
+.btn.stale-need:hover:not(:disabled){border-color:#e0a63a; background:rgba(251,191,36,.14); color:#ffe3a3;}
+.btn.stale-need:disabled{animation:none;}
+@keyframes stale-need-pulse{
+  0%,100%{border-color:#a8761c; background:rgba(251,191,36,.05);}
+  50%{border-color:#dca63a; background:rgba(251,191,36,.16);}
+}
+.btn.danger,
+.btn.sec.stop{
+  background:transparent; border-color:#7f2d2d; color:#f08c8c; font-weight:500;
+}
+.btn.danger:hover:not(:disabled),
+.btn.sec.stop:hover:not(:disabled){
+  border-color:#c04545; background:rgba(239,68,68,.14); color:#ffb3b3;
+}
 
 .spin{
   width:11px; height:11px; flex-shrink:0; display:inline-block;
@@ -1323,7 +1440,8 @@ input[type=search]:focus{
 }
 @keyframes spin{to{transform:rotate(360deg)}}
 .busy-txt{display:inline-flex; align-items:center; gap:7px; color:#9ecbe8; font-size:12px; line-height:1;}
-.btn .busy-txt{color:#dfe9f6;}
+/* 进度文字跟随按钮自身的字色（描边按钮里不再是白色实心底上的白字） */
+.btn .busy-txt{color:inherit;}
 
 /* 卡片级「生成中」：整块压暗 + 居中转圈文字 */
 .card-busy{position:relative;}
@@ -1599,6 +1717,21 @@ input[type=search]:focus{
 .proj-row.col{flex-direction:column; align-items:stretch; gap:9px; padding:9px 12px;}
 .proj-row.col .proj-kind{width:auto;}
 
+/* 加速优化开关（2026-10-21）：全局 toggle，放在视频质量块下方 */
+.accel-row{gap:10px;}
+.accel-toggle{
+  flex:none; position:relative; width:40px; height:22px;
+  border-radius:11px; border:none; cursor:pointer;
+  background:#2a3648; transition:background .18s; padding:0;
+}
+.accel-toggle.on{background:var(--blue);}
+.accel-knob{
+  position:absolute; top:2px; left:2px; width:18px; height:18px;
+  border-radius:50%; background:#e8eef7; transition:left .18s;
+}
+.accel-toggle.on .accel-knob{left:20px;}
+.accel-label{font-size:12px; color:#b9c6dd;}
+
 /* ---- 四轴「点选网格」：点一下即选中（替代原来的下拉） ----
    卡片把 label 与 desc 一起摊开：这几个选项本来就不多，藏进下拉反而要逐个展开才知道有什么。
    🔴 2026-10-14：改为**固定一行 5 张**（原 `auto-fill minmax(230px,1fr)` 在 620px 弹窗里是 2 张一行，
@@ -1648,10 +1781,39 @@ input[type=search]:focus{
 .proj-kind{flex:none; width:72px; font-size:12.5px; color:#b9c6dd; font-weight:500;}
 
 /* ---- 视频质量 / 视频比例 点选网格（2026-10-15）----
-   两者都是 .proj-row.col（标签在上、控件在下）且**占满弹窗宽度**：档位有 3 张、比例有 2 张，
-   塞进 .proj-two 的半宽里每张只剩 ~140px，desc 会被压成残句（与 2026-10-14 四轴踩过的坑同类）。 */
-.proj-tier-grid{grid-template-columns:repeat(3,minmax(0,1fr));}
+   两者都是 .proj-row.col（标签在上、控件在下）且**占满弹窗宽度**：
+   比例有 2 张，塞进 .proj-two 的半宽里每张只剩 ~140px，desc 会被压成残句（与 2026-10-14 四轴踩过的坑同类）。 */
 .proj-aspect-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+/* ---- 视频质量「3 档 × A/B 方案」（2026-10-21）----
+   档位 a/b 两两成对，视觉上折叠成 3 档卡片，每档内 A（≤16G）/ B（>16G）左右并排。
+   右上角「推荐」角标由本机显存总量决定（>16G → B，否则 A）。 */
+.tier-group-list{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px;}
+.tier-group{
+  display:flex; flex-direction:column; gap:6px; min-width:0;
+  padding:10px 10px 12px; border:1px solid #1e2735; border-radius:var(--r-sm);
+  background:rgba(255,255,255,.015);
+}
+.tier-group-head{font-size:12.5px; font-weight:600; color:#dbe5f5; line-height:1.35;}
+.tier-ab-row{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
+.tier-ab{position:relative; padding:8px 9px; gap:2px;}
+.tier-ab-rec{
+  position:absolute; top:0; right:0; font-style:normal; font-size:9px; line-height:1;
+  padding:3px 6px; border-radius:0 var(--r-sm) 0 var(--r-sm); color:#3a2404;
+  background:#f5c05a; border:none;
+  font-weight:600; letter-spacing:.3px;
+}
+.tier-ab-name{font-size:11.5px; font-weight:600; color:#dbe5f5; line-height:1.3; margin-top:1px; padding-right:34px;}
+.tier-ab-desc{font-size:10.5px; line-height:1.5; color:#7f8ea8;}
+/* 质量 A/B 卡片：选中不显示右上角勾（推荐角标已占据右上角，蓝描边+底色足够表达选中） */
+.tier-ab.on::after{content:none;}
+/* 视频比例选项：选中不显示勾，改由蓝描边 + 分辨率后缀表达 */
+.proj-aspect-grid .popt.on::after{content:none;}
+/* 视频比例选项标题里的推荐画布后缀（如「864×480」） */
+.aspect-res{
+  font-style:normal; font-size:11px; font-weight:500; color:#7dd3fc; margin-left:8px;
+}
+.proj-aspect-grid .popt.on .aspect-res{color:#9fd8fc;}
+
 /* 质量/比例/分辨率 与 风格四轴 现在是两个 .proj-grid 相邻 → 第二段别再吃一次上内边距 */
 .proj-grid + .proj-grid{padding-top:0;}
 /* 「推荐」角标：当前值 = 「档位+比例」的推荐值。auto 带出来的值都带它，手改成别的就没了 —— 位置提示，不拦截。 */
@@ -1690,9 +1852,8 @@ input[type=search]:focus{
 
 /* 设置页时侧栏「设置」按钮高亮（与页面一致，不再高亮项目树） */
 .btn-new.on{
-  border-color:rgba(96,165,250,.75); color:#fff;
-  background:linear-gradient(135deg,rgba(37,99,235,.4),rgba(56,189,248,.22));
-  box-shadow:0 4px 16px rgba(37,99,235,.35);
+  border-color:rgba(96,165,250,.8); color:#dbeaff;
+  background:rgba(59,130,246,.16);
 }
 
 /* ================= 卡片级分辨率（角色图 / 镜头视频逐条设置） ================= */
@@ -2072,4 +2233,85 @@ input[type=search]:focus{
   background:rgba(0,0,0,.3); border:1px solid var(--line-soft); border-radius:var(--r-sm);
   font-size:11px; line-height:1.65; color:var(--sub); white-space:pre-wrap;
   font-family:ui-monospace,Consolas,monospace;
+}
+
+/* ================= 模块标题栏统一框（2026-10-20 Dragon）=================
+   目标：一眼分清「信息」与「操作」。
+   左半区 = 无边框纯文字（圆形编号 + 标题 + 淡灰统计 / 耗时），鼠标移上去毫无变化；
+   中间一条 1px 竖线做物理分隔；
+   右半区 = 一律**实心**胶囊按钮（2026-10-20 晚：全部改实心，配色走方案 B「深蓝 + 亮蓝」）：
+             次要操作深蓝底浅蓝字，主操作（.pro）亮蓝底白字，停止态实心红，脏标记实心琥珀。
+   🔴 与正文的「方案 1 全描边」是两套语言，故意不同 —— 标题栏要有一眼可见的执行入口。 */
+.stage-head{gap:10px;}
+
+/* 编号：由「圆角方形 + 渐变 + 光晕」改为正圆实心（不再像按钮） */
+.stage-head .s-num,
+.stage.done .stage-head .s-num{
+  width:26px; height:26px; border-radius:50%;
+  background:#1d4ed8; color:#eaf2ff;
+  font-size:14px; font-weight:600; letter-spacing:0;
+  box-shadow:none;
+}
+.stage-head .s-sub{opacity:.62;}
+
+/* 左半区的统计 / 耗时：全部退成纯文字（字数、总时长、生成耗时） */
+.stage-head .head-ms,
+.stage-head .total-dur,
+.stage-head .gen-ms,
+.stage-head .gen-ms.live{
+  display:inline-flex; align-items:center; gap:4px;
+  margin:0; padding:0; border:none; background:none; border-radius:0;
+  font-family:inherit; font-size:11.5px; font-weight:400; line-height:1.4;
+  color:#8b95a9;
+}
+
+/* 信息区 / 操作区之间的分隔线 */
+.stage-head .head-sep{width:1px; height:18px; background:#2a3341; flex:none; margin:0 2px;}
+
+/* 右半区：按钮**全部实心胶囊**，走「方案 B · 深蓝 + 亮蓝」。
+   🔴 全实心之后「实心」不再代表主操作 → 主次只能靠色阶区分：
+      次要 = 深蓝 #1e3a8a 底 + 浅蓝字（安静，不抢焦点）；
+      主操作 = 亮蓝 #2563eb 底 + 白字（每行唯一一颗）。
+   次要按钮全部压在深色档，否则一排三四颗高饱和实心会显得很挤。 */
+.stage-head .btn{
+  border:1px solid #2b4d8f; background:#1e3a8a; color:#bfdbfe;
+  border-radius:999px; padding:4px 12px;
+  font-size:11.5px; font-weight:500; line-height:1.35;
+  box-shadow:none;
+}
+.stage-head .btn:hover:not(:disabled){
+  border-color:#4d7fd6; background:#1e40af; color:#e8f2ff; filter:none;
+}
+.stage-head .btn.sec{background:#1e3a8a; border-color:#2b4d8f; color:#bfdbfe;}
+.stage-head .btn.sec:hover:not(:disabled){background:#1e40af; border-color:#4d7fd6; color:#e8f2ff;}
+
+/* 重做加强（.regen）：仍是深蓝底，只把描边提亮一档 —— 既区别于普通次要按钮，
+   又不至于跟主操作的亮蓝实心抢「唯一执行入口」的位置。 */
+.stage-head .btn.regen{background:#1e3a8a; border-color:#60a5fa; color:#dbeafe;}
+.stage-head .btn.regen:hover:not(:disabled){background:#1e40af; border-color:#93c5fd; color:#eff7ff;}
+
+/* 主操作：每行唯一一颗「亮蓝实心」（标题栏走方案 2；正文才是方案 1 全描边） */
+.stage-head .btn.pro{background:#2563eb; border-color:#3b82f6; color:#fff; font-weight:500;}
+.stage-head .btn.pro:hover:not(:disabled){background:#1d4ed8; border-color:#60a5fa; color:#fff;}
+
+/* 运行中 / 可停止：实心红（优先于实心蓝与描边灰） */
+.stage-head .btn.danger,
+.stage-head .btn.sec.stop,
+.stage-head .btn.pro.stop{
+  background:#b91c1c; border-color:#ef4444; color:#fff;
+}
+.stage-head .btn.danger:hover:not(:disabled),
+.stage-head .btn.sec.stop:hover:not(:disabled),
+.stage-head .btn.pro.stop:hover:not(:disabled){background:#dc2626; border-color:#f87171; color:#fff;}
+
+/* 脏标记（琥珀实心）在标题栏里必须压住上面所有配色 —— 它表示「这颗要重做」。
+   🔴 标题栏是实心底，不能套正文那套「边框/底色脉动」动画（会把实心刷成透明）→ 单独用外发光呼吸。 */
+.stage-head .btn.stale-need{
+  background:linear-gradient(135deg,#b45309,#fbbf24);
+  border-color:rgba(251,191,36,.55); color:#241300;
+  animation:stale-head-pulse 1.9s ease-in-out infinite;
+}
+@keyframes stale-head-pulse{
+  0%,100%{box-shadow:0 0 0 2px rgba(251,191,36,.12), 0 4px 14px rgba(251,191,36,.26);}
+  50%{box-shadow:0 0 0 4px rgba(251,191,36,.22), 0 6px 22px rgba(251,191,36,.46);}
 }
