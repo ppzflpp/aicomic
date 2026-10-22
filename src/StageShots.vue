@@ -273,17 +273,17 @@
                 <option v-for="o in optsFor(i)" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
             </label>
-            <!-- 🔴 2026-10-09：这一镜正在生成时，按钮由灰变红可点 = 强制停止（中断 ComfyUI 任务 + 释放显存）。
-                 原来这里是 disabled，只能干等——一个 20 步高分辨率任务可能跑 30 分钟以上。 -->
-            <button v-if="vstate[i] && vstate[i]._gen" class="btn sm danger"
+            <!-- 🔴 2026-10-09：这一镜正在生成时，按钮由灰变红可点。
+                 2026-10-22 改语义：单镜停止 = 跳过这一镜、继续下一镜（不再释放显存）；批量整体停止走标题行按钮。 -->
+            <button v-if="vidBusy(i)" class="btn sm danger"
                     :disabled="stopBusy"
-                    :title="stopBusy ? '正在停止…' : '立刻中断这一镜的生成任务，并让 ComfyUI 释放显存（本次进度丢弃）'"
+                    :title="stopBusy ? '正在停止…' : '停止生成：中断当前镜头的生成，继续生成下一镜（本次进度丢弃）'"
                     @click="stopVideoGen(i)">
               <span v-if="stopBusy" class="busy-txt"><i class="spin"></i>停止中…</span>
               <span v-else>停止生成</span>
             </button>
             <button v-else class="btn sm" :class="{ regen: vstate[i] && vstate[i].files.length, 'stale-need': videoStale(i) }"
-                    :disabled="vBusy || !prompts[i] || !prompts[i].text.trim()"
+                    :disabled="vBusy || batchVRunning || !prompts[i] || !prompts[i].text.trim()"
                     :title="videoStale(i) ? ('需要重新生成：' + staleWhatVideo(i)) : ''"
                     @click="genV(i)">
               生成视频
@@ -299,8 +299,8 @@
           <!-- 固定 2 个等高槽位（标题 / 文案之外的空间平分），每槽一个 16:9 播放框；
                没有视频时两槽都显示占位符；只有 1 个视频时占第 1 槽、第 2 槽仍是占位符 → 行高与份高都不跳动。
                点击哪个哪个变当前版本（蓝框） -->
-          <div class="vid-stack" :class="{ 'card-busy': vstate[i] && vstate[i]._gen }">
-            <span v-if="vstate[i] && vstate[i]._gen" class="busy-txt"><i class="spin"></i>生成中…</span>
+          <div class="vid-stack" :class="{ 'card-busy': vidBusy(i) }">
+            <span v-if="vidBusy(i)" class="busy-txt"><i class="spin"></i>生成中…</span>
             <div v-for="(v, si) in slotList(i)" :key="'slot' + si" class="vslot">
             <div v-if="v" class="video-box"
                  :class="{ cur: v.k === curIdx(i), stalevid: videoStale(i) }"
@@ -382,12 +382,12 @@
         <span v-else>批量生成提示词</span>
       </button>
       <!-- 本模块的主操作 = 出视频；标题栏里只有它是实心蓝（pro），提示词 / 合并都是描边 -->
-      <button class="btn sm pro" :class="{ regen: !batchV && !batchVStop && shots.some((_, i) => vstate[i] && vstate[i].files.length), danger: batchV || batchVStop, 'stale-need': !batchV && !batchVStop && anyVideoStale }"
-              :disabled="batchVStop || batchP || (!batchV && !prompts.some(p => p && p.text.trim()))"
-              :title="anyVideoStale && !batchV ? '有镜头的视频过期了（提示词或素材改过）→ 点这里批量重做，也可以只补还没生成的' : (batchV ? '点击立刻停止：当前这一镜马上中断，显存会释放，这一镜的进度会丢弃' : (prompts.some(p => p && p.text.trim()) ? '重新生成所有镜头的视频，也可以只补还没生成视频的镜头' : '还没有任何镜头提示词：先逐镜生成提示词，或点左边的「批量生成提示词」'))"
+      <button class="btn sm pro" :class="{ regen: !batchVRunning && !batchVStop && shots.some((_, i) => vstate[i] && vstate[i].files.length), danger: batchVRunning || batchVStop, 'stale-need': !batchVRunning && !batchVStop && anyVideoStale }"
+              :disabled="batchVStop || batchP || (!batchVRunning && !prompts.some(p => p && p.text.trim()))"
+              :title="anyVideoStale && !batchVRunning ? '有镜头的视频过期了（提示词或素材改过）→ 点这里批量重做，也可以只补还没生成的' : (batchVRunning ? '点击立刻停止：当前这一镜马上中断，显存会释放，这一镜的进度会丢弃' : (prompts.some(p => p && p.text.trim()) ? '重新生成所有镜头的视频，也可以只补还没生成视频的镜头' : '还没有任何镜头提示词：先逐镜生成提示词，或点左边的「批量生成提示词」'))"
               @click="batchVideos">
         <span v-if="batchVStop" class="busy-txt"><i class="spin"></i>停止中…</span>
-        <span v-else-if="batchV">停止生成({{ batchVN }}/{{ batchVTotal }})</span>
+        <span v-else-if="batchVRunning">停止生成({{ batchVShowN }}/{{ batchVShowTotal }})</span>
         <span v-else>批量生成视频</span>
       </button>
       <!-- 一键合并可合并镜头（2026-10-09）：把行内黄标标出的「可与上一镜合并」一次并掉 ——
@@ -542,6 +542,9 @@ import { parseRes, resLabel, optsWith, clampDur, seg, joinPath } from './resutil
 import { baseOf, variantOf, groupProfiles } from './variant.js'
 import { touchRevs, sigStale, staleReason, refOrderSig, SIG_V } from './stale.js'
 import { overrideOf } from './llmSource.js'
+import { taskState } from './taskState.js'
+import { submit as submitTask, subscribe as subscribeTask, hasActive as taskActive, cancel as cancelTask, state as taskCenterState } from './taskCenter.js'
+import { run as runBatchVideoTask } from './batchVideo.js'
 
 // 🔴 提示词全部来自项目 prompts/ 下的规范 md：shots.md 承载任务身份与 JSON 输出契约，
 //    profile.md / chars.md / scenes.md 承载档案与提示词写法；代码不再硬编码任何提示词片段
@@ -767,16 +770,75 @@ export default {
       if (!s) return { on: false, n: 0, text: '' }
       const n = (s.lightTone ? 1 : 0) + (s.axisRule ? 1 : 0) + (s.soundBase ? 1 : 0) + (s.bans.length ? 1 : 0)
       return { on: true, n, text: [s.lightTone, s.axisRule, s.soundBase].filter(Boolean).join(' ｜ ') }
-    }
+    },
+    /** 本模块是否有后台任务在跑（批量提示词 / 批量视频 / 单镜生成）→ 镜像到 taskState.shots 给侧栏闪点 */
+    taskBusy() { return !!(this.batchP || this.batchV || this.pBusy || this.vBusy) },
+    /**
+     * 🔴 2026-10-22（问题2）：当前集在任务中心里的活跃视频任务（批量视频迁任务中心后，切集重建组件
+     *   → 组件自身 batchV 归 false，但任务中心还在跑）。用它恢复「批量进行中」的显示，
+     *   否则切回有任务的集时按钮回到「批量生成视频」、看不出后台还在跑。
+     *  🔴 必须读 taskCenterState（reactive）的 current/queue 建立响应式依赖，否则任务完成/提交时漏刷新。
+     */
+    taskVideoTask() {
+      const id = this.st.current && this.st.current.id
+      if (id == null) return null
+      const all = []
+      if (taskCenterState.current) all.push(taskCenterState.current)
+      for (const t of taskCenterState.queue) all.push(t)
+      return all.find(t => String(t.episodeId) === String(id) && t.type === 'video') || null
+    },
+    /** 是否正在批量生成视频（组件自身 batchV 或任务中心里当前集有活跃视频任务） */
+    batchVRunning() { return !!(this.batchV || this.taskVideoTask) },
+    /** 当前集任务正在生成的镜头下标（任务中心 report 带上来的 index），用于格子「生成中」状态。 */
+    taskVideoIndex() {
+      const t = this.taskVideoTask
+      return t && t.index != null ? t.index : -1
+    },
+    /** 批量视频按钮上的进度（N）：🔴 优先读任务中心的 task.done（批量视频迁任务中心后，
+     *  组件自身的 batchVN 不再被更新——任务中心 report 更新的是 task.done）。 */
+    batchVShowN() {
+      const t = this.taskVideoTask
+      if (t) return t.done || 0
+      return this.batchV ? this.batchVN : 0
+    },
+    /** 批量视频按钮上的进度（Total）：🔴 优先读任务中心的 task.total。 */
+    batchVShowTotal() {
+      const t = this.taskVideoTask
+      if (t) return t.total || 0
+      return this.batchV ? this.batchVTotal : 0
+    },
   },
   watch: {
+    /** 后台任务状态镜像到全局 taskState.shots（侧栏「工作台」闪点）——组件用 v-show 常驻不销毁，
+     *  但「在跑」这件事要能被侧栏感知，切走后用户一眼就知道任务没停 */
+    taskBusy(v) {
+      taskState.shots.busy = !!v
+      if (!v) taskState.shots.text = ''
+    },
+    /**
+     * 🔴 2026-10-22（问题2）：批量视频迁任务中心后，任务中心独立循环不再碰组件的 vstate[i]._gen，
+     *   镜头格子永远不显示「生成中」。这里 watch 任务中心的进度（task.index = 正在生成的镜头下标），
+     *   把对应格子的 _gen 置位/清除，让切回后也能看出「哪个镜头正在生成」。
+     */
+    taskVideoIndex(idx) {
+      // 清除上一个镜头的「生成中」标记（🔴 vstate 是对象不是数组，必须走 Object.keys——
+      //   曾误用 vstate.length（undefined）导致循环不执行、上一个镜头 _gen 永远残留）
+      for (const k of Object.keys(this.vstate)) {
+        const i = Number(k)
+        if (this.vstate[k] && this.vstate[k]._gen && i !== idx) { delete this.vstate[k]._gen; delete this.vstate[k]._genAt }
+      }
+      if (idx >= 0 && this.vstate[idx]) {
+        if (!this.vstate[idx]._gen) this.vstate[idx]._gen = true
+        if (!this.vstate[idx]._genAt) this.vstate[idx]._genAt = Date.now()
+      }
+    },
     'st.current'(ep) {
-      // 生成在跑时切了集：自动请求停止（当前子任务跑完即停，剩余丢弃）；
-      // 并把 _busyEpId 置哨兵，让在途子任务的收尾写库被守卫丢弃——否则旧集数据会写进新集
-      if (this.batchP || this.batchV || this.pBusy || this.vBusy) {
-        this.batchPStop = this.batchVStop = true
+      // 🔴 2026-10-22：批量视频已迁任务中心（独立跑，切集不中断、不串集），切集不再软停它。
+      // 仍在组件内跑的（批量提示词 batchP / 单镜 pBusy·vBusy）切集仍需软停 + 哨兵防串集。
+      if (this.batchP || this.pBusy || (this.vBusy && !this.batchV)) {
+        this.batchPStop = true
         this._busyEpId = 'SWITCHED'
-        this.$root.toast('已切换剧集：当前镜头完成后批量停止，剩余任务丢弃')
+        this.$root.toast('已切换剧集：当前任务完成后停止，剩余丢弃')
       }
       if (ep) { this.initAll(ep); this.refreshAsig() }
     },
@@ -825,11 +887,47 @@ export default {
     this.refreshAsig()
     this._onFocus = () => { this.refreshAsig() }
     window.addEventListener('focus', this._onFocus)
+    // 🔴 2026-10-22（问题2）：切集重建组件后，旧的 _batchVideoOff 订阅已随旧实例销毁，新实例收不到
+    //   任务完成的 done 事件 → 「停在原集等它跑完」时 vstate 不实时刷新。这里挂一个组件级全局订阅：
+    //    任何任务进入 idle（done/fail/cancel）时，若它属于当前集，就刷新本集 vstate + 首帧过期 + 树。
+    this._offTaskIdle = subscribeTask('change', (p) => {
+      if (p && p.type === 'idle' && p.task && this.st.current &&
+          String(p.task.episodeId) === String(this.st.current.id) && !this.pBusy && !this.vBusy) {
+        // 🔴 任务中心直写磁盘（window.studio.saveArtifact）不会更新 store 缓存 st.current.videoState。
+        //  切走再切回后，runBatchV 的 finish 回调因组件重建（_batchVideoTaskId 丢失）已失效，
+        //  若这里不先把 run 返回的最新 videoState 回填缓存，initVideos 读到的是旧缓存 → 界面不刷新。
+        if (p.task.result && p.task.result.videoState) {
+          this.st.current.videoState = p.task.result.videoState
+        }
+        this.initVideos(this.st.current)
+        this.refreshFrameStale()
+        this.st.invalidateMedia(this.epProjectId, 'shots')
+      }
+    })
+    // 🔴 2026-10-22（Dragon 反馈「跑完一镜界面不动」）：批量每镜开跑时上一镜结果已落盘，
+    //   从磁盘重读 videoState 回填 store 缓存并重灌 vstate → 已完成的镜头实时出现在界面上
+    //   （不用等整批结束）。对发起组件（batchV=true，走本地缓存增量）也安全：重读磁盘数据一致。
+    this._offTaskProg = subscribeTask('progress', (p) => {
+      if (p && p.task && p.task.type === 'video' && this.st.current &&
+          String(p.task.episodeId) === String(this.st.current.id) && !this.pBusy) {
+        window.studio.getEpisode(this.st.workspace, this.st.current.id).then(ep => {
+          if (ep && ep.videoState && this.st.current && String(this.st.current.id) === String(ep.id) &&
+              Object.keys(ep.videoState).length) {
+            this.st.current.videoState = ep.videoState
+            this.initVideos(this.st.current)
+          }
+        }).catch(() => {})
+      }
+    })
   },
   /** 卸载时立刻释放视频 base64，避免常驻内存（视频是重内存块） */
   beforeUnmount() {
     this._b64 = {}; this._refv = {}
     if (this._onFocus) { window.removeEventListener('focus', this._onFocus); this._onFocus = null }
+    // 清理任务中心的事件订阅（批量任务本体仍在任务中心独立跑，不受本组件卸载影响）
+    if (this._batchVideoOff) { this._batchVideoOff.forEach(off => off && off()); this._batchVideoOff = null }
+    if (this._offTaskIdle) { this._offTaskIdle(); this._offTaskIdle = null }
+    if (this._offTaskProg) { this._offTaskProg(); this._offTaskProg = null }
   },
   methods: {
     clampDur,   // 模板里 @change 夹取用
@@ -2011,9 +2109,10 @@ export default {
       if (!this.shots.length) { this.$root.toast('还没有镜头，先点「生成分镜」'); return }
       this.askBatch = { kind: 'prompts' }
     },
-    /** 「批量生成视频」：跑动中点击 = 强制停止（立刻中断当前任务并结束整批）；空闲先校验提示词齐全（缺哪个全列出）再弹框 */
+    /** 「批量生成视频」：跑动中点击 = 整批停止（立刻中断当前任务 + 清排队 + 释放显存，结束整批）；
+     *  空闲先校验提示词齐全（缺哪个全列出）再弹框 */
     batchVideos() {
-      if (this.batchV) { this.stopVideoGen(); return }
+      if (this.batchV || this.taskVideoTask) { this.stopBatchV(); return }
       if (this.batchP) { this.$root.toast('提示词批量进行中，请先等它结束或停止'); return }
       if (!this.shots.length) { this.$root.toast('还没有镜头，先点「生成分镜」'); return }
       const missing = []
@@ -2022,31 +2121,64 @@ export default {
       this.askBatch = { kind: 'videos' }
     },
     /**
-     * 强制停止生成（2026-10-09）：立刻中断 ComfyUI 正在跑的任务 + 清掉排队 + 释放显存。
-     * 两个入口都走这里：单镜「停止生成」（停这一镜）、标题行批量「停止生成」（停当前并结束整批）。
+     * 停止生成（2026-10-22 重构，区分两种语义）：
+     *   · stopVideoGen(i)（单镜「停止生成」按钮）→ 单镜跳过：只中断当前这一镜，
+     *     保留模型不释放显存，批量循环 continue 到下一镜继续。
+     *   · stopBatchV()（标题行批量「停止生成」按钮）→ 整批停止：取消任务中心任务 +
+     *     中断当前镜 + 清排队 + 释放显存，批量循环 break 结束整批。
      * 与「停止批量」那种"等当前跑完再停"的软停不同——这里是硬停，当前进度直接丢弃。
      */
     async stopVideoGen(i) {
       if (this.stopBusy) return
-      if (!this.batchV && !this.vBusy) return          // 没有任务在跑，别发空指令
+      // 🔴 2026-10-22：批量视频迁任务中心后，切集重建组件会让 batchV 归 false，但任务中心仍在跑。
+      //   这里用 batchVRunning（组件 batchV || 任务中心当前集有活跃视频任务）判断，别漏掉后台任务。
+      if (!this.batchVRunning && !this.vBusy) return   // 没有任务在跑，别发空指令
       this.stopBusy = true
-      // 批量在跑：先置停止位，等 genV 拿到"已取消"返回后整批跳出（runBatchV 的 finally 会复位）
-      if (this.batchV) this.batchVStop = true
       const L = stepLog('阶段6 H3视频')
       const who = (i != null && this.shots[i]) ? '镜头 ' + (i + 1) + ' ' : ''
+      this.$root.toast('正在跳过这一镜，继续生成下一镜…')
+      try {
+        // 🔴 单镜跳过：只中断当前镜，不取消任务中心任务（批量还要继续），不释放显存（下一镜马上跑）。
+        const r = await window.studio.comfyCancel('skip')
+        const bits = []
+        if (r && r.interrupted) bits.push('已中断当前镜头')
+        if (r && r.cleared) bits.push('已清掉 ' + r.cleared + ' 个排队任务')
+        const msg = bits.length ? bits.join('，') : '已发送跳过指令'
+        L.warn('单镜跳过：' + who + msg + (r && r.errors && r.errors.length ? '（' + r.errors.join('；') + '）' : ''))
+        this.$root.toast('已跳过 ' + who + '，继续下一镜')
+      } catch (e) {
+        // ComfyUI 彻底无响应时这里会失败：给明确出路，别让用户以为按钮没生效
+        L.fail('单镜跳过失败' + (who ? '：' + who : ''), null, e)
+        this.$root.toast('跳过失败：ComfyUI 可能已无响应，可到「设置 → 引擎」重启 ComfyUI')
+      } finally {
+        this.stopBusy = false
+      }
+    },
+    /** 整批停止（标题行批量「停止生成」按钮）：取消任务中心任务 + 中断当前镜 + 释放显存，结束整批。 */
+    async stopBatchV() {
+      if (this.stopBusy) return
+      if (!this.batchVRunning && !this.vBusy) return
+      this.stopBusy = true
+      // 批量走任务中心：取消任务中心的批量任务（含排队中的）+ 硬停 ComfyUI（后者让 batchVideo 的循环抛「已停止」收尾）。
+      // 🔴 取消任务中心只会标记 queued 任务取消；正在跑的靠 comfyCancel 让 comfyGenerate 抛异常收尾。
+      // 🔴 taskId 优先用组件保存的 _batchVideoTaskId；切集后它丢了 → 改用 taskVideoTask.id（任务中心里的活跃任务）。
+      const taskId = this._batchVideoTaskId || (this.taskVideoTask && this.taskVideoTask.id)
+      if (this.batchVRunning && taskId) cancelTask(taskId)
+      if (this.batchV) { this.batchVStop = true }
+      const L = stepLog('阶段6 H3视频')
       this.$root.toast('正在停止生成并释放显存…')
       try {
-        const r = await window.studio.comfyCancel()
+        const r = await window.studio.comfyCancel('full')
         const bits = []
         if (r && r.interrupted) bits.push('已中断当前任务')
         if (r && r.cleared) bits.push('已清掉 ' + r.cleared + ' 个排队任务')
         if (r && r.freed) bits.push('已释放显存')
         const msg = bits.length ? bits.join('，') : '已发送停止指令'
-        L.warn('停止生成：' + who + msg + (r && r.errors && r.errors.length ? '（' + r.errors.join('；') + '）' : ''))
+        L.warn('停止生成：' + msg + (r && r.errors && r.errors.length ? '（' + r.errors.join('；') + '）' : ''))
         this.$root.toast('已停止生成：' + msg)
       } catch (e) {
         // ComfyUI 彻底无响应时这里会失败：给明确出路，别让用户以为按钮没生效
-        L.fail('停止生成失败' + (who ? '：' + who : ''), null, e)
+        L.fail('停止生成失败', null, e)
         this.$root.toast('停止生成失败：ComfyUI 可能已无响应，可到「设置 → 引擎」重启 ComfyUI')
       } finally {
         this.stopBusy = false
@@ -2082,6 +2214,7 @@ export default {
         for (let k = 0; k < idx.length; k++) {
           if (this.batchPStop) { stopped = true; break }
           this.batchPN = k + 1
+          taskState.shots.text = '批量提示词 ' + (k + 1) + '/' + idx.length
           const okFlag = await this.genP(idx[k], { n: k + 1, total: idx.length })
           okFlag ? okN++ : badN++
         }
@@ -2472,6 +2605,16 @@ export default {
     },
     /** 当前选中版本的下标（默认 = 最新一版） */
     curIdx(i) { return (this.vstate[i] || {}).cur ?? -1 },
+    /**
+     * 🔴 2026-10-22：这一镜是否正在生成（控制「生成中」加载框 + 单镜停止按钮）。
+     *  不能只看 vstate[i]._gen：批量迁任务中心后 _gen 靠 watch 维护，有两个死角——
+     *  ① 切走再切回组件重建，taskVideoIndex 初值就等于当前镜头（watch 非 immediate 不触发）→ _gen 不置位；
+     *  ② watch 清除循环曾误用 vstate.length（vstate 是对象）→ 上一个镜头 _gen 残留。
+     *  改为模板直接派生：_gen（单镜 genV 置位）|| taskVideoIndex === i（任务中心进度），渲染即读即对，无时序问题。
+     */
+    vidBusy(i) {
+      return !!(this.vstate[i] && this.vstate[i]._gen) || this.taskVideoIndex === i
+    },
     /** 视频区展示的版本列表：最多显示最新 2 个（带上在 files 里的真实下标 + 这一版自己的耗时文案）。
         🔴 耗时在这里就格式化成 msText —— fmtMs 是 import 的纯函数，Options API 的模板里访问不到
         （实测渲染层报 `t.fmtMs is not a function`，整块 zone-3 渲染失败）。 */
@@ -2667,8 +2810,10 @@ export default {
         this.$root.toast('镜头 ' + (i + 1) + ' 已生成：' + r.files.join('、'))
         return true
       } catch (e) {
-        // 用户点了「停止生成」→ 这不是失败：走「已停止」提示，批量循环靠 'canceled' 结束整批
-        if (/已停止生成|已取消/.test(String((e && e.message) || e))) {
+        // 用户点了「停止/跳过」→ 这不是失败：走「已停止」提示，批量循环靠 'canceled' 结束整批。
+        // 🔴 2026-10-22：单镜「跳过此镜」走 skip 通道，错误消息是 SKIP_CANCELLED；
+        //   单镜场景下跳过 = 停止这一镜（没有下一镜），与「已停止生成」同义处理。
+        if (/已停止生成|已取消|SKIP_CANCELLED/.test(String((e && e.message) || e))) {
           L.warn('镜头 ' + (i + 1) + ' 视频生成已停止' + prog)
           this.$root.toast('镜头 ' + (i + 1) + '：已停止生成')
           return 'canceled'
@@ -2679,9 +2824,11 @@ export default {
       } finally { delete this.vstate[i]._genAt; delete this.vstate[i]._gen; this.vBusy = false; this.pl.endGen(5); if (!this.pBusy) this._busyEpId = null }
     },
     /** 批量生成视频：all=true 全部重生成（新版本追加，旧版保留可切换）；false 只补没有任何视频文件的镜头。
-     *  入口 batchVideos() 已保证全部镜头都有提示词；此处再逐个保险校验 */
+     *  入口 batchVideos() 已保证全部镜头都有提示词；此处再逐个保险校验。
+     *  🔴 2026-10-22 改：不再在本组件内跑循环（旧实现依赖组件实例，切菜单/切集就断）。
+     *     改为「算好每镜数据快照 → 提交到任务中心」，任务中心独立串行执行、切走不中断，
+     *     完成后广播事件 → 本组件订阅刷新（vstate / 指纹 / 首帧过期 / 左侧树）。 */
     async runBatchV(all) {
-      const L = stepLog('阶段6 H3视频')
       const idx = []
       for (let i = 0; i < this.shots.length; i++) {
         if (!(this.prompts[i] && this.prompts[i].text.trim())) continue   // 保险：缺提示词的跳过
@@ -2689,32 +2836,80 @@ export default {
         if (all || !(s && s.files.length)) idx.push(i)
       }
       if (!idx.length) { this.$root.toast('没有需要生成的镜头'); return }
+
+      // 素材指纹先确保就绪：签名里的「顺序/内容」维度依赖它
+      await this.refreshAsig()
+
+      // 构造数据快照（纯数据，脱离组件实例）
+      const snapshot = {
+        workspace: this.st.workspace,
+        episodeId: this.st.current.id,
+        projectId: this.st.current.projectId,
+        shotDir: this.st.current.shotDir,
+        shots: idx.map(i => this.videoShotSnapshot(i))
+      }
+
       this.batchV = true; this.batchVStop = false; this.vBusy = true
       this.batchVN = 0; this.batchVTotal = idx.length
-      L.start('开始批量生成视频（' + (all ? '全部重生成，新版本追加' : '只补没有视频的镜头') + '）：待生成 ' + idx.length + ' 个（共 ' + this.shots.length + ' 个镜头）；预计总耗时较长，可随时点「停止生成」立刻中断')
-      const tAll = Date.now()
-      let okN = 0, badN = 0, stopped = false
-      try {
-        for (let k = 0; k < idx.length; k++) {
-          if (this.batchVStop) { stopped = true; break }
-          this.batchVN = k + 1
-          const okFlag = await this.genV(idx[k], { n: k + 1, total: idx.length })
-          if (okFlag === 'canceled') { stopped = true; break }   // 用户强停：这一镜不计成功也不计失败
-          okFlag ? okN++ : badN++
-        }
-        const left = idx.length - okN - badN
-        const sum = (stopped ? '批量生成视频已停止' : '批量生成视频结束') +
-          '：成功 ' + okN + ' 个' + (badN ? '，失败 ' + badN + ' 个' : '') +
-          (stopped && left > 0 ? '，剩余 ' + left + ' 个未执行' : '') + '，总耗时 ' + secs(Date.now() - tAll)
-        if (badN && !okN) L.fail(sum, null, new Error('全部失败，请到日志面板看各镜头失败原因'))
-        else if (badN || stopped) L.warn(sum)
-        else L.done(sum, null)
-      } finally {
+      const L = stepLog('阶段6 H3视频')
+      L.start('开始批量生成视频（' + (all ? '全部重生成，新版本追加' : '只补没有视频的镜头') + '）：待生成 ' + idx.length + ' 个（共 ' + this.shots.length + ' 个镜头）；已提交任务中心，切菜单/切集不中断')
+
+      const episodeId = snapshot.episodeId
+      const taskId = submitTask({
+        label: '批量生成视频',
+        episodeId,
+        type: 'video',
+        run: (report) => runBatchVideoTask(snapshot, report)
+      })
+      this._batchVideoTaskId = taskId
+
+      // 订阅完成/失败/取消 → 刷新本组件状态（如果还停留在同一集）
+      const finish = (task) => {
+        if (this._batchVideoTaskId !== taskId) return
         this.batchV = false; this.batchVStop = false; this.vBusy = false
         this.batchVN = 0; this.batchVTotal = 0
         if (!this.pBusy) this._busyEpId = null
-        // 批量出片后重算一遍首帧过期标记（逐镜出片时只查了各自的下一个，停止/失败会漏）
-        this.refreshFrameStale()
+        // 任务中心直写磁盘后，store 缓存的 st.current.videoState 不会自动同步。
+        // 这里用 run 返回的最新完整 videoState 回填缓存，再重灌 vstate（避免读到旧缓存）。
+        if (task && task.result && task.result.videoState &&
+            this.st.current && this.st.current.id === episodeId) {
+          this.st.current.videoState = task.result.videoState
+        }
+        // 若仍停在提交时的集：重灌 vstate（任务中心已落盘）+ 刷新首帧过期 + 树 + 成片格
+        if (this.st.current && this.st.current.id === episodeId) {
+          this.initVideos(this.st.current)
+          this.refreshFrameStale()
+          this.st.invalidateMedia(this.epProjectId, 'shots')
+        }
+        this._batchVideoTaskId = null
+      }
+      const offDone = subscribeTask('done', (p) => { if (p.task.id === taskId) { finish(p.task); this.$root.toast('批量视频已全部生成完成') } })
+      const offFail = subscribeTask('fail', (p) => { if (p.task.id === taskId) { finish(p.task); this.$root.toast('批量视频结束（有镜头失败，详见运行日志）') } })
+      const offCancel = subscribeTask('cancel', (p) => { if (p.task.id === taskId) { finish(p.task); this.$root.toast('批量视频已停止') } })
+      this._batchVideoOff = [offDone, offFail, offCancel]
+    },
+    /** 构造某一镜的生成数据快照（纯数据，供任务中心独立执行用）。逻辑与 genV 的参数计算一致。 */
+    videoShotSnapshot(i) {
+      const pr = ((this.st.current.prompts || [])[i] || {})
+      const eff = this.effRefs(i, pr.refs)
+      const refImages = eff.images
+      const refVideos = eff.videos
+      const firstFrame = eff.first
+      const lastFrame = eff.last
+      const hasRef = refImages.length > 0 || refVideos.length > 0
+      const mode = hasRef ? '参考模式' : (firstFrame || lastFrame ? '首尾帧模式' : '纯文字模式')
+      const dur = this.durOf(i)
+      const resStr = this.resOf(i)
+      const [rw, rh] = parseRes(resStr)
+      return {
+        index: i,
+        prompt: pr.text,
+        refImages: refImages.slice(), refVideos: refVideos.slice(),
+        firstFrame, lastFrame,
+        width: rw, height: rh, seconds: dur,
+        baseName: this.epPrefix + '_shot_' + (i + 1),
+        refsUsed: { mode, images: refImages.slice(), videos: refVideos.slice(), first: firstFrame, last: lastFrame },
+        sig: this.curVideoSig(i)
       }
     },
     async confirmOne(i) {

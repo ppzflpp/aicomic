@@ -238,6 +238,9 @@ body{
 /* 图片生成独立页：满高两栏，画廊内部滚动（不用 content 的整页滚动） */
 .content.ig-content{display:flex; padding:14px; overflow:hidden;}
 .content.ig-content .ig-wrap{flex:1; min-height:0;}
+/* 视频生成独立页：与图片生成同款满高两栏 */
+.content.vg-content{display:flex; padding:14px; overflow:hidden;}
+.content.vg-content .vg-wrap{flex:1; min-height:0;}
 /* ============================================================
    工作台右侧悬浮导航（2026-10-19 Dragon）
    - .main 需要 position:relative 作为定位父级（导航条 absolute 挂在它上面，随窗口走、不随内容滚）

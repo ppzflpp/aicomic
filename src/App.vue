@@ -63,7 +63,8 @@
     <div class="side-actions">
       <div class="tree-row nav-row" @click="st.toggleExpand('workbench')">
         <span class="caret">{{ st.expanded.has('workbench') ? '▼' : '▶' }}</span>
-        <span>工作台</span>
+        <span>创作台</span>
+        <i v-if="shotsBusy" class="nav-dot" title="分镜任务进行中（切菜单/切集不中断）"></i>
       </div>
       <button v-if="st.expanded.has('workbench')" class="btn-new" @click="newProject">＋ 新建项目</button>
     </div>
@@ -75,6 +76,7 @@
           <div class="tree-row" @click="toggleProject(p.id)">
             <span class="caret">{{ st.expanded.has('p'+p.id) ? '▼' : '▶' }}</span>
             <span>{{ p.name }}</span>
+            <i v-if="projectHasTask(p)" class="nav-dot" title="该项目下有任务在跑"></i>
             <span class="ops">
               <button title="项目配置（分辨率 / 视频质量 / 风格）" @click.stop="openProjCfg(p.id)">配置</button>
               <button title="新建子文件夹" @click.stop="newFolder(p.id, null)">＋夹</button>
@@ -87,6 +89,7 @@
             <div v-for="e in p.episodes" :key="e.id" class="tree-row ep-row"
                  :class="{active: st.view==='dash' && st.current && st.current.id===e.id}" @click="st.openEpisode(e.id)">
               📄 {{ e.name }}
+              <i v-if="episodeHasVideoTask(e.id)" class="nav-dot" title="该集有视频任务在跑（切菜单/切集不中断）"></i>
               <span class="ops">
                 <button class="op-del" title="删除集数" @click.stop="st.askDelete('episode', e.id, e.name)">✕</button>
               </span>
@@ -198,6 +201,7 @@
             <div class="tree-row sub-row" @click="toggleLibrary(p.id)">
               <span class="caret">{{ st.expanded.has('L'+p.id) ? '▼' : '▶' }}</span>
               <span>📚 项目角色场景库</span>
+              <i v-if="libBusy" class="nav-dot" title="库任务进行中"></i>
               <span class="cnt" v-if="libEntryCount(p.id)">{{ libEntryCount(p.id) }}</span>
             </div>
             <template v-if="st.expanded.has('L'+p.id)">
@@ -237,9 +241,12 @@
       <div class="tree-row nav-row" @click="st.toggleExpand('vidgen')">
         <span class="caret">{{ st.expanded.has('vidgen') ? '▼' : '▶' }}</span>
         <span>视频生成</span>
+        <i v-if="vgState.busy" class="nav-dot" title="正在生成中…"></i>
       </div>
       <div v-if="st.expanded.has('vidgen')" class="tree-row nav-leaf"
-           :class="{active: st.view==='vidgen'}" @click="st.view='vidgen'">视频生成</div>
+           :class="{active: st.view==='vidgen'}" @click="st.view='vidgen'">视频生成
+        <i v-if="vgState.busy" class="nav-dot" :title="'正在生成：' + (vgState.text || '出视频中')"></i>
+      </div>
     </div>
     </template>
     <!-- 模型与工作区信息统一放在最底状态栏，这里只留入口；设置按钮永远显示在最下面（收起态只留 ⚙） -->
@@ -287,23 +294,7 @@
 
     <!-- 图片生成独立功能页（Qwen-Image 2.1：文生图 / 原生编辑 / 图生图）见本文件末尾常驻块 -->
 
-    <!-- 视频生成（功能页建设中，先占位） -->
-    <div class="content" v-else-if="st.view==='vidgen'">
-      <div class="placeholder" style="margin-top:60px">视频生成 · 功能页建设中</div>
-    </div>
-
-    <!-- 项目角色场景库视图（不属于任何一集：左树点库条目进来，改的是全项目共享的库）。
-         标题行 = 库视图的模块头（对齐块 2 的角色&场景：标题 + 右侧条目数与批量按钮落点） -->
-    <div class="content" v-else-if="st.view==='lib'">
-      <div class="lib-head">
-        <span class="lh-title">项目角色场景库</span>
-        <span class="lh-sub">跨集共享的角色 / 场景条目 —— 布局与「角色 &amp; 场景」一致</span>
-        <span style="flex:1"></span>
-        <span id="lib-count" style="display:inline-flex;align-items:center"></span>
-        <span id="lib-batch" style="display:inline-flex;gap:8px;align-items:center"></span>
-      </div>
-      <stage-library />
-    </div>
+    <!-- 视频生成独立功能页（MiniMax H3：文生视频 / 参考生视频 / 首尾帧），同样常驻挂载，见末尾常驻块 -->
 
     <!-- 提示词配置中心（整页视图；不属于任何一集：左树点「提示词配置中心」进来）。
          四个分区：成品提示词（看 / 整段改）/ 通用规范 / 模型专属规范 / 风格轴 -->
@@ -311,9 +302,11 @@
       <prompts-view />
     </div>
 
-    <!-- 仪表盘视图（🔴 必须是 v-else-if 不是 v-else：图片生成页已从这条链里拿出来做常驻挂载，
-         留个 v-else 兜底会让 imggen 同时命中仪表盘 → 上面半屏是工作台、下面半屏才是图片生成） -->
-    <div class="content dash-content" v-else-if="st.view==='dash'">
+    <!-- 仪表盘视图（🔴 常驻挂载 v-show，不参与上面那条 v-if/v-else-if 链，与图片生成页同理：
+         切到设置/图片生成/库/提示词等菜单只 display:none 不销毁，分镜/角色/成片等 stage 组件实例保留，
+         正在跑的批量任务（批量生成提示词/视频/超分）不被打断。
+         🔴 切「集」仍会重建 stage 组件（靠 stageKey 的 :key），那是故意行为，不受本改动影响） -->
+    <div class="content dash-content" v-show="st.view==='dash'">
       <div v-if="!st.current" class="placeholder" style="margin-top:60px">
         左侧选择或新建一个集数开始
       </div>
@@ -436,6 +429,27 @@
             （2026-10-17 用户反馈「切到其他菜单任务就自动停止」的根因 = 原来走 v-else-if，组件被销毁）。 -->
     <div class="content ig-content" v-show="st.view==='imggen'">
       <image-gen ref="imagegen" />
+    </div>
+
+    <!-- 视频生成独立功能页（MiniMax H3：文生视频 / 参考生视频 / 首尾帧）
+         🔴 常驻挂载（v-show），与图片生成同理：切菜单不销毁组件、任务跑在任务中心不中断。 -->
+    <div class="content vg-content" v-show="st.view==='vidgen'">
+      <video-gen ref="videogen" />
+    </div>
+
+    <!-- 项目角色场景库视图（不属于任何一集：左树点库条目进来，改的是全项目共享的库）。
+         🔴 常驻挂载（v-show），与图片生成/工作台同理：库有「批量生成提示词 / 批量生成图片」，
+            切菜单不销毁组件实例，批量任务不被打断。
+         标题行 = 库视图的模块头（对齐块 2 的角色&场景：标题 + 右侧条目数与批量按钮落点） -->
+    <div class="content" v-show="st.view==='lib'">
+      <div class="lib-head">
+        <span class="lh-title">项目角色场景库</span>
+        <span class="lh-sub">跨集共享的角色 / 场景条目 —— 布局与「角色 &amp; 场景」一致</span>
+        <span style="flex:1"></span>
+        <span id="lib-count" style="display:inline-flex;align-items:center"></span>
+        <span id="lib-batch" style="display:inline-flex;gap:8px;align-items:center"></span>
+      </div>
+      <stage-library />
     </div>
 
     <!-- 运行日志（底部可折叠抽屉） -->
@@ -674,18 +688,25 @@ import StageExport from './StageExport.vue'
 import AppNavRail from './AppNavRail.vue'
 import PromptsView from './PromptsView.vue'
 import ImageGen from './ImageGen.vue'
+import VideoGen from './VideoGen.vue'
 import LogPanel from './LogPanel.vue'
 import { clearStylePack } from './prompts.js'
 import { igState } from './imggenState.js'
+import { vgState } from './vidgenState.js'
+import { taskState } from './taskState.js'
+import { state as taskCenterState } from './taskCenter.js'
 import { mediaUrl } from './mediaUrl.js'
 import { moduleStale, ackModule, MODULE_STALE_KINDS } from './stale.js'
 
 export default {
-  components: { FolderNode, SettingsPanel, StageAdapt, StageShots, StageChars, StageLibrary, StageExport, AppNavRail, PromptsView, ImageGen, LogPanel },
+  components: { FolderNode, SettingsPanel, StageAdapt, StageShots, StageChars, StageLibrary, StageExport, AppNavRail, PromptsView, ImageGen, VideoGen, LogPanel },
   data() {
     return {
       chapter: '',
       igState,               // 图片生成任务跨页可见状态（侧栏小圆点用，见 imggenState.js）
+      vgState,               // 视频生成任务跨页可见状态（侧栏小圆点用，见 vidgenState.js）
+      taskState,             // 分镜/库等后台任务跨页可见状态（侧栏闪烁小点用，见 taskState.js）
+      taskCenterState,       // 任务中心全局状态（侧栏闪点按类型读 activeByType）
       sideCollapsed: false,   // 左侧菜单栏收起态（窄条只留展开按钮）
       projModal: null,   // 项目配置弹窗 {mode:'create'|'edit', id, name, img, vid, out}
       accelOn: true,     // 加速优化开关（全局）：INT8 注意力 + BlockCache，默认开
@@ -703,6 +724,28 @@ export default {
     pl() { return usePipeline() },
     logs() { return useLogs() },
     workspaceName() { return (this.st.workspace || '').split(/[\\/]/).pop() },
+    /** 分镜模块是否有后台任务在跑：任务中心里的视频任务 + 组件内的提示词/单镜任务。
+     *  🔴 直接读模块级 taskCenterState（import 的 reactive 单例），不经过 data 的 this.taskCenterState——
+     *     data 里放 reactive 对象会被 Vue 二次包装，读 this.xxx.activeByType 的依赖追踪可能失效。 */
+    shotsBusy() {
+      return !!(taskCenterState.activeByType.video || this.taskState.shots.busy)
+    },
+    /** 活跃任务按集聚合：{ [episodeId]: [task,...] }。🔴 直接读模块级 taskCenterState（reactive 单例），
+     *  避免 data 二次包装导致依赖追踪失效。 */
+    activeTasksByEpisode() {
+      const map = {}
+      const tasks = []
+      if (taskCenterState.current) tasks.push(taskCenterState.current)
+      for (const t of taskCenterState.queue) tasks.push(t)
+      for (const t of tasks) {
+        if (t.episodeId == null) continue
+        const k = String(t.episodeId)
+        ;(map[k] = map[k] || []).push(t)
+      }
+      return map
+    },
+    /** 项目角色场景库是否有后台任务在跑 */
+    libBusy() { return !!this.taskState.lib.busy },
     delLabel() {
       return { project: '项目', folder: '文件夹', episode: '集数' }[this.st.confirmDel?.type] || ''
     },
@@ -869,12 +912,16 @@ export default {
     if (this._offResize) window.removeEventListener('resize', this._offResize)
   },
   watch: {
-    // 图片生成页是常驻挂载（v-show）的，没有 mounted 时机可依赖 → 每次切回来手动刷一次历史，
-    // 免得「上次在别处生成的图（或外部拷进来的图）不出现」
+    // 图片生成/视频生成页是常驻挂载（v-show）的，没有 mounted 时机可依赖 → 每次切回来手动刷一次历史，
+    // 免得「上次在别处生成的图/视频（或外部拷进来的）不出现」
     'st.view'(v) {
-      if (v !== 'imggen') return
-      const c = this.$refs.imagegen
-      if (c && c.onShow) c.onShow()
+      if (v === 'imggen') {
+        const c = this.$refs.imagegen
+        if (c && c.onShow) c.onShow()
+      } else if (v === 'vidgen') {
+        const c = this.$refs.videogen
+        if (c && c.onShow) c.onShow()
+      }
     },
     'st.error'(msg) {
       if (msg) { this.toast('出错：' + msg); this.st.error = null }
@@ -893,6 +940,26 @@ export default {
   },
   methods: {
     fmtMs,
+    /** 某一集是否有活跃视频任务（模板用；读上面的响应式聚合，避免漏渲染）。
+     *  🔴 带参数 → 必须是 method，不能放 computed（computed 是无参 getter，放错会「not a function」报错导致整树卸载）。 */
+    episodeHasVideoTask(episodeId) {
+      if (episodeId == null) return false
+      const list = this.activeTasksByEpisode[String(episodeId)]
+      return !!(list && list.some(t => t.type === 'video'))
+    },
+    /** 某项目下（含子文件夹）是否有任何集有活跃任务（项目节点汇总闪点用）。
+     *  🔴 必须走 episodeHasVideoTask（读响应式聚合），否则提交任务后项目节点闪点不刷新。 */
+    projectHasTask(p) {
+      const scan = (folders) => {
+        for (const f of folders || []) {
+          for (const e of f.episodes || []) if (this.episodeHasVideoTask(e.id)) return true
+          if (scan(f.folders)) return true
+        }
+        return false
+      }
+      for (const e of p.episodes || []) if (this.episodeHasVideoTask(e.id)) return true
+      return scan(p.folders)
+    },
     /** 当前「档位 + 比例」的推荐画布文案（如「864×480」），拼在视频比例选项标题上。
      *  取不到（档位/比例未声明画布）返回空串 → 不显示。
      *  🔴 必须是 method（带参数），不能放 computed —— computed 是无参 getter，

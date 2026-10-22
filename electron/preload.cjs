@@ -165,8 +165,9 @@ contextBridge.exposeInMainWorld('studio', {
   comfyGenerate: (args) => ipcRenderer.invoke('comfy:generate', args),
   // 成片超分（SeedVR2）：{ file, outDir, scale } → { file, path, width, height, elapsedMs }
   comfyUpscale: (args) => ipcRenderer.invoke('comfy:upscale', args),
-  // 强制停止生成（2026-10-09）：中断当前任务 + 清排队 + 释放显存
-  comfyCancel: () => ipcRenderer.invoke('comfy:cancel'),
+  // 强制停止生成（2026-10-09）：中断当前任务 + 清排队 + 释放显存。
+  // mode='skip' = 单镜跳过（只中断当前镜、保留模型不释放显存，下一镜接着跑）；默认 'full' 整批停止。
+  comfyCancel: (mode) => ipcRenderer.invoke('comfy:cancel', mode),
   exportVideo: (args) => ipcRenderer.invoke('export:video', args),
   findFfmpeg: () => ipcRenderer.invoke('ffmpeg:find'),
   videoLastFrame: (payload) => ipcRenderer.invoke('video:lastFrame', payload),
@@ -174,6 +175,7 @@ contextBridge.exposeInMainWorld('studio', {
   listMedia: (dir, prefix) => ipcRenderer.invoke('media:list', dir, prefix),
   imgHistory: (ws) => ipcRenderer.invoke('imggen:history', ws),
   imgReverse: (file, opts) => ipcRenderer.invoke('imggen:reverse', file, opts),
+  vidHistory: (ws) => ipcRenderer.invoke('vidgen:history', ws),
   readFileBase64: (abs) => ipcRenderer.invoke('file:readBase64', abs),
   deleteFile: (abs) => ipcRenderer.invoke('file:delete', abs),
   pickFiles: (kind) => ipcRenderer.invoke('file:pick', kind),

@@ -16,6 +16,7 @@
            :style="{paddingLeft: (26 + depth*16) + 'px'}"
            @click="st.openEpisode(e.id)">
         📄 {{ e.name }}
+        <i v-if="episodeHasVideoTask(e.id)" class="nav-dot" title="该集有视频任务在跑（切菜单/切集不中断）"></i>
         <span class="ops">
           <button class="op-del" title="删除集数" @click.stop="st.askDelete('episode', e.id, e.name)">✕</button>
         </span>
@@ -26,14 +27,32 @@
 
 <script>
 import { useProject as useProjectStore } from './stores/project.js'
+import { state as taskCenterState } from './taskCenter.js'
 
 export default {
   name: 'FolderNode',
   props: { node: { type: Object, required: true }, depth: { type: Number, default: 1 } },
   computed: {
-    st() { return useProjectStore() }
+    st() { return useProjectStore() },
+    /** 活跃任务按集聚合（读 reactive 的 current/queue，建立响应式依赖，避免提交任务后漏渲染） */
+    activeByEp() {
+      const map = {}
+      const tasks = []
+      if (taskCenterState.current) tasks.push(taskCenterState.current)
+      for (const t of taskCenterState.queue) tasks.push(t)
+      for (const t of tasks) {
+        if (t.episodeId == null) continue
+        const k = String(t.episodeId)
+        ;(map[k] = map[k] || []).push(t)
+      }
+      return map
+    }
   },
   methods: {
+    episodeHasVideoTask(id) {
+      const list = this.activeByEp[String(id)]
+      return !!(list && list.some(t => t.type === 'video'))
+    },
     newFolder() {
       // 找到所属项目 id
       const pid = this.findProjectId(this.st.tree, this.node.id)

@@ -10,7 +10,7 @@
           </div>
           <div class="ig-refs">
             <div v-for="(r,i) in refs" :key="r.path" class="ig-ref full">
-              <img :src="imgSrc(r.path)" title="点击放大查看" @click="preview(r)">
+              <img :src="imgSrc(r.path)" title="点击放大查看" @load="onRefLoad($event, i)" @click="preview(r)">
               <button class="ig-refx" title="移除" @click.stop="rmRef(i)">✕</button>
               <!-- 提示词反推：常驻悬浮在图片下方（本地 Qwen3.5 + mmproj 读图） -->
               <button class="ig-rev" :class="{on: r.busy}" :disabled="!!r.busy"
@@ -179,7 +179,7 @@ export default {
       editMode: true,    // 有参考图时的走向：勾选 = 编辑通道（指令改图）；取消 = 图生图（保构图低噪重绘）
       prompt: '',
       negative: '模糊, 变形, 多余肢体, 水印, 文字',
-      refs: [],            // [{path, src}] —— 最多 10 张（官方多图上限）
+      refs: [],            // [{path, src, dims}] —— 最多 10 张（官方多图上限）；dims = img onload 记的真实宽高
       res: '1024x1024',
       count: 1,
       steps: 25,           // 采样步数（默认 = 2.1 官方配方）
@@ -205,8 +205,15 @@ export default {
       return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
     },
     resList() {
-      return (this.resOpts && this.resOpts.length) ? this.resOpts
+      const base = (this.resOpts && this.resOpts.length) ? this.resOpts
         : [{ value: '1024x1024', label: '1024×1024（1:1）' }, { value: '768x1344', label: '768×1344（9:16）' }]
+      // 🔴 上传参考图后，最前面插入「自动」档位 —— 分辨率 = 第一张参考图的真实尺寸
+      //   （多图以第一张为准）。value 直接存 "WxH"，generate 里 split('x') 零改动。
+      const d = this.refs[0] && this.refs[0].dims
+      if (this.refs.length && d && d.w && d.h) {
+        return [{ value: d.w + 'x' + d.h, label: '自动（' + d.w + '×' + d.h + '）' }, ...base]
+      }
+      return base
     },
     /* 🔴 合并后的路由（2026-10-17 二轮拍板）：不再让用户选模式 ——
      *   没传参考图 = 文生图；传了图 = 默认「编辑图片」勾选（编辑通道），
@@ -270,7 +277,26 @@ export default {
         this.refs.push({ path: p, busy: false })
       }
     },
-    rmRef(i) { this.refs.splice(i, 1) },
+    /**
+     * 参考图 img 加载完 → 记录该张真实宽高到 refs[i].dims（2026-10-22）。
+     * 第一张（i===0）拿到尺寸后，默认选中「自动」分辨率档位（值 = 第一张参考图尺寸）。
+     */
+    onRefLoad(e, i) {
+      const im = e && e.target
+      if (im && im.naturalWidth && im.naturalHeight) {
+        this.refs[i].dims = { w: im.naturalWidth, h: im.naturalHeight }
+        if (i === 0) this.res = im.naturalWidth + 'x' + im.naturalHeight
+      }
+    },
+    rmRef(i) {
+      this.refs.splice(i, 1)
+      // 移除的是第一张 → 若新的第一张已记过尺寸，自动档随之更新并选中；否则回退普通档
+      if (i === 0) {
+        const d = this.refs[0] && this.refs[0].dims
+        if (this.refs.length && d && d.w && d.h) this.res = d.w + 'x' + d.h
+        else if (!this.refs.length) { const b = this.resList; if (b.length) this.res = b[0].value }
+      }
+    },
     /**
      * 提示词反推（本地 Qwen3.5-9B + mmproj，走 imggen:reverse）：
      * 成功后**自动填入提示词框**（覆盖原内容，用户明确要求「自动填充」）。
@@ -292,7 +318,12 @@ export default {
         r.busy = false
       }
     },
-    clearRefs() { this.refs = [] },
+    clearRefs() {
+      this.refs = []
+      // 参考图清空 → 自动档消失，res 回退到普通档第一项
+      const base = this.resList
+      if (base.length && !base.some(o => o.value === this.res)) this.res = base[0].value
+    },
     fillExample() {
       this.prompt = (this.effMode === 'edit' && this.refs.length > 1) ? EXAMPLE_MULTI : EXAMPLES[this.effMode]
     },

@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
+import * as taskCenter from './taskCenter.js'
 import './style.css'
 
 const pinia = createPinia()
@@ -28,3 +29,5 @@ app.mount('#app')
 
 // 测试钩子：UI 冒烟测试通过 window.__pinia 驱动 store、断言状态
 window.__pinia = pinia
+// 测试钩子：任务中心（批量视频切菜单/切集不中断）——UI 套件据此提交假任务、读状态、断言侧栏闪点
+window.__taskCenter = taskCenter

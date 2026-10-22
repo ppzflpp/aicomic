@@ -233,6 +233,7 @@ import { usePipeline, fmtMs } from './stores/pipeline.js'
 import { stepLog, secs } from './ulog.js'
 import { parseRes, resLabel, optsWith, joinPath } from './resutil.js'
 import { overrideOf } from './llmSource.js'
+import { taskState } from './taskState.js'
 import {
   composeSystem, composeUser, readDefaultNegative, readEquipmentWords, readSceneKeeper,
   stripEquipmentWords, ensureSceneKeeper
@@ -307,9 +308,16 @@ export default {
       return [...es.filter(e => e.kind !== 'scene'), ...es.filter(e => e.kind === 'scene')]
     },
     nChar() { return this.entries.filter(e => e.kind !== 'scene').length },
-    nScene() { return this.entries.filter(e => e.kind === 'scene').length }
+    nScene() { return this.entries.filter(e => e.kind === 'scene').length },
+    /** 本模块是否有后台任务在跑（批量提示词 / 批量图片）→ 镜像到 taskState.lib 给侧栏闪点 */
+    taskBusy() { return !!(this.batchP || this.batchI) }
   },
   watch: {
+    /** 后台任务状态镜像到全局 taskState.lib（侧栏「项目角色场景库」闪点） */
+    taskBusy(v) {
+      taskState.lib.busy = !!v
+      if (!v) taskState.lib.text = ''
+    },
     projectId: {
       immediate: true,
       handler(pid) {
@@ -617,6 +625,7 @@ export default {
           const e = this.entries.find(x => x.id === ids[k])
           if (!e) continue
           this.batchPN = k + 1
+          taskState.lib.text = '批量提示词 ' + (k + 1) + '/' + ids.length
           const okFlag = await this.genPrompt(e, { n: k + 1, total: ids.length })
           okFlag ? okN++ : badN++
         }
@@ -651,6 +660,7 @@ export default {
           const e = this.entries.find(x => x.id === ids[k])
           if (!e) continue
           this.batchIN = k + 1
+          taskState.lib.text = '批量图片 ' + (k + 1) + '/' + ids.length
           const okFlag = await this.gen(e, { n: k + 1, total: ids.length })
           okFlag ? okN++ : badN++
         }

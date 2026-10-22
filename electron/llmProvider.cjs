@@ -23,19 +23,22 @@
  *      离线自测时可只跑纯函数）。
  */
 
-/** 7 个环节（顺序即设置页展示顺序） */
+/** 环节（顺序即设置页展示顺序）；label 统一「菜单名·功能名」格式（2026-10-22 Dragon 拍板） */
 const STAGES = [
-  { id: 'adapt', label: '剧本改编' },
-  { id: 'shots', label: '分镜脚本' },
-  { id: 'chars', label: '角色与场景档案' },
-  { id: 'outfits', label: '装扮清单' },
-  { id: 'library', label: '素材库提示词' },
-  { id: 'prompt', label: '分镜提示词' },
-  { id: 'split', label: '拆分镜头重写' },
+  { id: 'adapt', label: '创作台·剧本改编' },
+  { id: 'shots', label: '创作台·分镜脚本' },
+  { id: 'chars', label: '创作台·角色与场景' },
+  { id: 'outfits', label: '创作台·装扮清单' },
+  { id: 'library', label: '素材库·提示词' },
+  { id: 'prompt', label: '创作台·分镜提示词' },
+  { id: 'split', label: '创作台·拆分镜头重写' },
+  // 视频生成·提示词重写（2026-10-22）：独立环节，不跟随「分镜提示词」，
+  // 用户可单独决定视频生成里的「提示词重写」走云端还是本地。
+  { id: 'vidgen-rewrite', label: '视频生成·提示词重写' },
   // 图片提示词反推（2026-10-17）：本地 Qwen3.5 + mmproj 读图 → 产出画面描述。
   // 独立环节的原因：本地那套默认不带视觉投影器，且反推与「分镜提示词」的口吻/长度完全不同，
   // 不能跟着 prompt 环节的来源走（用户可能把 prompt 切到云端，反推仍要按自己的设置来）。
-  { id: 'reverse', label: '提示词反推' }
+  { id: 'reverse', label: '图片生成·提示词反推' }
 ];
 const STAGE_IDS = STAGES.map(s => s.id);
 
@@ -65,6 +68,7 @@ function normalizeStage(v) {
   if (!s) return 'shots';
   if (STAGE_IDS.includes(s)) return s;
   if (/反推/.test(s)) return 'reverse';   // 必须在「提示词」规则之前：反推的默认值不同
+  if (/视频生成|视频.*重写/.test(s)) return 'vidgen-rewrite';  // 也必须在「提示词」规则之前
   if (/阶段2|改编/.test(s)) return 'adapt';
   if (/阶段3|分镜脚本/.test(s)) return 'shots';
   if (/装扮/.test(s)) return 'outfits';

@@ -1,10 +1,10 @@
 # 飞鱼AI视频导演台
 
-把小说、故事一键变成漫剧 / 短剧视频的本地软件：**改编 → 角色场景 → 分镜出视频 → 组装成片**。
-另外还有一个独立的**图片生成**工作台（文生图 / 图片编辑 / 图生图），不建项目也能直接用。
-全程在你自己的电脑上完成，创作内容不上传、不外泄。
+> 🎉 **本项目代码已开源！** 如果有特殊需求（定制功能、私有化部署、二次开发等），欢迎加作者微信 **`ppzflpp`** 沟通定制。
 
-> 开发交接 / 换账号续做请先读 [`../HANDOFF.md`](../HANDOFF.md)（环境、命令、铁律、当前进度）。
+把小说、故事一键变成漫剧 / 短剧视频的本地软件：**改编 → 角色场景 → 分镜出视频 → 组装成片**。
+另外还有独立的**图片生成**、**视频生成**两个工作台，不建项目也能直接用。
+全程在你自己的电脑上完成，创作内容不上传、不外泄。
 
 **它能做什么**
 
@@ -15,6 +15,7 @@
 | 分镜脚本 | 逐镜出首尾帧 → H3 出视频（首尾帧 / 参考图两条支路），集级光线与声音基调统一 |
 | 组装成片 | 字幕、BGM、逐镜响度归一，**视频超分**放大一档，一键导出成片 |
 | 图片生成 | 文生图 / 图片编辑 / 图生图，参考图最多 10 张；参考图可一键**反推提示词** |
+| 视频生成 | 文生视频 / 首尾帧生视频 / 参考图·参考视频生视频，自动判定模式，生成后可一键**回填配置**、**重写提示词** |
 
 **安装只要三步，照着做就行：**
 
@@ -91,7 +92,7 @@ comic-studio/
 ## 第三步：下载模型（必须自己下载）
 
 下面这些文件，**软件里没有、网盘里也没有，必须自己下载**，合计约 93GB（非 50 系显卡约 108GB）。
-全部是 [hf-mirror.com](https://hf-mirror.com) 的国内镜像，点开就能下，不用科学上网。
+大部分走 [hf-mirror.com](https://hf-mirror.com) 国内镜像（B 方案的原始模型走 [modelscope.cn](https://www.modelscope.cn)），点开就能下，不用科学上网。
 
 **下面 1️⃣～3️⃣ 三组的文件都要下齐；4️⃣ 是可选（要超分才下）。**
 **标「①′ / ③′」的是 B 方案专用（16G 以上显存才要），用小显存 A 方案就不用下。**
@@ -124,15 +125,16 @@ comic-studio/
 | minimax_h3_fl2va_pruned_int8_convrot.safetensors | 21GB | [下载](https://hf-mirror.com/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors) |
 | minimax_h3_ref2va_pruned_int8_convrot.safetensors | 21GB | [下载](https://hf-mirror.com/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors) |
 
-**①′ 原始版主模型（可选，1 个，只有用「B 方案」才要）**
+**①′ 原始版主模型（可选，2 个，只有用「B 方案」才要）**
 
-上面两个是**剪枝版**（21GB，A 方案用）。如果你显存 16G 以上、想用质量更好的 **B 方案**（原始模型 + PDD 加速），还要再下这一个**原始版**：
+上面两个是**剪枝版**（A 方案用）。如果你显存 16G 以上、想用质量更好的 **B 方案**（原始模型 + PDD 加速），还要再下这两个**原始版**（文生/首尾帧、参考图各一个）：
 
 | 文件 | 大小 | 下载 |
 |---|---|---|
-| minimax_h3_ref2va_int8_convrot.safetensors | 31.7GB | [下载](https://hf-mirror.com/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_int8_convrot.safetensors) |
+| minimax_h3_fl2va_int8_convrot.safetensors | 31.7GB | [下载](https://www.modelscope.cn/models/Comfy-Org/MiniMax-H3/resolve/master/diffusion_models/minimax_h3_fl2va_int8_convrot.safetensors) |
+| minimax_h3_ref2va_int8_convrot.safetensors | 31.7GB | [下载](https://www.modelscope.cn/models/Comfy-Org/MiniMax-H3/resolve/master/diffusion_models/minimax_h3_ref2va_int8_convrot.safetensors) |
 
-> 不用 B 方案（16G 以下显存、用剪枝版 A 方案）就不用下这个，省 31.7GB。
+> 不用 B 方案（16G 以下显存、用剪枝版 A 方案）就不用下这两个，省 63.4GB。
 
 **② 视频文字编码器（看你的显卡，两个里选一个）**
 
@@ -156,13 +158,14 @@ comic-studio/
 
 > 5 个都要下，少一个出片画面会变差。
 
-**③′ PDD 加速 LoRA（可选，1 个，只有用「B 方案」才要）**
+**③′ PDD 加速 LoRA（可选，2 个，只有用「B 方案」才要）**
 
-上面 5 个 turbo LoRA 是**剪枝版 A 方案**用的。如果你想用 **B 方案**（原始模型 + PDD 加速，16G 以上显存推荐），还要再下这一个 PDD LoRA：
+上面 5 个 turbo LoRA 是**剪枝版 A 方案**用的。如果你想用 **B 方案**（原始模型 + PDD 加速，16G 以上显存推荐），还要再下这两个 PDD LoRA（文生/首尾帧、参考图各一个）：
 
 | 文件 | 大小 | 下载 |
 |---|---|---|
 | minimax_h3_ref2va_pdd_8step_adaln2688_comfy.safetensors | 1.6GB | [下载](https://hf-mirror.com/fbjr/MiniMax-H3-Acc-LoRAs-sidecar/resolve/main/minimax_h3_ref2va_pdd_8step_adaln2688_comfy.safetensors) |
+| minimax_h3_fl2va_pdd_8step_adaln2688_comfy.safetensors | 1.6GB | [下载](https://hf-mirror.com/fbjr/MiniMax-H3-Acc-LoRAs-sidecar/resolve/main/minimax_h3_fl2va_pdd_8step_adaln2688_comfy.safetensors) |
 
 > 必须配上面「①′ 原始版主模型」一起用。不用 B 方案就不用下。
 
@@ -219,13 +222,27 @@ comic-studio/
 - 每张参考图下方都有 **「反推提示词」**：点一下，软件用本地大模型读这张图，自动写出画面描述填进提示词框——反推完直接点生成，就得到同风格的图；
 - 出图结果会保留分辨率与生成耗时，点图即可放大查看，历史记录按日期归档在 `图片生成\<日期>\` 下。
 
+### 只想先出个视频？
+
+左侧 **「视频生成」** 是独立工作台，不用建项目、不用先跑剧本，上传素材直接就能出视频：
+
+- 填一句文字，或上传**参考图 / 参考视频 / 首帧 / 尾帧**（可自由组合），系统会**自动判定**走哪种模式（文生视频 / 首尾帧 / 参考生视频），不用你选；
+- 时长 4~15 秒可填，视频质量复用创作台的**三档 × A/B 方案**，比例、分辨率一目了然；
+- 点生成后自动进**任务中心**排队，切菜单、切项目都不中断；
+- 每次生成会保存一份「配置快照」，结果上悬停即可**回填配置**、**查看提示词**；开启「**提示词重写**」还能按 H3 官方规范自动优化描述；
+- 出片结果保留分辨率、视频时长与生成耗时，历史按日期归档在 `视频生成\<日期>\` 下。
+
 **软件界面预览：**
 
 | 剧本改编 | 角色 & 场景 |
 |---|---|
-| ![剧本改编](screenshots/ui-1-adapt.jpg) | ![角色&场景](screenshots/ui-2-chars.jpg) |
+| ![剧本改编](screenshots/1.png) | ![角色&场景](screenshots/2.png) |
 | **分镜脚本** | **组装成片** |
-| ![分镜脚本](screenshots/ui-3-shots.jpg) | ![组装成片](screenshots/ui-4-film.jpg) |
+| ![分镜脚本](screenshots/3.png) | ![组装成片](screenshots/4.png) |
+| **图片生成** | **视频生成** |
+| ![图片生成](screenshots/5.png) | ![视频生成](screenshots/6.png) |
+| **设置** | |
+| ![设置](screenshots/7.png) | |
 
 ---
 
@@ -246,6 +263,13 @@ comic-studio/
 不确定就跟着金色「推荐」走，不会错。
 
 ---
+
+## 最近更新（v0.3.4）
+
+- **新增「视频生成」工作台**：与「图片生成」平级的独立入口，不建项目也能直接用。上传文字 / 参考图 / 参考视频 / 首帧 / 尾帧，系统**自动判定**走文生视频、首尾帧还是参考生视频；时长 4~15 秒、质量三档 × A/B、比例分辨率都齐
+- **任务中心**：批量生成（分镜批量出视频、视频生成）放进独立任务队列，切菜单、切项目、切集都不中断，侧栏和项目树实时显示哪个项目 / 哪一集在跑
+- **生成快照 + 回填**：每次生成保存「提示词 + 参考素材 + 各项选项」快照，结果上悬停即可一键回填配置、查看提示词
+- **提示词重写**：视频生成里开「提示词重写」，按 MiniMax H3 官方规范自动优化描述（可在设置里单独选云端 / 本地）
 
 ## 最近更新（v0.3.3）
 
@@ -288,16 +312,6 @@ comic-studio/
 
 QQ 群：**1036028422** — 使用中有问题欢迎进群讨论。
 
-## 打赏
-
-开源不易，从改编、出图到成片的每一步都是用爱发电。
-如果这个软件帮你把小说、故事变成了视频，省下了真金白银的制作费，欢迎请作者喝杯咖啡 ☕
-金额随意，心意最重要 —— 你的支持就是我继续更新的动力！
-
-**打赏方式**：扫描下方二维码添加作者微信，备注「飞鱼」，添加后微信转账即可。
-
-<p align="center"><img src="screenshots/donate-wechat.png" alt="扫码加作者微信，打赏请转账" width="320"></p>
-
 ## License
 
-随意使用，可商用。如果觉得好用，欢迎回来点个 Star 或请作者喝杯咖啡。
+随意使用，可商用。如果觉得好用，欢迎回来点个 Star。

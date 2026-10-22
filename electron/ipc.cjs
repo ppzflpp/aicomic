@@ -587,9 +587,10 @@ function registerIpc(db, getWin, fallbackWorkspace) {
   // 强制停止生成（2026-10-09）：中断 ComfyUI 正在跑的任务 + 清排队 + 释放显存。
   // 必须是独立通道——点「停止生成」时 comfy:generate 那次 invoke 还挂着（要等它返回），
   // 没有这条路就插不进去任何指令。中断是 ComfyUI 全局级的（它没有"只中断某个 prompt"的接口）。
-  ipcMain.handle('comfy:cancel', async () => {
+  // mode='skip' = 单镜跳过（只中断当前镜、保留模型不释放显存，下一镜接着跑）；默认 'full' 整批停止。
+  ipcMain.handle('comfy:cancel', async (e, mode) => {
     logger.setTag('停止生成');
-    return inference.cancelComfy();
+    return inference.cancelComfy(mode);
   });
   // 成片超分（SeedVR2 · ComfyUI 内置节点）：一条镜头视频 → 放大一档 → 落到 outDir。
   // 与生成同一条前置闸门：先确保 ComfyUI 起来、再探一次在线，缺了给明确出路。
@@ -656,6 +657,40 @@ function registerIpc(db, getWin, fallbackWorkspace) {
         let ms = null;
         try { const m = JSON.parse(fs.readFileSync(abs + '.json', 'utf8')); if (m && m.ms) ms = m.ms; } catch (_) {}
         out.push({ file: f, path: abs, mtimeMs: st.mtimeMs, ms });
+      }
+      if (out.length >= 240) break;
+    }
+    return out.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 120);
+  });
+  /* 视频生成页：历史 = <workspace>/视频生成/<日期>/ 下的视频，按时间倒序，上限 120 条。
+   * 每条带：file / path / mtimeMs / 旁车快照（snapshot，含提示词/参考图/参考视频/首尾帧/档位）
+   *         以及用 ffprobe 探测的真实分辨率与时长（宽/高/秒）。
+   * 探测失败（无 ffmpeg / 文件损坏）不致命，返回 0，渲染层只显示拿得到的信息。 */
+  ipcMain.handle('vidgen:history', async (e, ws) => {
+    const root = path.join(String(ws || ''), '视频生成');
+    const out = [];
+    let days = [];
+    try { days = fs.readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort().reverse(); } catch (_) { return []; }
+    for (const day of days) {
+      let files = [];
+      try { files = fs.readdirSync(path.join(root, day)); } catch (_) { continue; }
+      for (const f of files.filter(x => /\.(mp4|webm|mov|mkv)$/i.test(x))) {
+        const abs = path.join(root, day, f);
+        let st = null; try { st = fs.statSync(abs); } catch (_) { continue; }
+        // 旁车文件（<视频名>.json，由生成侧写入）里带生成耗时 + 完整生成快照
+        let ms = null, snapshot = null;
+        try {
+          const m = JSON.parse(fs.readFileSync(abs + '.json', 'utf8'));
+          if (m && m.ms) ms = m.ms;
+          if (m && m.snapshot) snapshot = m.snapshot;
+        } catch (_) {}
+        // 真实分辨率/时长（ffprobe 探测；失败 = 0，不阻断）
+        let w = 0, h = 0, dur = 0;
+        try {
+          const meta = await inference.probeVideo(abs);
+          if (meta) { w = meta.width || 0; h = meta.height || 0; dur = meta.durationSec || 0; }
+        } catch (_) {}
+        out.push({ file: f, path: abs, mtimeMs: st.mtimeMs, ms, snapshot, width: w, height: h, durationSec: dur });
       }
       if (out.length >= 240) break;
     }

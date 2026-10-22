@@ -1315,6 +1315,7 @@ let vramFreeGen = 0;   // 代际计数：防「timer 恰好到点 vs 新任务�
 // 串行使用（渲染层 vBusy 保证同一时刻只有一个生成在跑），所以一对模块级变量就够。
 let _activePid = null;   // 正在等待结果的 prompt_id（没有任务时为 null）
 let _cancelPid = null;   // 被用户请求中断的 prompt_id：轮询循环见到即立刻退出
+let _cancelMode = 'full'; // 本次停止的语义：'full' 整批停止 / 'skip' 单镜跳过（传给 CancelledError）
 
 function disarmVramFree() {
   if (vramFreeTimer) { clearTimeout(vramFreeTimer); vramFreeTimer = null; }
@@ -1348,10 +1349,15 @@ async function freeComfyVram(gen) {
 
 /** 用户主动停止生成（不是失败）：调用方据此走「已停止」而不是「生成失败」的提示路径 */
 class CancelledError extends Error {
-  constructor(pid) {
-    super('用户已停止生成（prompt_id=' + pid + '）');
+  constructor(pid, mode) {
+    // mode='skip' 表示「单镜跳过」：只停当前这一镜，批量循环要 continue 到下一镜；
+    // mode='full'（默认）表示「整批停止」：批量循环要 break 结束整批。
+    // 🔴 message 里带可识别的前缀（SKIP_CANCELLED / 用户已停止生成），
+    //   因为 IPC 序列化会丢自定义属性，渲染进程只能靠 message 区分 mode。
+    super((mode === 'skip' ? 'SKIP_CANCELLED：单镜跳过' : '用户已停止生成') + '（prompt_id=' + pid + '）');
     this.name = 'CancelledError';
     this.code = 'CANCELLED';
+    this.mode = mode || 'full';
   }
 }
 
@@ -1368,9 +1374,12 @@ class CancelledError extends Error {
  * 注意 /interrupt 是 ComfyUI 的**全局**中断（它没有"只中断某个 prompt"的接口）。
  * 本软件串行生成，所以只会中断我们自己的任务。
  */
-async function cancelComfy() {
+async function cancelComfy(mode = 'full') {
   const ep = endpoint('comfyui');
   const out = { ok: false, pid: _activePid, interrupted: false, cleared: 0, freed: false, stillRunning: false, errors: [] };
+  // 记录本次停止语义（'full' 整批停止 / 'skip' 单镜跳过），轮询退出时据此给 CancelledError 打 mode。
+  // 🔴 必须在打 _cancelPid 之前设，否则轮询循环先读到 _cancelPid 抛错时 mode 还没就位。
+  _cancelMode = mode === 'skip' ? 'skip' : 'full';
   // 先打取消标记：正在轮询的 comfyGenerateInner 见到就立刻退出，不等这些 HTTP 请求的结果
   if (_activePid) _cancelPid = _activePid;
 
@@ -1401,29 +1410,38 @@ async function cancelComfy() {
     out.errors.push('清理排队任务失败：' + e.message);
   }
 
-  // ③ 等 ComfyUI 真正回到空闲（最多约 7.5s），否则下一步会把还在用的模型卸掉
+  // ③ 等 ComfyUI 真正回到空闲（最多约 7.5s），否则下一步会把还在用的模型卸掉。
+  //    🔴 'skip'（单镜跳过）不释放显存、下一镜马上接着跑，无需等 idle——跳过等待让响应更快。
   let idle = false;
-  for (let i = 0; i < 25; i++) {
-    try {
-      const q = await fetchJson(ep + '/queue', {}, 4000);
-      if (q.ok && q.json && !(q.json.queue_running || []).length) { idle = true; break; }
-    } catch (_) { break; }   // 查不通就别硬等，直接试最后一步
-    await new Promise(r => setTimeout(r, 300));
+  if (mode !== 'skip') {
+    for (let i = 0; i < 25; i++) {
+      try {
+        const q = await fetchJson(ep + '/queue', {}, 4000);
+        if (q.ok && q.json && !(q.json.queue_running || []).length) { idle = true; break; }
+      } catch (_) { break; }   // 查不通就别硬等，直接试最后一步
+      await new Promise(r => setTimeout(r, 300));
+    }
+  } else {
+    idle = true;   // skip 模式不关心 idle，直接当空闲（不释放显存）
   }
   out.stillRunning = !idle;
 
-  // ④ 释放显存（下次生成会重新加载权重，H3 约十几秒）
-  try {
-    await post('/free', { unload_models: true, free_memory: true }, 8000);
-    out.freed = true;
-  } catch (e) {
-    out.errors.push('释放显存失败：' + e.message);
+  // ④ 释放显存（下次生成会重新加载权重，H3 约十几秒）。
+  //    🔴 'skip'（单镜跳过）模式跳过释放：下一镜马上接着跑，保留模型加载状态更快。
+  if (mode !== 'skip') {
+    try {
+      await post('/free', { unload_models: true, free_memory: true }, 8000);
+      out.freed = true;
+    } catch (e) {
+      out.errors.push('释放显存失败：' + e.message);
+    }
   }
 
   out.ok = out.interrupted || out.cleared > 0 || out.freed;
-  logger.info('停止生成：' + (out.interrupted ? '已中断当前任务' : '未中断到执行中的任务')
+  logger.info('停止生成（' + (mode === 'skip' ? '单镜跳过' : '整批停止') + '）：'
+    + (out.interrupted ? '已中断当前任务' : '未中断到执行中的任务')
     + (out.cleared ? '，已清掉 ' + out.cleared + ' 个排队任务' : '')
-    + (out.freed ? '，已释放显存' : '，显存释放失败')
+    + (mode === 'skip' ? '，保留模型不释放显存' : (out.freed ? '，已释放显存' : '，显存释放失败'))
     + (out.errors.length ? '（' + out.errors.join('；') + '）' : ''));
   return out;
 }
@@ -1474,6 +1492,9 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   if (isVideo) {
     const A = models.resolveAssets('video');
     const p = { ...models.workflowModels(), ...h3Params(params.projectId, vidP) };
+    // 🔴 独立「视频生成」页没有项目上下文 → 允许调用方直接指定档位（params.tier）。
+    //    有项目时走 projectId 权威值；这里显式传 tier 则覆盖（独立页用它选 A/B 档）。
+    if (params.tier) p.tier = String(params.tier);
     const f = (vidP && vidP.frames) || {};
     const fps = Number(f.fps) > 0 ? Number(f.fps) : 24;
     const grid = (Array.isArray(f.grid) && f.grid.length === 2) ? f.grid : [17, 5];
@@ -1917,7 +1938,7 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   let unreachable = 0;                                          // ComfyUI 连续无响应次数
   while (Date.now() - t0 < hardMs) {
     // 用户点了「停止生成」→ 立刻退出，不再等 ComfyUI（interrupt 已由 cancelComfy 发出）
-    if (_cancelPid === pid) throw new CancelledError(pid);
+    if (_cancelPid === pid) throw new CancelledError(pid, _cancelMode);
     await new Promise(r => setTimeout(r, 1200));
     if (Date.now() - lastTick >= 30000) {
       lastTick = Date.now();
@@ -2017,8 +2038,13 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   // 生成时长落盘（2026-10-17）：耗时只活在渲染层内存里，重启/切菜单就没了，
   // 历史列表（imggen:history 只 stat 目录）因此永远只有分辨率没有时长。
   // 给每个产物配一个 <图片名>.json 旁的「旁车文件」，历史回读时带上 ms。
+  // 🔴 2026-10-22：视频生成额外带一份「生成快照」（提示词/参考图/参考视频/首尾帧/档位等），
+  //    一并写进旁车 —— 用户可从结果区一键回填这版视频当初的完整配置。
+  const snap = (isVideo && params && params.snapshot) ? params.snapshot : null;
   for (const name of saved) {
-    writeSidecar(dir, name, { ms: elapsedMs, mode: templateKey, at: new Date().toISOString() });
+    const meta = { ms: elapsedMs, mode: templateKey, at: new Date().toISOString() };
+    if (snap) meta.snapshot = snap;
+    writeSidecar(dir, name, meta);
   }
   logger.done(saved.join('、') + ' 生成完成', elapsedMs);
   return { files: saved, seed: realParams.seed, elapsedMs };
@@ -2931,7 +2957,7 @@ async function probeVideo(abs) {
 module.exports = {
   init, health, llmChat, extractJson, pickArray, endpoint, setEndpoint,
   comfyGenerate, cancelComfy, workflowPath, ensureDefaultTemplates, findFfmpeg, exportVideo,
-  upscaleVideo,
+  upscaleVideo, probeVideo,
   extractLastFrame,
   applyParams, findPlaceholders, h3Params, forgetWorkspace, listVideosWithMeta,
   // 模型方案驱动的部分（换模型只改配置，下面是代码侧入口）
