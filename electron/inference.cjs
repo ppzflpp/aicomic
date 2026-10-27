@@ -1845,6 +1845,9 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     // 🔴 INT8 注意力会改变采样轨迹（画面有轻微差异、无硬伤），BlockCache 在 8 步以上才有净收益；
     //    两者叠加在 PDD 档位下也实测可跑（A3 实验 151s 无硬伤）。节点编号用 7xx 段，避开模板/媒体/二采。
     const accel = (Wg.attentionBoost) || null;
+    // 🔴 默认开（2026-10-27 用户拍板）：缺省（从未设置过）即注入加速节点。只有用户明确
+    //    把开关拨到「关」（值为 '0'）才关闭。T8 插件已随软件自动装进 custom_nodes，
+    //    ModelAttentionBackend 需要较新 ComfyUI（内置节点）。
     const accelOn = !!(accel && accel.enabled !== false &&
       String(db.getSetting(accel.settingKey || 'h3.attentionBoost') || '').trim() !== '0');
     // 记录加速开关状态，供二采第二遍复用（第二遍 guider 也要串同样的 710/711）

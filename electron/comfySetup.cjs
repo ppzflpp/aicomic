@@ -225,6 +225,38 @@ function sameCode(a, b) {
   return stripComments(a) === stripComments(b);
 }
 
+/**
+ * 整个节点包的「代码指纹」：把所有 .py（含子目录）+ pyproject.toml 的代码本体
+ * 归一化后拼成一个字符串，用来判断「要不要重装」。
+ *
+ * 🔴 为什么不能只比 __init__.py：新版 ComfyUI 插件（如 comic_studio_h3_t8）的
+ *    __init__.py 只有一行 `from .nodes import comfy_entrypoint`，真正的节点逻辑在
+ *    nodes.py / h3_block_cache.py 里 —— 只比 __init__.py 会在升级插件（改了 nodes.py）
+ *    时误判「已最新」、漏装。老式单文件包（qwen21）逻辑全在 __init__.py，行为不变。
+ * 🔴 只认 .py / pyproject.toml：README/LICENSE/.gitignore 这些不该触发重装。
+ *    文件缺失（源有、目标无）也会体现在指纹不同（源串更长/不同）→ 判为需重装。
+ */
+function pkgCode(dir) {
+  if (!dir) return '';
+  const parts = [];
+  const walk = (d) => {
+    let ents = [];
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; }
+    ents.sort((a, b) => a.name.localeCompare(b.name));   // 顺序稳定，避免遍历序差异误判
+    for (const e of ents) {
+      if (/^(__pycache__|\.git)$/i.test(e.name)) continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (/\.py$/i.test(e.name) || /^pyproject\.toml$/i.test(e.name)) {
+        const txt = readText(p);
+        if (txt != null) parts.push(e.name + ':' + stripComments(txt));
+      }
+    }
+  };
+  walk(dir);
+  return parts.join('|');
+}
+
 /** 递归拷贝（不用 fs.cpSync：Windows 中文路径上见过段错误） */
 function copyDir(src, dst) {
   fs.mkdirSync(dst, { recursive: true });
@@ -245,14 +277,15 @@ function nodePkgsState(installDir) {
   const pkgs = packages();
   const dirs = targetDirs(installDir);
   const list = pkgs.map(p => {
-    const srcBody = readText(path.join(p.dir, '__init__.py'));
+    const srcCode = pkgCode(p.dir);
     const targets = dirs.map(d => {
       const dst = path.join(d, p.name);
+      const dstCode = pkgCode(dst);
       const dstBody = readText(path.join(dst, '__init__.py'));
       return {
         dir: dst,
         installed: !!dstBody,
-        upToDate: sameCode(srcBody, dstBody)
+        upToDate: sameCode(srcCode, dstCode)
       };
     });
     return {
@@ -323,10 +356,11 @@ function ensureCustomNodes(installDir) {
   for (const dstRoot of dirs) {
     for (const p of pkgs) {
       const dst = path.join(dstRoot, p.name);
-      const srcBody = readText(path.join(p.dir, '__init__.py')) || '';
+      const srcCode = pkgCode(p.dir);
       const dstFile = path.join(dst, '__init__.py');
       const dstBody = readText(dstFile);
-      if (sameCode(srcBody, dstBody)) continue;          // 功能等价（注释差异不算），不写盘
+      const dstCode = pkgCode(dst);
+      if (sameCode(srcCode, dstCode)) continue;          // 功能等价（注释差异不算），不写盘
       try {
         if (dstBody != null) {
           const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);

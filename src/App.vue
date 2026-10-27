@@ -905,7 +905,7 @@ export default {
   mounted() {
     this.bootUp()
     this.logs.init()
-    // 加速优化开关：读全局设置（'0' = 关，缺省/其他 = 开）
+    // 加速优化开关：读全局设置（'0' = 关，缺省/其他 = 开。默认开）
     window.studio.getSetting('h3.attentionBoost').then(v => {
       this.accelOn = String(v || '').trim() !== '0'
     }).catch(() => {})
