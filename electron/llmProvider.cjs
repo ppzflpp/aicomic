@@ -35,9 +35,9 @@ const STAGES = [
   // 视频生成·提示词重写（2026-10-22）：独立环节，不跟随「分镜提示词」，
   // 用户可单独决定视频生成里的「提示词重写」走云端还是本地。
   { id: 'vidgen-rewrite', label: '视频生成·提示词重写' },
-  // 图片提示词反推（2026-10-17）：本地 Qwen3.5 + mmproj 读图 → 产出画面描述。
-  // 独立环节的原因：本地那套默认不带视觉投影器，且反推与「分镜提示词」的口吻/长度完全不同，
-  // 不能跟着 prompt 环节的来源走（用户可能把 prompt 切到云端，反推仍要按自己的设置来）。
+  // 🔴 图片生成·提示词反推（reverse）恢复为独立环节（2026-10-23 第二次调整）：
+  //    用户明确要求「反推单独拆出来」，不再跟随「素材库·提示词」。独立开关，
+  //    用户可在设置页单独决定「反推提示词」走云端还是本地。
   { id: 'reverse', label: '图片生成·提示词反推' }
 ];
 const STAGE_IDS = STAGES.map(s => s.id);
@@ -67,7 +67,9 @@ function normalizeStage(v) {
   const s = String(v || '').trim();
   if (!s) return 'shots';
   if (STAGE_IDS.includes(s)) return s;
-  if (/反推/.test(s)) return 'reverse';   // 必须在「提示词」规则之前：反推的默认值不同
+  // 🔴 反推恢复独立环节（2026-10-23 第二次调整）：'reverse' / 「反推」归一化到自己的 id，不再重定向 library。
+  //    注意「反推」必须排在 /素材/ 规则之前，否则会被 /阶段4|角色|素材/ 吞成 chars。
+  if (s === 'reverse' || /反推/.test(s)) return 'reverse';
   if (/视频生成|视频.*重写/.test(s)) return 'vidgen-rewrite';  // 也必须在「提示词」规则之前
   if (/阶段2|改编/.test(s)) return 'adapt';
   if (/阶段3|分镜脚本/.test(s)) return 'shots';

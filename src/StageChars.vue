@@ -364,7 +364,7 @@
       </button>
       <button class="btn sm" :class="{ regen: !batchP && !batchPStop && cards.some(c => String(c.profile || '').trim()), danger: batchP || batchPStop, 'stale-need': !batchP && !batchPStop && anyProfStale }"
               :disabled="batchPStop || batchI || batchFill"
-              :title="anyProfStale && !batchP ? '有卡片的档案改过、提示词还没跟上 → 点这里批量重算' : (batchP ? '点击停止：当前条目跑完后，剩余条目不再执行' : '按档案批量重新生成提示词，或只处理档案有变动 / 还没有提示词的条目')"
+              :title="anyProfStale && !batchP ? '有卡片的档案改过、提示词还没跟上 → 点这里批量重算' : (batchP ? '点击停止：立即结束当前条目，剩余条目不再执行' : '按档案批量重新生成提示词，或只处理档案有变动 / 还没有提示词的条目')"
               @click="batchPrompts">
         <span v-if="batchPStop" class="busy-txt"><i class="spin"></i>停止中…</span>
         <span v-else-if="batchP">停止批量({{ batchPN }}/{{ batchPTotal }})</span>
@@ -373,7 +373,7 @@
       <!-- 本模块的主操作 = 出图；标题栏里只有它是实心蓝（pro），其余两只是描边 -->
       <button class="btn sm pro" :class="{ regen: !batchI && !batchIStop && cards.some(c => c.candidates.length), danger: batchI || batchIStop }"
               :disabled="batchIStop || batchP || batchFill"
-              :title="batchI ? '点击停止：当前条目跑完后，剩余条目不再执行' : '依次生成所有还没有图的角色图与场景图（已有图的跳过）'"
+              :title="batchI ? '点击停止：立即结束当前条目，剩余条目不再执行' : '依次生成所有还没有图的角色图与场景图（已有图的跳过）'"
               @click="batchImages">
         <span v-if="batchIStop" class="busy-txt"><i class="spin"></i>停止中…</span>
         <span v-else-if="batchI">停止批量({{ batchIN }}/{{ batchITotal }})</span>
@@ -690,6 +690,17 @@ function parsePcOut(text) {
 }
 
 /**
+ * 判断一次生成抛出的错误是不是「用户主动停止」导致的（2026-10-24）。
+ * 图片生成走 ComfyUI：CancelledError 经 IPC 序列化后 message = '用户已停止生成（prompt_id=…）'；
+ * 提示词生成走 LLM：LlmCancelledError message = '用户已停止生成'。
+ * 两者都命中「已停止生成」；`code === 'CANCELLED'` 是本地直调（未过 IPC）时的兜底。
+ */
+function isCancelErr(e) {
+  if (!e) return false
+  return e.code === 'CANCELLED' || /已停止生成|已取消|SKIP_CANCELLED/.test(String((e && e.message) || e))
+}
+
+/**
  * 读生图兜底（chars.md / scenes.md 的「## 兜底默认」小节 + scenes.md 的「## 空镜必备句」）：
  * 正向模板（主人公 / 配角 / 场景）、负向词表、空镜必备句全部来自 md，读不到就是空
  * —— 主进程 readAt 已保证项目副本不可用时回退内置版，所以这里不再需要代码内的兜底文案。
@@ -764,7 +775,7 @@ export default {
        * 只在内存里（刷新即消失）—— 它描述的是「此刻跑到第几步」，不是需要持久化的事实。
        * 卡片上方那条进度条读它；`stop` 由进度条上的「停止」按钮置位（与批量按钮的停止同口径）。
        */
-      auto: { on: false, step: '', detail: '', n: 0, total: 2, stop: false },
+      auto: { on: false, step: '', detail: '', n: 0, total: 1, stop: false },
       // 🔴 Teleport 延迟挂载开关：切集时 <section :key> 整棵重建，mounted 前 #chars-batch 不在文档里
       tpReady: false
     }
@@ -896,8 +907,10 @@ export default {
     'st.current.scenes'() { this.rebuildSoon() },
     'st.current.shots'() { this.rebuildSoon() },
     // 🔴 自动流程（2026-10-16 · Dragon「不需要用户点识别装扮；你自动识别出来并且建卡」）：
-    //    分镜生成完会置一张票（`st.requestAuto`），这里收到就自己把「图片提示词 → 识别装扮 → 建派生卡」
-    //    跑完 —— 用户只需要点那一次「生成分镜」。票走 store 中转的理由见 project.js 的 requestAuto。
+    //    分镜生成完会置一张票（`st.requestAuto`），这里收到就自己把「识别装扮 → 建派生卡」
+    //    跑完 —— 用户只需要点那一次「生成分镜」。
+    //    （2026-10-26 起「图片提示词」不再随自动流程跑，改由「批量生成提示词」/ 单卡生成按钮手动触发。）
+    //    票走 store 中转的理由见 project.js 的 requestAuto。
     'st.autoReq'(v) { this.onAutoReq(v) },
     'pl.active'(v) {
       if (v !== 3 || this.busy) return
@@ -1537,6 +1550,13 @@ export default {
         this.$root.toast('「' + c.name + '」已重出：' + r.files.join('、'))
         return true
       } catch (e) {
+        // 🔴 用户点了「停止」→ 不是失败：返回 'stopped'，批量循环靠它 break
+        if (isCancelErr(e)) {
+          const self0 = this.liveCard(c)
+          if (self0) delete self0._genAt
+          L.warn(what + '「' + c.name + '」重出已停止')
+          return 'stopped'
+        }
         const self = this.liveCard(c)
         if (self) delete self._genAt
         L.fail(what + '「' + c.name + '」重出失败', Date.now() - t0, e)
@@ -2211,6 +2231,11 @@ export default {
         L.done(what + '「' + c.name + '」生成完成：' + out.prompt.length + ' 字' + (out.negative ? '（含负向）' : '（未返回负向，沿用原值）'), c.promptMs)
         return true
       } catch (e) {
+        // 🔴 用户点了「停止」→ 不是失败：返回 'stopped'，批量循环靠它 break（不误报失败）
+        if (isCancelErr(e)) {
+          L.warn(what + '「' + c.name + '」生成已停止' + prog)
+          return 'stopped'
+        }
         L.fail(what + '「' + c.name + '」生成失败' + prog, Date.now() - t0, e)
         this.st.fail(e)
         return false
@@ -2317,6 +2342,11 @@ export default {
           : c.name + ' 已生成：' + r.files.join('、'))
         return true
       } catch (e) {
+        // 🔴 用户点了「停止」→ 不是失败：返回 'stopped'，批量循环靠它 break
+        if (isCancelErr(e)) {
+          L.warn(what + '「' + c.name + '」生成已停止' + prog)
+          return 'stopped'
+        }
         L.fail(what + '「' + c.name + '」生成失败' + prog, Date.now() - t0, e)
         this.st.fail(e)
         return false
@@ -2352,7 +2382,13 @@ export default {
      * 「批量生成提示词」：跑动中点击 = 请求停止；空闲点击 = 弹框选范围
      */
     batchPrompts() {
-      if (this.batchP) { this.batchPStop = true; this.$root.toast('停止中：当前条目完成后停止，剩余条目不再执行'); return }
+      if (this.batchP) {
+        // 🔴 硬停（2026-10-24）：置停止位 + 立刻掐断当前那次 LLM 请求，不等它自然跑完
+        this.batchPStop = true
+        window.studio.llmCancel()
+        this.$root.toast('正在停止：立即结束当前条目，剩余条目不再执行')
+        return
+      }
       if (this.batchI) { this.$root.toast('图片批量进行中，请先等它结束或停止'); return }
       if (!this.cards.length) { this.$root.toast('还没有角色/场景，先点「生成分镜」'); return }
       this.askBatch = { kind: 'prompts' }
@@ -2360,7 +2396,13 @@ export default {
     /** 「批量生成图片」：跑动中点击 = 请求停止；空闲点击 = 弹框选范围（与批量提示词同款弹框，
          无论是否都已有图都弹 —— 全都有图时默认会全部跳过，弹框里说明并给出「全部重新生成」出口） */
     batchImages() {
-      if (this.batchI) { this.batchIStop = true; this.$root.toast('停止中：当前条目完成后停止，剩余条目不再执行'); return }
+      if (this.batchI) {
+        // 🔴 硬停（2026-10-24）：置停止位 + 立刻中断当前那次 ComfyUI 生成，不等它自然跑完
+        this.batchIStop = true
+        window.studio.comfyCancel('full')
+        this.$root.toast('正在停止：立即结束当前条目，剩余条目不再执行')
+        return
+      }
       if (this.batchP) { this.$root.toast('提示词批量进行中，请先等它结束或停止'); return }
       if (!this.cards.length) { this.$root.toast('还没有角色/场景，先点「生成分镜」'); return }
       // 🔴 弹框里的「已有图 / 还没有图 / 共」必须与 runBatchI 的条目口径**完全一致**（2026-10-16）：
@@ -2375,7 +2417,7 @@ export default {
     askBatchImgAll() { this.askBatch = null; this.runBatchI(true) },
     /**
      * 批量生成提示词：all=true 全部按档案重算并覆盖；false 只处理「档案已改未重算」+「还没有提示词」。
-     * 逐个顺序执行，batchPStop 置位后当前条目跑完即停（剩余丢弃），结束统一统计。
+     * 逐个顺序执行，batchPStop 置位后立即结束（含中断当前条目，剩余丢弃），结束统一统计。
      */
     async runBatchP(all) {
       const L = stepLog(TAG)
@@ -2395,7 +2437,7 @@ export default {
       this.batchP = true; this.batchPStop = false; this.busy = true
       this.batchPN = 0; this.batchPTotal = idx.length
       L.start('开始批量生成提示词（' + (all ? '全部按档案重算，覆盖已有' : '只处理档案有变动 / 还没有提示词的') + '）：待生成 ' +
-        idx.length + ' 个（共 ' + this.cards.length + ' 个角色/场景）；可随时点「停止批量」，当前条目跑完后停止')
+        idx.length + ' 个（共 ' + this.cards.length + ' 个角色/场景）；可随时点「停止批量」，立即结束当前条目')
       const tAll = Date.now()
       let okN = 0, badN = 0, stopped = false
       try {
@@ -2404,6 +2446,8 @@ export default {
           if (this.batchPStop || this._busyEpId === 'SWITCHED') { stopped = true; break }
           this.batchPN = k + 1
           const okFlag = await this.genPromptFromProfile(idx[k], { n: k + 1, total: idx.length })
+          // 🔴 硬停：底层 LLM 被掐断返回 'stopped' → 立即结束整批（不是失败）
+          if (okFlag === 'stopped') { stopped = true; break }
           okFlag ? okN++ : badN++
         }
         const left = idx.length - okN - badN
@@ -2464,7 +2508,7 @@ export default {
       this.batchI = true; this.batchIStop = false; this.busy = true
       this.batchIN = 0; this.batchITotal = idx.length
       L.start('开始批量生成图片（' + (all ? '全部重新生成，完成后自动选中新版本' : '只补还没有图的，跳过已有图') + '）：待生成 ' +
-        idx.length + ' 个（共 ' + this.cards.length + ' 张卡，含装扮卡）；可随时点「停止批量」，当前条目跑完后停止')
+        idx.length + ' 个（共 ' + this.cards.length + ' 张卡，含装扮卡）；可随时点「停止批量」，立即结束当前条目')
       const tAll = Date.now()
       // skipN（2026-10-16）：还没有提示词的条目 —— 出图必被主进程占位符护栏拦下（见 genReady），
       // 所以在这里先筛掉并计数，末尾如实汇报。否则它们会以 gen() 返回 false 的身份混进「失败」里。
@@ -2481,6 +2525,7 @@ export default {
             const issue = this.outfitGenIssue(card)
             if (issue) { skipN++; L.warn('跳过装扮卡「' + card.name + '」：' + issue); continue }
             const okImg = await this.regenView(card)
+            if (okImg === 'stopped') { stopped = true; break }
             okImg ? okN++ : badN++
             continue
           }
@@ -2490,6 +2535,7 @@ export default {
             continue
           }
           const okFlag = await this.gen(idx[k], { n: k + 1, total: idx.length })
+          if (okFlag === 'stopped') { stopped = true; break }
           okFlag ? okN++ : badN++
         }
         const left = idx.length - okN - badN - skipN
@@ -2535,17 +2581,17 @@ export default {
       await this.runAuto()
     },
     /**
-     * 自动流程（**两步**，顺序不能换）：
-     *   ① 按档案生成**图片提示词** —— 只补「还没有 / 档案已改」的条目，已有且最新的绝不覆盖
-     *   ② 逐角色：从本集分镜的服装记录里识别装扮 → 幂等派生 `主体--装扮名` 卡
+     * 自动流程（**单步**）：
+     *   逐角色：从本集分镜的服装记录里识别装扮 → 幂等派生 `主体--装扮名` 卡
      *      （原料是分镜的 `continuity` / `change`：「谁在第几镜换了哪套」是**已有事实**，不重读剧本）
      *
-     * 🔴 到此为止 —— **不出图、不填镜头**：那两件事由用户在「生成图片」「一键填充」里做
-     *    （2026-10-16 二次拍板；装扮卡在「生成图片」里排在它的主体卡之后，天然拿得到定妆图当参考）。
+     * 🔴 到此为止 —— **不出图、不填镜头、不生成图片提示词**：
+     *    · 出图 / 填镜头由用户在「生成图片」「一键填充」里做
+     *      （2026-10-16 二次拍板；装扮卡在「生成图片」里排在它的主体卡之后，天然拿得到定妆图当参考）。
+     *    · 图片提示词由用户手动点「批量生成提示词」/ 单卡生成按钮（runBatchP）触发
+     *      （2026-10-26 二次拍板：不再随「生成分镜」自动生成）。
      * 🔴 随时可打断：切集（`_busyEpId === 'SWITCHED'`）或点「停止」就地收尾，已完成的部分全部保留
      *    （每一步都是逐卡落盘的）。切集那条路会让 `_busyEpId` 变成哨兵，后面的循环逐个查它。
-     * 🔴 提示词**一张都没生成成功**时直接停在原地：后面的识别全靠「按档案」匹配，没有提示词说明
-     *    模型 / Key 那边有问题，报出原因比硬跑有用。
      */
     async runAuto() {
       if (this.auto.on) return
@@ -2553,27 +2599,21 @@ export default {
       if (!ep || !this.cards.length || !(ep.shots || []).length) return
       const L = stepLog(TAG)
       const tAll = Date.now()
-      this.auto = { on: true, step: '准备中', detail: '', n: 0, total: 2, stop: false }
-      const r = { prompts: null, bases: 0, cards: 0, todo: 0, fail: 0 }
-      L.start('分镜已生成 → 自动流程开始：按档案生成图片提示词 → 识别装扮并建派生卡（中途可点进度条上的「停止」，切集也会停）')
+      this.auto = { on: true, step: '准备中', detail: '', n: 0, total: 1, stop: false }
+      const r = { bases: 0, cards: 0, todo: 0, fail: 0 }
+      L.start('分镜已生成 → 自动流程开始：识别装扮并建派生卡（中途可点进度条上的「停止」，切集也会停）')
       try {
         // 🔴 先按**最新工件**重建卡片：分镜刚写完 chars / scenes，组件里的 cards 可能还是旧的
         //    （`st.current.chars` 的 watcher 有 150ms 防抖，票完全可能先到）—— 不重建就会漏掉本集新出现的角色。
         await this.init(ep)
         if (this._autoStop()) return
 
-        // ---- ① 图片提示词 ----
-        this.auto.n = 1; this.auto.step = '按档案生成图片提示词'; this.auto.detail = ''
-        r.prompts = await this.runBatchP(false)
-        if (this._autoStop()) return
-        if (r.prompts.total && !r.prompts.okN) {
-          L.warn('自动流程：图片提示词一张都没生成成功 → 装扮识别已跳过（先解决提示词生成的问题，见上面各条的失败原因）')
-          this.$root.toast('⚠ 提示词全部生成失败，自动流程停在原地（原因见日志面板）')
-          return
-        }
+        // 🔴 2026-10-26 用户拍板：「按档案生成图片提示词」不再由「生成分镜」自动触发，
+        //    改由用户手动点「批量生成提示词」或单张卡里的生成按钮（runBatchP）触发。
+        //    这里只保留「识别装扮 → 建派生卡」这一步（它读分镜的服装记录，不依赖提示词）。
 
-        // ---- ② 识别装扮 → 派生装扮卡 ----
-        this.auto.n = 2; this.auto.step = '识别装扮并建派生卡'
+        // ---- 识别装扮 → 派生装扮卡 ----
+        this.auto.n = 1; this.auto.step = '识别装扮并建派生卡'
         // 只处理「角色 + 主体卡」（视角/装扮变体卡不再往下派生；库只读副本不改本集）
         const bases = this.cards
           .filter(c => c.kind === 'character' && this.isParentCard(c) && !this.isLibRo(c))
@@ -2611,12 +2651,11 @@ export default {
         this.st.fail(e)
       } finally {
         this.auto.on = false; this.auto.stop = false; this.auto.detail = ''
-        const sum = '自动流程结束：图片提示词 ' + (r.prompts ? r.prompts.okN + '/' + r.prompts.total : '-') +
-          ' · 识别装扮 ' + r.bases + ' 个角色（新建装扮卡 ' + r.cards + ' 张' +
+        const sum = '自动流程结束：识别装扮 ' + r.bases + ' 个角色（新建装扮卡 ' + r.cards + ' 张' +
           (r.todo ? '，其中 ' + r.todo + ' 张还没出图' : '') + '）' +
           (r.fail ? ' · 失败 ' + r.fail + ' 处（见日志）' : '') +
           '，总耗时 ' + secs(Date.now() - tAll) +
-          '；出图与填镜头请在「生成图片」「一键填充」里执行'
+          '；图片提示词请用「批量生成提示词」或单卡生成按钮手动生成'
         if (r.fail) L.warn(sum); else L.done(sum, null)
         this.$root.toast(sum)
       }

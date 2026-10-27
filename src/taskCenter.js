@@ -151,9 +151,19 @@ async function pump() {
       task.total = Number(p.total) || 0
       task.index = p.index != null ? Number(p.index) : task.index
       task.text = p.label || task.text || ''
+      // 🔴 首帧接力（2026-10-26）：run 内部把「这一镜接上的尾帧 / 重生成的提示词」随 progress 透出来，
+      //   供订阅方（StageShots）就地更新 UI（首帧缩略图 + 提示词文本）。存到 task.chain 供 progress 事件读取。
+      //   🔴 每次 report 都重置（无 chain 时清空），避免「非接力的 report」残留上一镜的 chain 数据 → 订阅方重复更新。
+      task.chain = p.chain || null
       emit('progress', { type: 'progress', task })
     }
-    const result = await task._run(report)
+    const result = await task._run(report, () => task._cancelRequested)
+    // 🔴 整批停止（2026-10-24）：run 内部 mayBreak 提前返回（shouldStop 命中），没抛异常。
+    //   但任务确实被用户取消了 —— 这里补一道判定，让状态走 canceled 而不是 done，
+    //   否则订阅方会误 toast「批量视频已全部生成完成」。
+    if (task._cancelRequested) {
+      throw new Error('用户已停止生成')
+    }
     task.status = 'done'
     task.result = result
     state.recent.unshift(task)

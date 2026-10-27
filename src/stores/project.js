@@ -219,7 +219,12 @@ export const useProject = defineStore('project', {
         this.expanded.add('p' + r.id)
         const p = this.tree.find(x => x.id === r.id)
         if (p && p.episodes.length) await this.openEpisode(p.episodes[0].id)
-      } catch (e) { this.fail(e) }
+      } catch (e) {
+        this.fail(e)
+        // 🔴 重名错误上抛（2026-10-26）：主进程 DUPLICATE_PROJECT 兜底时，让调用方（App.vue）
+        //    也能拿到「已存在」，而不是被这里吞掉只剩一个 error 状态。
+        if (e && (/已存在|DUPLICATE_PROJECT/.test(String(e.message || e)))) throw e
+      }
     },
     async addFolder(projectId, parentId, name) {
       try {
@@ -404,7 +409,8 @@ export const useProject = defineStore('project', {
   },
   /**
    * 置一张「自动建卡」票据：分镜生成完之后由 StageShots 调，StageChars 收到后自己跑
-   * 「按档案生成图片提示词 → 识别装扮 → 建派生卡」（出图与填镜头仍是用户手点的两个按钮）。
+   * 「识别装扮 → 建派生卡」（出图与填镜头仍是用户手点的两个按钮）。
+   * 🔴 2026-10-26 起「按档案生成图片提示词」不再走此票，改由用户手动点「批量生成提示词」/ 单卡生成按钮。
    *
    * 🔴 只置票、不执行（执行要动 cards / busy，都是组件的事）。
    * 🔴 `at` 每次都换新值：用户对**同一集**再点一次「生成分镜」，对象引用必须变，

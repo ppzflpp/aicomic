@@ -600,7 +600,9 @@ async function _startComfy() {
   logger.info('正在启动 ' + info.label + '…（静默启动，无控制台窗口；日志 ' + (sp.logFile || '—') + '）');
   const t0 = Date.now();
   // Desktop 冷启动要等界面出来才起 8188，实测可超 60s → 给足 150s，期间每 15s 打一条进度
-  const w = await waitHealth('comfyui', 150000, { label: 'ComfyUI', stepMs: 15000 });
+  // 🔴 2026-10-24：等 ComfyUI 就绪的这段漫长等待要能响应「停止」——用户点了停止就立刻放弃等待，
+  //   别让启动检查傻等满 150s（否则批量视频点了停止却像没反应，其实是卡在「拉起 ComfyUI」）。
+  const w = await waitHealth('comfyui', 150000, { label: 'ComfyUI', stepMs: 15000, shouldAbort: () => inference.isCancelRequested() });
   const ok = w === 'ok';
   const ms = Date.now() - t0;
   if (ok) logger.ok('ComfyUI 已就绪（' + (ms / 1000).toFixed(1) + 's）');

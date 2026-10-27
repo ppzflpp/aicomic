@@ -179,6 +179,11 @@ body{
   cursor:pointer; font-size:13px; white-space:nowrap; color:#96a1b2;
   transition:background .15s, color .15s, box-shadow .15s;
 }
+/* 🔴 标题过长时省略、操作按钮组（.ops）始终可见（2026-10-23）：
+   标题文本用 .tree-title 承接 flex 剩余空间并 ellipsis 截断；
+   .ops 固定不收缩，否则长标题会把删除/配置按钮挤出可视区。 */
+.tree-row .tree-title{flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;}
+.tree-row .ops{flex:0 0 auto;}
 .tree-row:hover{background:rgba(255,255,255,.05); color:#cfd7e3;}
 .tree-row.active{
   background:var(--grad-deep); color:#fff; font-weight:500;
@@ -312,6 +317,7 @@ body{
 @media (max-width:1200px){ .script-grid{grid-template-columns:1fr;} .script-col + .script-col{border-left:none; padding-left:0; border-top:1px solid var(--line-soft); padding-top:10px;} }
 /* 分镜列表行：左=分镜编辑 | 中=H3提示词 | 右=视频生成（各分区沿用原阶段锁定逻辑） */
 .shot-row{display:grid; grid-template-columns:minmax(250px,320px) minmax(0,1fr) minmax(230px,270px); gap:14px;
+  position:relative;
   border:1px solid var(--line-soft); border-radius:var(--r-md); padding:12px; margin-bottom:10px;
   background:linear-gradient(180deg,#161c28 0%,#131822 100%);}
 .shot-row:hover{border-color:#2b3646; box-shadow:var(--sh-sm);}
@@ -330,6 +336,41 @@ body{
 /* H3 提示词框：高度自适应，占满本区剩余空间（整行高度仍由 grid 决定，内容超出在框内滚动） */
 .shot-row .zone-2 .f.ta-main{flex:1 1 auto; min-height:0; display:flex; flex-direction:column;}
 .shot-row .zone-2 .f.ta-main textarea{flex:1 1 auto; min-height:130px; height:auto;}
+/* 中英双栏（2026-10-27）：英文框 + 可选中文译文栏。默认单栏，展开后双栏 + 中间 ← 箭头 */
+.shot-row .zone-2 .f.ta-main .prompt-duo{display:flex; flex-direction:row; gap:8px; flex:1 1 auto; min-height:0; position:relative;}
+.shot-row .zone-2 .f.ta-main .prompt-duo .pd-col{position:relative; display:flex; flex-direction:column; min-width:0; flex:1 1 0;}
+.shot-row .zone-2 .f.ta-main .prompt-duo .pd-col textarea{flex:1 1 auto; min-height:130px; height:auto; width:100%;}
+/* 中文译文框：与英文框完全一致的默认 textarea 样式（不另设背景色，靠位置区分） */
+/* 右下角一体式按钮组（贴英文框右下角，右/下边缘与框边框重合，右下圆角与框一致） */
+.shot-row .zone-2 .f.ta-main .pd-tools{position:absolute; right:0; bottom:0; display:flex; align-items:stretch;
+  background:#1a2434; border:1px solid #2c3646; border-radius:0 0 7px 0;
+  border-top:none; border-left:none; overflow:hidden; z-index:2;}
+.shot-row .zone-2 .f.ta-main .pd-tool{min-width:26px; height:24px; padding:0 8px; border:0; background:transparent;
+  cursor:pointer; color:#7d8798; font-size:11px; font-weight:500; line-height:24px; display:flex; align-items:center;
+  justify-content:center; transition:color .12s,background .12s;}
+.shot-row .zone-2 .f.ta-main .pd-tool:hover{background:#243142; color:#60a5fa;}
+.shot-row .zone-2 .f.ta-main .pd-tool:disabled{opacity:.45; cursor:not-allowed;}
+.shot-row .zone-2 .f.ta-main .pd-tool.on{background:#243142; color:#60a5fa;}
+.shot-row .zone-2 .f.ta-main .pd-tool .ico{width:13px; height:13px; display:block;}
+.shot-row .zone-2 .f.ta-main .pd-zh-btn{color:#60a5fa; text-transform:lowercase;}
+.shot-row .zone-2 .f.ta-main .pd-sep{width:1px; background:#2c3646; margin:4px 0;}
+.shot-row .zone-2 .f.ta-main .pd-toggle .ico{color:#7d8798;}
+.shot-row .zone-2 .f.ta-main .pd-toggle:hover .ico{color:#60a5fa;}
+/* 整区加载遮罩（翻译中盖住整个文本编辑区） */
+.shot-row .zone-2 .f.ta-main .pd-loading{position:absolute; inset:0; border-radius:10px; z-index:3;
+  background:rgba(15,20,29,.32); display:flex; align-items:center; justify-content:center; backdrop-filter:blur(1px);}
+.shot-row .zone-2 .f.ta-main .pd-loading-txt{font-size:12px; font-weight:500; color:#fff; background:rgba(0,0,0,.55);
+  border-radius:8px; padding:6px 14px; letter-spacing:.02em;}
+/* 中间覆盖按钮（胶囊形，压低、箭头指向左：中文 → 英文） */
+.shot-row .zone-2 .f.ta-main .pd-arrow{flex:0 0 auto; align-self:center; width:40px; height:22px; padding:0;
+  border:1px solid #2c3646; background:#0b1017; border-radius:11px; display:flex; align-items:center; justify-content:center;
+  cursor:pointer; color:#60a5fa; transition:color .12s,background .12s,border-color .12s;}
+.shot-row .zone-2 .f.ta-main .pd-arrow:hover{background:#1a2434; color:#60a5fa; border-color:#3b82f6;}
+.shot-row .zone-2 .f.ta-main .pd-arrow:disabled{opacity:.45; cursor:not-allowed;}
+.shot-row .zone-2 .f.ta-main .pd-arrow .ico{width:14px; height:14px; display:block;}
+/* 中文译文过期提示条 */
+.shot-row .zone-2 .f.ta-main .pd-stale{flex:0 0 auto; font-size:11px; line-height:1.4; color:#854f0b; background:#faeeda;
+  border-radius:6px; padding:3px 7px; margin-bottom:4px;}
 /* 视频分辨率挪到本区底部（「生成视频」按钮左边）：去掉上外边距、与按钮同排对齐 */
 .shot-row .zone-2 .zone-foot .card-res{flex:0 0 auto; margin:0;}
 .shot-row .zone-2 .zone-foot .card-res select{max-width:126px;}
@@ -871,6 +912,29 @@ input[type=search]:focus{
 }
 .del-btn.head-x:hover{opacity:1; border-color:rgba(226,75,74,.9);}
 .del-btn.head-x:disabled{opacity:.3; cursor:not-allowed;}
+/* 锁定/解锁按钮（2026-10-27）：与删除卡同款圆形描边，未锁灰色、已锁琥珀色以示「受限」 */
+.lock-btn.head-x{
+  flex-shrink:0; width:18px; height:18px; padding:0; border-radius:50%;
+  border:1px solid rgba(124,135,152,.5); opacity:.75; display:flex; align-items:center; justify-content:center;
+  font-size:10px; line-height:1; cursor:pointer; background:none; color:#7d8798;
+}
+.lock-btn.head-x:hover{opacity:1; border-color:#60a5fa; color:#60a5fa;}
+.lock-btn.head-x.locked{opacity:.95; border-color:rgba(245,158,11,.65); color:#f59e0b;}
+.lock-btn.head-x.locked:hover{opacity:1; border-color:#f59e0b; color:#f59e0b;}
+/* 锁定蒙版（2026-10-27）：盖住整个分镜行，拦截所有点击；中间居中显示提示框 */
+.shot-row .lock-mask{
+  position:absolute; inset:0; z-index:20; border-radius:var(--r-md);
+  background:rgba(10,14,21,.72); backdrop-filter:blur(2px);
+  display:flex; align-items:center; justify-content:center; cursor:not-allowed;
+}
+.shot-row .lock-mask-box{
+  display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; padding:22px 30px;
+  background:linear-gradient(180deg,#1a2230 0%,#151c28 100%);
+  border:1px solid rgba(245,158,11,.35); border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,.5);
+}
+.shot-row .lock-mask-ico{font-size:26px; line-height:1;}
+.shot-row .lock-mask-title{font-size:16px; font-weight:600; color:#e2e8f2;}
+.shot-row .lock-mask-sub{font-size:12px; color:#9aa8ba;}
 /* 「刷新提示词」图标按钮（2026-09-27，Dragon）：改成与删除卡同款风格（红色描边圆、无光晕）；svg 用 currentColor 跟随红色 */
 .ta-head .btn.icon{
   flex-shrink:0; width:18px; height:18px; padding:0; border-radius:50%;
@@ -1276,15 +1340,6 @@ input[type=search]:focus{
 }
 .llm-sw.on .sw-track{background:#0ea5e9;}
 .llm-sw.on .sw-knob{transform:translateX(12px); background:#fff;}
-/* 声音档位开关（2026-10-20）：开 = 纯对白（特殊模式）→ 琥珀色。
-   它和「云端生成」那种常规开关不是一类东西（会改变成片的声音形态），配色必须能一眼分辨。 */
-.llm-sw.audio-sw.on{
-  border-color:rgba(251,191,36,.6); background:rgba(251,191,36,.16); color:#fde68a;
-  box-shadow:inset 0 0 0 1px rgba(251,191,36,.12);
-}
-.llm-sw.audio-sw.on:hover{border-color:rgba(251,191,36,.8); color:#fef3c7;}
-.llm-sw.audio-sw.on .sw-track{background:#d97706;}
-.llm-sw.audio-sw.on .sw-knob{background:#fffbeb;}
 .llm-ck-hint{font-size:12px; color:#7b8798;}
 .llm-sw.on + .llm-ck-hint{color:#8ab4f8;}
 
@@ -1495,6 +1550,51 @@ input[type=search]:focus{
 .modal-note{font-size:12px; color:var(--sub); line-height:1.85; margin-bottom:16px;}
 .modal-note b{color:#cbd5e1; font-weight:600;}
 .modal-ops{display:flex; align-items:center; gap:9px;}
+/* 分镜生成三阶段加载框（2026-10-26 改版）：只遮功能区（Teleport 到 .main 内的 #stage-mask-host），
+   更像「加载中」而非对话框 —— 大号旋转圈 + 标题 + 实时提示语 + 停止按钮，去掉了卡片对话框的边框感。
+   遮罩用 absolute 相对 .main（position:relative），bottom 避让底部状态栏（30px）那行「运行日志」。 */
+#stage-mask-host{position:static; flex:none; height:0; overflow:visible;}
+.gen-mask{
+  position:absolute; inset:0; bottom:30px; z-index:60;
+  background:rgba(4,6,10,.55); backdrop-filter:blur(3px);
+  display:flex; align-items:center; justify-content:center;
+  animation:fadeIn .15s ease;
+}
+.gen-card{
+  display:flex; align-items:center; gap:20px; padding:28px 34px;
+  border-radius:16px;
+  background:linear-gradient(180deg,rgba(22,28,40,.92),rgba(16,21,31,.92));
+  border:1px solid rgba(59,130,246,.22);
+  box-shadow:0 18px 50px rgba(0,0,0,.5), 0 0 0 1px rgba(59,130,246,.06), 0 0 40px rgba(56,189,248,.08);
+  animation:popIn .16s ease;
+}
+.gen-ring{
+  width:52px; height:52px; flex-shrink:0; position:relative;
+  display:flex; align-items:center; justify-content:center;
+}
+.gen-ring::before{
+  content:""; position:absolute; inset:0; border-radius:50%;
+  background:radial-gradient(circle, rgba(56,189,248,.18), transparent 70%);
+  animation:pulse 1.6s ease-in-out infinite;
+}
+.gen-spin{
+  width:34px; height:34px; display:inline-block; border-radius:50%;
+  border:3px solid rgba(125,211,252,.22); border-top-color:#38bdf8;
+  animation:spin .8s linear infinite;
+}
+.gen-txt{display:flex; flex-direction:column; gap:5px; min-width:0;}
+.gen-title{font-size:15px; font-weight:600; color:#eaf1fb; letter-spacing:.02em;}
+.gen-stage{font-size:13px; color:#9fc3e6; line-height:1.6; word-break:break-all; max-width:min(560px,60vw);}
+.gen-live{font-size:12px; color:#7dd3fc; line-height:1.5; font-variant-numeric:tabular-nums;}
+.gen-stop{
+  flex-shrink:0; margin-left:6px;
+  background:#1e3a8a; border-color:#2b4d8f; color:#bfdbfe;
+  padding:7px 16px; font-size:13px;
+}
+.gen-stop:hover:not(:disabled){background:#1e40af; border-color:#4d7fd6; color:#e8f2ff;}
+.gen-stop:disabled{opacity:.55; cursor:not-allowed;}
+@keyframes pulse{0%,100%{opacity:.5; transform:scale(.86)} 50%{opacity:1; transform:scale(1)}}
+
 
 /* ================= 第5块 参考素材（都可不选） ================= */
 .refs{
@@ -1581,6 +1681,49 @@ input[type=search]:focus{
 /* 上一镜还没出片 → 置灰不可点（hover 提示里说清了为什么） */
 .ref-add:disabled{cursor:not-allowed; opacity:.42;}
 .ref-add:disabled:hover{border-color:var(--line); color:#9fb0c6; background:rgba(255,255,255,.04);}
+/* 参考图复合入口（2026-10-27）：上下两层 —— 上层整块「参考图」弹挑图浮层；下层「+ 本地 / + 角色库」。
+   占位与普通 .ref-add 同宽（64px 3:4 竖框），但内部是 flex 纵向排布。
+   🔴 上层与下层要挨近：main 用固定行高不撑满，sub 紧贴其后。 */
+.ref-add.ref-add-comp{display:flex; flex-direction:column; align-items:center; justify-content:center; padding:0; overflow:hidden; cursor:default;}
+.ref-add-comp .ref-add-main{
+  width:100%; border:none; background:transparent; color:#9fb0c6;
+  font-size:11px; cursor:pointer; display:flex; align-items:center; justify-content:center;
+  padding:4px 2px 2px;
+}
+.ref-add-comp .ref-add-main:hover{background:rgba(34,197,94,.16); color:#dcfce7;}
+.ref-add-comp .ref-add-sub{display:flex; flex-direction:column; align-items:center;}
+.ref-add-comp .ref-add-sub-btn{
+  border:none; background:transparent; color:#7c8798; font-size:10px; line-height:1.15;
+  padding:1px 2px; cursor:pointer; white-space:nowrap; text-align:center;
+}
+.ref-add-comp .ref-add-sub-btn:hover{background:rgba(56,189,248,.16); color:#e0f2fe;}
+/* 就地挑图浮层（2026-10-27） */
+.lib-pick-modal{max-width:520px;}
+.lib-pick-tabs{display:flex; gap:6px; padding:0 14px 10px;}
+.lib-pick-tabs .lp-tab{
+  border:1px solid var(--line); background:transparent; color:#9fb0c6; font-size:12px;
+  padding:4px 14px; border-radius:999px; cursor:pointer;
+}
+.lib-pick-tabs .lp-tab.on{background:rgba(56,189,248,.18); color:#7dd3fc; border-color:rgba(56,189,248,.5);}
+.lib-pick-body{max-height:56vh; overflow-y:auto;}
+.lp-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(76px, 1fr)); gap:10px;}
+.lp-item{cursor:pointer; border-radius:8px; padding:4px; border:1px solid transparent;}
+.lp-item:hover{border-color:rgba(56,189,248,.5); background:rgba(56,189,248,.08);}
+/* 已添加：置灰 + 不可点 + 角标「已添加」（2026-10-27） */
+.lp-item.added{cursor:default; opacity:.45; filter:grayscale(.6);}
+.lp-item.added:hover{border-color:transparent; background:transparent;}
+.lp-thumb{
+  position:relative; width:100%; aspect-ratio:3/4; border-radius:6px; overflow:hidden; background:#0b0f16;
+  border:1px solid var(--line); display:flex; align-items:center; justify-content:center;
+}
+.lp-thumb img{width:100%; height:100%; object-fit:contain; display:block;}
+.lp-thumb .ph{font-size:22px; color:#4a5568;}
+.lp-added{
+  position:absolute; left:3px; top:3px; font-size:9.5px; line-height:1; padding:2px 4px; border-radius:4px;
+  background:rgba(34,197,94,.9); color:#052e16; font-weight:500;
+}
+.lp-name{font-size:11px; color:#cfd9e6; text-align:center; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.lp-count{font-size:10px; color:#7c8798; text-align:center;}
 /* 首帧来源是「上一镜末帧」且已过期（上一镜重新出片了）→ 缩略图描橙边 + 左上角标红 */
 .ref-thumb.framestale{border-color:rgba(251,191,36,.85); box-shadow:0 0 0 1px rgba(251,191,36,.35);}
 .ref-thumb.framestale .rtag{color:#fde68a; border-color:rgba(251,191,36,.5); background:rgba(60,40,6,.8);}
@@ -1706,6 +1849,10 @@ input[type=search]:focus{
   background:#141a26; border:1px solid #232d3e; border-radius:var(--r-sm); color:#e8eefc;
 }
 .proj-dialog .proj-name:focus{outline:none; border-color:var(--blue);}
+/* 🔴 项目名重名/空名的内联错误提示（2026-10-26）：直接显示在输入框下方，绝不被弹窗遮住 */
+.proj-dialog .proj-name-err{
+  margin:6px 22px 0; font-size:12px; color:#ff6b6b; line-height:1.4;
+}
 .proj-grid{display:flex; flex-direction:column; gap:8px; padding:16px 22px 4px;}
 /* 分辨率 ×3 + 视频质量 = 2×2 紧凑格：弹窗里四轴的选项卡很高，
    顶部四行能省一行（~116px），制作调性的卡片才不至于整块折到首屏外面看不见 */

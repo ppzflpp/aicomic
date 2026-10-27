@@ -23,52 +23,45 @@
           <div class="vg-lab">参考素材
             <span class="vg-hint">传什么决定生成方式，自动判定</span>
           </div>
-          <div class="vg-slots">
-            <div class="vg-slot" :class="{has: refImages.length}" title="添加参考图（可多选，生成时按参考图风格/角色走）" @click="pick('refImages')">
-              <span class="vg-plus">＋</span>
-              <span>参考图</span>
-              <span class="vg-cnt" v-if="refImages.length">{{ refImages.length }}</span>
+          <!-- 🔴 视频生成页专属素材区（2026-10-23）：复用全局 .ref-thumb/.rtag/.img-x/.ref-add 缩略图样式，
+               但容器从全局的「单行横向滚动」改成网格自动换行（.vg-ref-grid，仅本页生效，不动分镜脚本）。
+               参考图/参考视频角标带编号（1、2、3…），对应 H3 提示词里的 <Picture N> / <Video N>。 -->
+          <div class="ref-row vg-ref-grid">
+            <!-- 参考图（编号 = 注入顺序 = <Picture N>） -->
+            <div v-for="(r,i) in refImages" :key="'ri'+r.path" class="ref-thumb">
+              <img v-if="!missing(r.path)" :src="imgSrc(r.path)" :title="r.path">
+              <span v-else class="vg-miss-thumb">已缺失</span>
+              <span class="rtag">参考图 {{ i+1 }}</span>
+              <button class="img-x" title="移除" @click.stop="rmRef('refImages', i)">✕</button>
             </div>
-            <div class="vg-slot" :class="{has: refVideos.length}" title="添加参考视频（可多选，动作/运镜参考）" @click="pick('refVideos')">
-              <span class="vg-plus">＋</span>
-              <span>参考视频</span>
-              <span class="vg-cnt" v-if="refVideos.length">{{ refVideos.length }}</span>
+            <button class="ref-add" title="从本地选参考图（可多选）" @click="pick('refImages')">＋参考图</button>
+
+            <!-- 参考视频（编号 = <Video N>） -->
+            <div v-for="(r,i) in refVideos" :key="'rv'+r.path" class="ref-thumb vid">
+              <video v-if="!missing(r.path)" :src="imgSrc(r.path)" muted preload="metadata"></video>
+              <span v-else class="vg-miss-thumb">已缺失</span>
+              <span class="rtag vid">视频 {{ i+1 }}</span>
+              <button class="img-x" title="移除" @click.stop="rmRef('refVideos', i)">✕</button>
             </div>
-            <div class="vg-slot" :class="{has: firstFrame}" title="首帧：视频开头画面" @click="pickFirst">
-              <span class="vg-plus">＋</span>
-              <span>首帧</span>
-              <span class="vg-cnt" v-if="firstFrame">1</span>
+            <button class="ref-add wide" title="从本地选参考视频（可多选）" @click="pick('refVideos')">＋参考视频</button>
+
+            <!-- 首帧 -->
+            <div v-if="firstFrame" class="ref-thumb">
+              <img v-if="!missing(firstFrame)" :src="imgSrc(firstFrame)" :title="firstFrame">
+              <span v-else class="vg-miss-thumb">已缺失</span>
+              <span class="rtag">首帧</span>
+              <button class="img-x" title="移除首帧" @click.stop="firstFrame=''">✕</button>
             </div>
-            <div class="vg-slot" :class="{has: lastFrame}" title="尾帧：视频结尾画面" @click="pickLast">
-              <span class="vg-plus">＋</span>
-              <span>尾帧</span>
-              <span class="vg-cnt" v-if="lastFrame">1</span>
+            <button v-else class="ref-add" title="选一张图作为首帧（视频开头画面）" @click="pickFirst">＋首帧</button>
+
+            <!-- 尾帧 -->
+            <div v-if="lastFrame" class="ref-thumb">
+              <img v-if="!missing(lastFrame)" :src="imgSrc(lastFrame)" :title="lastFrame">
+              <span v-else class="vg-miss-thumb">已缺失</span>
+              <span class="rtag">尾帧</span>
+              <button class="img-x" title="移除尾帧" @click.stop="lastFrame=''">✕</button>
             </div>
-          </div>
-          <!-- 素材缩略图：已选的显示出来，文件被删/移走时打「已缺失」标记 -->
-          <div class="vg-refs" v-if="refImages.length || refVideos.length || firstFrame || lastFrame">
-            <div v-for="(r,i) in refImages" :key="'ri'+r.path" class="vg-ref">
-              <img v-if="!missing(r.path)" :src="imgSrc(r.path)">
-              <span v-else class="vg-miss">已缺失</span>
-              <button class="vg-refx" @click.stop="rmRef('refImages', i)">✕</button>
-            </div>
-            <div v-for="(r,i) in refVideos" :key="'rv'+r.path" class="vg-ref vid">
-              <span class="vg-vidtag">视频</span>
-              <span v-if="missing(r.path)" class="vg-miss">已缺失</span>
-              <button class="vg-refx" @click.stop="rmRef('refVideos', i)">✕</button>
-            </div>
-            <div v-if="firstFrame" class="vg-ref">
-              <img v-if="!missing(firstFrame)" :src="imgSrc(firstFrame)">
-              <span v-else class="vg-miss">已缺失</span>
-              <span class="vg-role">首帧</span>
-              <button class="vg-refx" @click.stop="firstFrame=''">✕</button>
-            </div>
-            <div v-if="lastFrame" class="vg-ref">
-              <img v-if="!missing(lastFrame)" :src="imgSrc(lastFrame)">
-              <span v-else class="vg-miss">已缺失</span>
-              <span class="vg-role">尾帧</span>
-              <button class="vg-refx" @click.stop="lastFrame=''">✕</button>
-            </div>
+            <button v-else class="ref-add" title="选一张图作为尾帧（视频结尾画面）" @click="pickLast">＋尾帧</button>
           </div>
         </div>
 
@@ -116,11 +109,10 @@
 
       <div class="vg-bottom">
         <div class="vg-mode" v-if="modeHint">已自动判定：{{ modeHint }}</div>
-        <button class="btn vg-genbtn" :disabled="!canGen || running" @click="generate">
-          {{ running ? '生成中…' : '生成视频' }}
+        <button class="btn vg-genbtn" :disabled="!canGen" @click="generate">
+          生成视频
         </button>
       </div>
-      <div class="vg-gensub err" v-if="errMsg">{{ errMsg }}</div>
     </div>
 
     <!-- ═══ 右：结果画廊 ═══ -->
@@ -138,10 +130,11 @@
       </div>
       <div class="vg-gallery">
         <div class="vg-flow">
-          <div v-if="running" class="vg-tile genning">
+          <!-- 🔴 多任务排队（2026-10-23）：按任务中心活跃列表渲染，每个任务一张卡片，区分「生成中/排队中」 -->
+          <div v-for="t in vgTasks" :key="t.id" class="vg-tile genning" :class="{queued: t.status === 'queued'}">
             <i class="spin big"></i>
-            <span class="g-txt">{{ runningText || '生成中…' }}</span>
-            <button class="vg-stop" @click="stop">停止</button>
+            <span class="g-txt">{{ t.status === 'running' ? (t.text || '生成中…') : '排队中…' }}</span>
+            <button class="vg-stop" @click="stopTask(t.id)">取消</button>
           </div>
           <div v-for="r in resultsDesc" :key="r.path" class="vg-tile">
             <div class="vg-ph" @click="preview(r)">
@@ -152,6 +145,7 @@
                 <div class="vg-ovb">
                   <button class="vg-m" title="把这次生成的配置回填到左侧，继续微调" @click.stop="fillBack(r)">回填配置</button>
                   <button class="vg-m" title="查看这条视频的用户原提示词与重写后的提示词" @click.stop="viewPrompt(r)">查看提示词</button>
+                  <button class="vg-m del" title="把这段视频从硬盘永久删除" @click.stop="askDelete(r, 'results')">删除</button>
                 </div>
               </div>
             </div>
@@ -165,11 +159,12 @@
                 <div class="vg-ovb">
                   <button class="vg-m" title="把这次生成的配置回填到左侧，继续微调" @click.stop="fillBack(h)">回填配置</button>
                   <button class="vg-m" title="查看这条视频的用户原提示词与重写后的提示词" @click.stop="viewPrompt(h)">查看提示词</button>
+                  <button class="vg-m del" title="把这段视频从硬盘永久删除" @click.stop="askDelete(h, 'history')">删除</button>
                 </div>
               </div>
             </div>
           </div>
-          <div v-if="!results.length && !history.length" class="vg-tile empty">
+          <div v-if="!results.length && !history.length && !vgTasks.length" class="vg-tile empty">
             <span>还没有生成记录<br>左侧填好提示词点「生成视频」</span>
           </div>
         </div>
@@ -198,6 +193,24 @@
         </div>
       </div>
     </div>
+
+    <!-- ═══ 删除确认框 ═══ -->
+    <div class="vg-modal" v-if="delAsk" @click.self="delAsk=null">
+      <div class="vg-modal-box" style="width:460px">
+        <div class="vg-modal-head">
+          <span class="vg-modal-title">删除这段视频</span>
+          <button class="vg-modal-x" @click="delAsk=null">✕</button>
+        </div>
+        <div class="vg-modal-body">
+          <p class="vg-del-tip">确定要从硬盘<b>永久删除</b>这段视频吗？删除后不可恢复。</p>
+          <p class="vg-del-path">{{ delAsk.path }}</p>
+        </div>
+        <div class="vg-modal-foot">
+          <button class="btn ghost" @click="delAsk=null">取消</button>
+          <button class="btn danger" @click="doDelete">确认删除</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -214,7 +227,7 @@
  *  5. 产物归档 <workspace>/视频生成/<日期>/，历史由 vidgen:history 列举（带真实分辨率/时长/快照）。 */
 import { useProject as useProjectStore } from './stores/project.js'
 import { vgState } from './vidgenState.js'
-import { subscribe, submit, cancel, activeCount } from './taskCenter.js'
+import { subscribe, submit, cancel, activeCount, activeTasks } from './taskCenter.js'
 import { mediaUrl } from './mediaUrl.js'
 
 const TYPE = 'vidgen'
@@ -232,12 +245,11 @@ export default {
       aspect: '16:9',
       seconds: 5,
       rewriteOn: false,   // 「提示词重写」开关：开启后用 H3 官方规范重写 prompt 再提交
-      running: false,
-      runningText: '',
-      errMsg: '',
       results: [],        // 本次会话产物 [{path, width, height, durationSec, ms, at, snapshot}]
       history: [],        // <workspace>/视频生成/ 历史产物
       promptView: null,   // 查看提示词弹框数据 {raw, rewritten}
+      delAsk: null,       // 删除确认框数据 {path, from}（from='results'|'history'）
+      _submitting: false, // 🔴 提交锁：健康检查/重写是异步 await，期间防止用户连点重复提交任务
       _missing: new Set() // 本次会话里探测过「文件不存在」的路径缓存（回填时打标记）
     }
   },
@@ -287,11 +299,22 @@ export default {
       return '文生视频 T2VA'
     },
     canGen() {
-      return this.prompt.trim().length > 0 && !this.running
+      // 🔴 多任务排队（2026-10-23）：不再因为「有任务在跑」就禁用按钮。
+      //    只要提示词非空、且当前这次点击还没提交完（_submitting 防连点）就可点。
+      return this.prompt.trim().length > 0 && !this._submitting
     },
     /** 本次结果按生成时间倒序（最新在前） */
     resultsDesc() {
       return this.results.slice().sort((a, b) => (b.at || 0) - (a.at || 0))
+    },
+    /** 本模块当前活跃任务（在跑 + 排队），进行中在前、排队在后。change 订阅会触发重渲染。 */
+    vgTasks() {
+      return activeTasks().filter(t => t.type === TYPE).map(t => ({
+        id: t.id,
+        status: t.status,           // running | queued
+        label: t.label || '视频生成',
+        text: t.text || ''
+      })).sort((a, b) => (a.status === 'running' ? -1 : 1) - (b.status === 'running' ? -1 : 1))
     }
   },
   watch: {
@@ -304,19 +327,26 @@ export default {
     }
     if (!this.tier) this.tier = (this.tierOptions.find(t => t.default) || this.tierOptions[0] || {}).key || ''
     this.reloadHistory()
-    // 订阅任务中心事件：本地正在跑的任务结束 → 刷新结果；进度 → 更新 runningText
+    // 订阅任务中心事件：本地正在跑的任务结束 → 刷新结果；进度 → 更新侧栏悬浮文案
     this._offDone = subscribe('done', t => { if (t && t.task && t.task.type === TYPE) this.onTaskDone(t.task) })
     this._offFail = subscribe('fail', t => { if (t && t.task && t.task.type === TYPE) this.onTaskDone(t.task) })
     this._offCancel = subscribe('cancel', t => { if (t && t.task && t.task.type === TYPE) this.onTaskDone(t.task) })
     this._offProgress = subscribe('progress', t => { if (t && t.task && t.task.type === TYPE) this.onTaskProgress(t.task) })
-    // 切回本页时若有任务在跑 → 恢复「生成中」显示
-    if (activeCount(TYPE) > 0) { this.running = true; this.runningText = '' }
+    // 🔴 侧栏闪点统一走 change 事件重算（2026-10-23）：done/fail/cancel 事件的 emit 发生在
+    //    bumpType(-1) 之前，那时 activeCount 还是 1 → 在 done 里算会误判成「还有任务」导致圆点常亮。
+    //    change 事件在 finally 的 bumpType(-1) 之后 emit，读到的 activeCount 才是准的。
+    this._offChange = subscribe('change', () => {
+      vgState.busy = activeCount(TYPE) > 0
+      if (!vgState.busy) vgState.text = ''
+    })
+    // 切回本页时若有任务在跑 → 结果区任务卡片由 vgTasks 直接读任务中心，无需恢复本地状态
   },
   beforeUnmount() {
     this._offDone && this._offDone()
     this._offFail && this._offFail()
     this._offCancel && this._offCancel()
     this._offProgress && this._offProgress()
+    this._offChange && this._offChange()
   },
   methods: {
     onShow() { this.reloadHistory() },
@@ -390,7 +420,8 @@ export default {
     },
     reveal(p) { window.studio.revealFile(p) },
     openOutDir() { window.studio.openPath(this.st.workspace + '\\视频生成\\' + this.today) },
-    toast(msg) { this.errMsg = msg; clearTimeout(this._t); this._t = setTimeout(() => { this.errMsg = '' }, 3000) },
+    // 统一走全局底部悬浮 toast（App.vue 的 this.$root.toast），别再内联到「生成视频」按钮下方
+    toast(msg, ms) { if (this.$root && this.$root.toast) this.$root.toast(msg, ms) },
     async reloadHistory() {
       try {
         const list = await window.studio.vidHistory(this.st.workspace) || []
@@ -398,6 +429,14 @@ export default {
         this.history = list.filter(f => !have.has(f.path))
       } catch (_) { this.history = [] }
     },
+    /** 取消单个任务（排队中的立即取消；进行中的标记取消 + 中断 ComfyUI） */
+    stopTask(id) {
+      cancel(id)
+      // 取消的是正在跑的那个 → 同步中断底层 ComfyUI（否则要等当前步跑完才停）
+      const running = activeTasks().find(t => t.type === TYPE && t.status === 'running' && t.id === id)
+      if (running) window.studio.comfyCancel('full')
+    },
+    /** 停止全部：取消所有本模块任务 + 中断 ComfyUI */
     stop() {
       // 取消当前 vidgen 任务：任务中心标记取消 + 底层中断 ComfyUI
       const tasks = (this._stTaskIds || [])
@@ -405,15 +444,11 @@ export default {
       window.studio.comfyCancel('full')
     },
     onTaskProgress(task) {
-      this.running = true
-      this.runningText = task.text || '生成中…'
-      vgState.busy = true
+      // 结果区任务卡片的文案直接读任务中心的 task.text，这里只同步侧栏悬浮文案
       vgState.text = task.text || '出视频中'
     },
     onTaskDone(task) {
-      this.running = false
-      this.runningText = ''
-      vgState.busy = activeCount(TYPE) > 0
+      // vgState.busy 由 change 订阅统一维护（时序正确），这里只负责把产物回填进结果区
       vgState.text = ''
       if (task && task.status === 'done' && task.result && task.result.videos) {
         for (const v of task.result.videos) this.results.push(v)
@@ -450,45 +485,83 @@ export default {
         rewritten: s.promptRewritten || ''
       }
     },
+    /** 删除入口：弹确认框（记录来源，删除后只从对应数组局部移除，不整页重读） */
+    askDelete(r, from) {
+      this.delAsk = { path: r.path, from }
+    },
+    /** 确认删除：删主文件 + 同名 .json 旁车（存生成快照），然后只从对应数组 splice 掉这一项 */
+    async doDelete() {
+      const d = this.delAsk
+      if (!d) return
+      this.delAsk = null
+      const abs = d.path
+      try {
+        await window.studio.deleteFile(abs)
+        // 一并删旁车（<文件名>.json）：留着会成为孤儿，历史回读时读到没有主文件的快照
+        try { await window.studio.deleteFile(abs + '.json') } catch (_) { /* 旁车可能本就不存在 */ }
+        // 🔴 局部刷新：只移除被删那一项（按 path 定位），不 reloadHistory 全量重读
+        if (d.from === 'results') {
+          const i = this.results.findIndex(r => r.path === abs)
+          if (i >= 0) this.results.splice(i, 1)
+        } else {
+          const i = this.history.findIndex(h => h.path === abs)
+          if (i >= 0) this.history.splice(i, 1)
+        }
+        this.toast('已删除这段视频')
+      } catch (e) {
+        this.toast('删除失败：' + ((e && e.message) || e))
+      }
+    },
     async generate() {
       if (!this.canGen) return
       this.clampSeconds()   // 生成前夹取秒数到 4~15，防输入越界值直接点生成
-      this.errMsg = ''
-      this.running = true
-      this.runningText = '重写提示词中…'
-      vgState.busy = true
-      vgState.text = '重写提示词中…'
-      const dir = this.st.workspace + '\\视频生成\\' + this.today
-      // 解析档位推荐画布（宽高）；取不到回退 864×480
-      const t = this.tierOptions.find(x => x.key === this.tier)
-      const canvas = (t && t.canvas && t.canvas[this.aspect]) || '864x480'
-      const [w, h] = String(canvas).split('x').map(n => Number(n) || 0)
-      const width = w || 864, height = h || 480
-      const rawPrompt = this.prompt.trim()
-      // —— 提示词重写（H3 官方规范）：开启时先把用户原文重写成结构化提示词 ——
-      let finalPrompt = rawPrompt
-      let rewritten = ''
-      if (this.rewriteOn) {
+      // 🔴 提交锁（2026-10-23）：健康检查 + 提示词重写都是异步 await，期间用户可能再点一次「生成视频」。
+      //    用独立的 _submitting 锁防重入；注意不要用 running（running 现在表示「有任务在跑/排队」，
+      //    多任务场景下生成中也要允许继续点，所以按钮只依赖 canGen = prompt 非空 && !_submitting）。
+      this._submitting = true
+      try {
+        // —— 生成前先检查 ComfyUI 是否启动：没启动就提示手动启动，不提交任务 ——
+        // （否则任务会卡在「提交前对账」的超时链上，用户点停止也停不掉）
         try {
-          rewritten = await this.rewritePrompt(rawPrompt)
-          if (rewritten) finalPrompt = rewritten
-        } catch (e) {
-          // 重写失败不阻断生成：退回原文，并提示用户
-          this.toast('提示词重写失败，已按原文生成：' + ((e && e.message) || e))
+          const h = await window.studio.inferHealth()
+          if (h && h.comfyui === false) {
+            this.toast('检测到 ComfyUI 还没启动，暂时无法生成视频。请先打开 ComfyUI Desktop（桌面版）等它进入主界面，再回到本页点「生成视频」即可，软件会自动接管。', 5200)
+            return
+          }
+        } catch (_) {
+          // 健康探测本身失败（IPC 异常等）不阻断生成，交给提交阶段的报错兜底
         }
-      }
-      // 生成快照：本次生成的完整配置（写进产物旁车，供「回填配置」「查看提示词」用）
-      const snapshot = {
-        prompt: rawPrompt,                // 用户原提示词
-        promptRewritten: rewritten,       // 重写后的提示词（未开启/失败时为空串）
-        refImages: this.refImages.map(r => r.path),
-        refVideos: this.refVideos.map(r => r.path),
-        firstFrame: this.firstFrame,
-        lastFrame: this.lastFrame,
-        tier: this.tier,
-        aspect: this.aspect,
-        seconds: this.seconds
-      }
+        const dir = this.st.workspace + '\\视频生成\\' + this.today
+        // 解析档位推荐画布（宽高）；取不到回退 864×480
+        const t = this.tierOptions.find(x => x.key === this.tier)
+        const canvas = (t && t.canvas && t.canvas[this.aspect]) || '864x480'
+        const [w, h] = String(canvas).split('x').map(n => Number(n) || 0)
+        const width = w || 864, height = h || 480
+        const rawPrompt = this.prompt.trim()
+        // —— 提示词重写（H3 官方规范）：开启时先把用户原文重写成结构化提示词 ——
+        let finalPrompt = rawPrompt
+        let rewritten = ''
+        if (this.rewriteOn) {
+          try {
+            rewritten = await this.rewritePrompt(rawPrompt)
+            if (rewritten) finalPrompt = rewritten
+          } catch (e) {
+            // 重写失败不阻断生成：退回原文，并提示用户
+            this.toast('提示词重写失败，已按原文生成：' + ((e && e.message) || e))
+          }
+        }
+        // 生成快照：本次生成的完整配置（写进产物旁车，供「回填配置」「查看提示词」用）
+        const snapshot = {
+          prompt: rawPrompt,                // 用户原提示词
+          promptRewritten: rewritten,       // 重写后的提示词（未开启/失败时为空串）
+          refImages: this.refImages.map(r => r.path),
+          refVideos: this.refVideos.map(r => r.path),
+          firstFrame: this.firstFrame,
+          lastFrame: this.lastFrame,
+          tier: this.tier,
+          aspect: this.aspect,
+          seconds: this.seconds
+        }
       // 转纯对象送 IPC（避免响应式 Proxy 无法结构化克隆）
       const params = JSON.parse(JSON.stringify({
         prompt: finalPrompt,              // 发给模型的提示词（重写后或原文）
@@ -546,6 +619,17 @@ export default {
       this._stTaskIds = this._stTaskIds || []
       this._stTaskIds.push(id)
       // 任务跑完由 onTaskDone 收尾；这里不直接 await（交给任务中心串行调度）
+      // 🔴 提交成功后清空提示词与参考素材：让用户能立刻输入下一个任务（多任务排队）。
+      //    （快照已存进 params.snapshot，结果区「回填配置」能找回这一次的输入）
+      this.prompt = ''
+      this.refImages = []
+      this.refVideos = []
+      this.firstFrame = ''
+      this.lastFrame = ''
+      } finally {
+        // 无论成功/失败/健康检查拦截，都释放提交锁，允许下一次点击
+        this._submitting = false
+      }
     },
     /** 用 H3 官方规范重写提示词（走 llmChat，云端/本地大模型） */
     async rewritePrompt(raw) {
@@ -568,14 +652,39 @@ export default {
           : '- 基础模式三段式，按顺序输出：integrated_multimodal_description / overall_soundscape / non_diegetic_music。',
         '- 正文用英文写；对白、歌词、屏幕可见文字保留原文（中文就写中文）。',
         '- 用 [Shot 1] 开头（不加时间戳），后续镜头用 [Shot 2] At MM:SS.mmm, ... 标记切换点，时间递增且落在时长内。',
-        '- 每个镜头写清：构图、主体外观与位置、环境与光线、动作、运镜（动作类型+幅度+速度）、声音。',
+        '- 每个镜头写清：构图、主体位置、环境与光线、动作、运镜（动作类型+幅度+速度）、声音。',
+        (hasRef ? '- 🔴 有参考图时，主体的外观（发型、发色、服装、身材、肤色、配饰）**一律不要描述、不要猜测**——它们由参考图决定。只写主体的动作、位置、情绪与运镜。' : ''),
         '- 说话人用稳定 ID 如 (S1)；对白写 <d>[语言] 内容</d>；画外音写 says in an off-screen voiceover。',
         '- overall_soundscape 用 1~4 句英文总结环境音/动作音/非语言人声；non_diegetic_music 用 1~3 句写配乐，没有则 N/A。',
         '- 优先写具体可感的细节，避免 cinematic、beautiful 这类抽象词。',
         '',
+        hasRef
+          ? [
+            '## 🔴 参考素材引用规范（Ref2VA 模式强制，绝不可违反）：',
+            '模型实际收到的参考图/参考视频已按「<Picture 1>/<Picture 2>…（参考图）、<Video 1>/<Video 2>…（参考视频）」编号注入，编号见下方「用户需求」里的素材清单。',
+            '1. subject_definitions 里，每个可复用主体必须定义成 <Subject N>，并在定义内用 <Picture N> 或 <Video N> 指明它来自哪张图/哪段视频。例如：`<Subject 1> is the fighter in <Picture 1>.` 或 `<Subject 2> is the fighter in <Picture 2>.`',
+            '2. 🔴 **绝不要描述或猜测参考图里主体的外观**（发型、发色、服装颜色/样式、身材、肤色、配饰、是否戴拳套/缠手带等）——你看不到图片，猜出来的都是错的，会覆盖参考图的真实长相。定义句只写「<Subject N> is the ... in <Picture N>」并点明角色身份（如 female fighter），外观交给参考图本身。',
+            '3. 用户原文里若写了「图1/图2/第1张图」等说法，一律对应到素材清单里的 <Picture N>；用户若给人物起了名字（如 A、B），名字只是便于你理解，输出时必须把它们写进对应 <Subject N> 的定义，绝不能直接用 A:/B: 当标签。',
+            '4. 同一个主体的多张参考图（不同视角）必须合并成一个 <Subject N>，在定义里一次列出全部来源，如 `<Subject 1> is the car shown in <Picture 1>-<Picture 3>, front, side and rear views of the same vehicle.`',
+            '5. 只有人物类 <Subject N> 能说话（挂 (Sx) 音色槽）；场景/道具/动作类 Subject 永不分配音色槽、永不持有台词。',
+            '6. 禁止自造任何别的身份标签；reference 关系一律通过 <Subject N> ↔ <Picture N>/<Video N> 表达。'
+          ].join('\n')
+          : '',
+        '',
         '只输出重写后的提示词正文，不要任何解释、前缀或 Markdown 代码块围栏。'
-      ].join('\n')
-      const user = '用户需求：' + raw
+      ].filter(s => s !== '').join('\n')
+
+      // 🔴 2026-10-23 修复：把参考素材清单喂给大模型，否则它不知道「图1/图2」对应什么，
+      //    会自造 A:/B: 这类标签，导致 <Picture N> 引用缺失、参考图失效。
+      const refList = []
+      this.refImages.forEach((r, i) => {
+        refList.push('<Picture ' + (i + 1) + '> = 第 ' + (i + 1) + ' 张参考图')
+      })
+      this.refVideos.forEach((r, i) => {
+        refList.push('<Video ' + (i + 1) + '> = 第 ' + (i + 1) + ' 段参考视频')
+      })
+      const user = '用户需求：' + raw +
+        (refList.length ? '\n\n【参考素材清单（模型实际收到的注入顺序，编号不可改动）】\n' + refList.join('\n') : '')
       const text = await window.studio.llmChat([
         { role: 'system', content: system },
         { role: 'user', content: user }
@@ -598,23 +707,15 @@ export default {
 .vg-ta{width:100%;background:#0e1320;border:1px solid var(--line);border-radius:10px;color:var(--text);padding:9px 11px;font:12.5px/1.6 inherit;resize:vertical;}
 .vg-ta:focus{outline:none;border-color:var(--blue);}
 .vg-ta::placeholder{color:var(--sub-2);}
-/* 参考素材槽：四个并排「添加」块 */
-.vg-slots{display:flex;flex-wrap:wrap;gap:8px;}
-.vg-slot{width:86px;height:86px;border:1px dashed #33405a;border-radius:10px;background:#0e1320;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;color:var(--sub-2);font-size:11px;cursor:pointer;position:relative;}
-.vg-slot:hover{border-color:var(--blue);color:var(--blue-hi);}
-.vg-slot.has{border-style:solid;border-color:var(--blue);color:var(--blue-hi);}
-.vg-plus{font-size:15px;line-height:1;}
-.vg-cnt{position:absolute;top:4px;right:6px;font-size:10px;color:var(--blue-hi);}
-/* 已选素材缩略图 */
-.vg-refs{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;}
-.vg-ref{width:64px;height:64px;border:1px solid var(--line);border-radius:8px;background:#0e1320;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;}
-.vg-ref img{width:100%;height:100%;object-fit:cover;}
-.vg-ref.vid{color:var(--sub-2);font-size:10px;}
-.vg-vidtag{font-size:10px;color:var(--sub-2);}
-.vg-miss{font-size:10px;color:var(--warn);padding:2px 4px;text-align:center;line-height:1.3;}
-.vg-role{position:absolute;left:3px;bottom:3px;font-size:9px;color:#cfe1f8;background:rgba(0,0,0,.55);border-radius:6px;padding:1px 5px;}
-.vg-refx{position:absolute;top:2px;right:2px;width:16px;height:16px;padding:0;display:flex;align-items:center;justify-content:center;background:rgba(8,12,20,.72);border:1px solid rgba(255,255,255,.18);border-radius:50%;color:#e8eef8;font-size:9px;line-height:1;cursor:pointer;}
-.vg-refx:hover{background:rgba(220,60,60,.92);}
+/* 参考素材：复用全局 .ref-thumb / .rtag / .img-x / .ref-add 缩略图样式（与分镜脚本同源）。
+   这里补三样：① 网格换行容器（覆盖全局 .ref-row 的单行横向滚动，仅本页生效）；
+   ② 「文件已缺失」占位；③ 视频缩略图容器。 */
+.vg-ref-grid{
+  display:flex; flex-wrap:wrap; overflow-x:visible; overflow-y:visible;
+  height:auto; align-items:flex-start; align-content:flex-start;
+}
+.vg-miss-thumb{font-size:10px;color:var(--warn);display:flex;align-items:center;justify-content:center;width:100%;height:100%;text-align:center;line-height:1.3;padding:2px;}
+.ref-thumb video{width:100%;height:100%;object-fit:contain;background:#0b0f16;border-radius:6px;display:block;}
 /* 视频质量：三档 × A/B */
 .vg-tier-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;}
 .vg-tier{border:1px solid var(--line);border-radius:10px;padding:9px;}
@@ -644,7 +745,6 @@ export default {
 .vg-mode{font-size:11px;color:var(--sub-2);text-align:center;margin-bottom:8px;}
 .vg-genbtn{width:100%;padding:9px 18px;font-size:13.5px;letter-spacing:.14em;}
 .vg-gensub{text-align:center;font-size:11px;color:var(--sub-2);margin:6px 14px 12px;}
-.vg-gensub.err{color:var(--danger);}
 .vg-stop{font-size:11px;color:var(--warn);background:none;border:none;cursor:pointer;margin-left:8px;}
 /* 结果画廊（复刻图片生成） */
 .vg-canvas{background:var(--card);border:1px solid var(--line-soft);border-radius:var(--r-lg);display:flex;flex-direction:column;min-height:0;}
@@ -668,7 +768,16 @@ export default {
 .vg-ovb{display:flex;flex-wrap:wrap;justify-content:center;gap:5px;}
 .vg-m{font-size:11px;color:#dbe4f0;background:rgba(255,255,255,.12);border:none;border-radius:6px;padding:2px 8px;cursor:pointer;}
 .vg-m:hover{background:rgba(59,130,246,.5);color:#fff;}
+.vg-m.del:hover{background:rgba(239,68,68,.6);color:#fff;}
+/* 删除确认框 */
+.vg-del-tip{font-size:13px;line-height:1.7;color:var(--text);}
+.vg-del-tip b{color:var(--danger);}
+.vg-del-path{font-size:11.5px;color:var(--sub-2);word-break:break-all;background:#0e1320;border:1px solid var(--line);border-radius:8px;padding:8px 10px;line-height:1.6;}
 .vg-tile.genning{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;border-style:dashed;border-color:rgba(96,165,250,.4);height:100%;}
+/* 排队中的任务卡片：转圈变暗、描边变淡，与「生成中」区分 */
+.vg-tile.genning.queued{border-color:rgba(148,163,184,.3);}
+.vg-tile.genning.queued .spin.big{border-color:rgba(148,163,184,.2);border-top-color:rgba(148,163,184,.5);}
+.vg-tile.genning.queued .g-txt{color:var(--sub-2);}
 .vg-tile.genning .spin.big{width:22px;height:22px;border-width:3px;}
 .vg-tile.genning .g-txt{font-size:12px;color:var(--sub);text-align:center;line-height:1.6;}
 .vg-tile.empty{display:flex;align-items:center;justify-content:center;color:var(--sub-2);font-size:12px;text-align:center;line-height:1.8;border-style:dashed;min-height:240px;grid-column:1 / -1;}

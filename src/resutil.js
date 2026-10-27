@@ -31,10 +31,16 @@ export function resLabel(list, v, dw, dh) {
   return (hit && hit.label) ? hit.label : ratioLabel(v, dw, dh)
 }
 
-/** 镜头时长夹取：4~15 秒（含边界），非数字回退 8 */
-export function clampDur(v) {
+/**
+ * 镜头时长夹取（含边界），非数字回退 8。
+ * @param {number} v 要夹取的值
+ * @param {number} [min=4] 下限 —— 默认 4（视频模型物理下限）；第一遍分镜传 1 以允许 1s 碎镜。
+ *   🔴 4 与 15 是视频模型硬区间；除「第一遍分镜中间态」外，一律用默认 4。
+ */
+export function clampDur(v, min) {
+  const lo = Number(min) || 4
   const n = Math.round(Number(v) || 8)
-  return Math.min(15, Math.max(4, n))
+  return Math.min(15, Math.max(lo, n))
 }
 
 /** 路径段清洗：与主进程 assetStore.sanitize 保持一致（角色名会出现在目录名里） */

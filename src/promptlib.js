@@ -476,26 +476,68 @@ export function stripTailEnNote(text) {
 }
 
 // ---------------------------------------------------------------
-// 时长模型（台词 ÷ 语速 + 停顿）——全项目单一事实源
-//   🔴 durNeed / durFit / durWarnings / durTag / splitShot 全部由下面四个常量派生：
-//      改语速、改单镜上限，只改这里；任何地方再写一遍 4.5 或 15 都是 bug 源。
+// 时长模型（台词 ÷ 语速 + 停顿 + 动作节点）——全项目单一事实源
+//   🔴 durNeed / durFit / durWarnings / durTag / splitShot 全部由 DUR_CFG 派生：
+//      改语速、改每动作秒数、改单镜上限，只改 DUR_CFG；任何地方再写一遍数字都是 bug 源。
 // ---------------------------------------------------------------
-/** H3 单镜生成上限（秒），与 resutil.clampDur 的上限一致 */
-const DUR_MAX = 15
-/** 台词语速（字/秒） */
-const CPS = 4.5
-/** 每镜起止停顿（秒） */
-const PAUSE = 1
-/** 复合运镜的时长下限（秒）：两段运镜挤进 1 秒是废镜 */
-const COMPOUND_MIN = 6
 /**
- * 舒适单镜时长（秒）：容量规划的目标值 —— 让镜头落在 12s 上下，
- * 而不是贴着 DUR_MAX(15s) 硬顶。低于它 = 镜头数够用；逼近/贴住它 = 在硬撑。
- * 与 DUR_MAX 之差（3s）就是「给内容留的呼吸量」。
+ * 时长配置（单一事实源，2026-10-26）。
+ * 分两类：
+ *   · 物理常量（🔒，视频模型规定，不可调）：durMin=4 / durMax=15 —— 喂给视频模型必须落在 [4,15]。
+ *   · 节奏参数（可调，供「按内容量定时长」调试旋钮）：cps / pause / soundSec / compoundMin / beatSec / moveSec 等。
+ * 用法：import { DUR_CFG } —— 调试时整包或单键覆盖；MCP 未来也可经此调参。
  */
-const DUR_COMFORT = 12
+export const DUR_CFG = {
+  // 🔒 物理常量（视频模型硬区间，别当可调参数改）
+  durMin: 4,        // 最终产物单镜下限（视频模型规定，<4s 送去画会废片）
+  durMax: 15,       // 最终产物单镜上限
+  pass1Min: 1,      // 第一遍分镜的中间态下限（允许 1s 碎镜，第二遍会被合并掉）
+  // 节奏参数（可调）
+  cps: 4.5,         // 台词语速 字/秒
+  pause: 1,         // 每镜起止停顿 秒
+  soundSec: 2,      // 每段发声表演（大笑/痛哭…）加秒
+  compoundMin: 6,   // 复合运镜下限 秒（两段运镜挤进 1 秒是废镜）
+  beatSec: 1,       // 每动作节点 秒（「1 秒放 1 个动作」）
+  moveSec: 2,       // 长位移动作 秒（钻进/冲/跑/踉跄/转身…）
+  durDefault: 8,    // 非数字时长回退值
+  durComfort: 12    // 舒适单镜时长（容量规划目标值）
+}
+
+// 解构出内部短名（保持下方历史代码不变，仍可用 CPS / PAUSE / COMPOUND_MIN 等）
+const DUR_MAX = DUR_CFG.durMax
+const CPS = DUR_CFG.cps
+const PAUSE = DUR_CFG.pause
+const COMPOUND_MIN = DUR_CFG.compoundMin
+const DUR_COMFORT = DUR_CFG.durComfort
 /** 单行台词的字数硬上限：超过它一行就占满整镜，必须切开（由 DUR_MAX 与 CPS 派生 = 63 字） */
 const LINE_CHAR_MAX = Math.floor((DUR_MAX - PAUSE) * CPS)
+
+// ---------------------------------------------------------------
+// 动作节点提取（2026-10-26）：把 action 切成「可感知动作/位移」节点，
+// 用于「按内容量定时长」——durNeed 的台词时间与它并行取大。
+//   只记真正可感知的动作；状态/表情/静态描述（眼圈发红、脸色、手上还捏着…）不是节点。
+//   长位移（钻进/冲/跑/踉跄/转身/追…）记 moveSec，其余记 beatSec。
+// ---------------------------------------------------------------
+/** 动作动词：这些才构成一个「可感知的动作节点」 */
+const ACTION_VERB_RE = /停|弹开|后退|钻|坐|站|走|跑|冲|看|望|转|回|抬|放|攥|捏|说|吐|喊|问|追|拽|拉|推|伸|缩|落|响|闪|映|亮|照|接|扫|摇|瞪|笑|惊|僵|弯|探|挥|摆|垂|掉|跟|拍|回头|侧过|弯腰|起身|坐下|站起|走进|走出|转身/
+/** 长位移（需要 2s 的动作）：默认 1s 放 1 个动作，只有这类明显位移才给 2s */
+const ACTION_MOVE_RE = /钻进|钻入|钻出|冲过|转身|跑|追出|踉跄|弯腰钻|冲|奔|扑|撞|上车|下车|走出|走进|起身|坐下/
+/** 状态/表情/静态描述（不计入节点） */
+const ACTION_STATE_RE = /眼圈|脸色|神情|脸上|手中|手里|还捏|放在|摆在|满是|面无表情|眉头|嘴角|指节|目光|眼神|身体前倾|肩膀|发红|泛白|错愕|茫然|发紧|眼睛|瞳孔|冷汗|额头|面朝|背影|身影/
+/**
+ * 数一个镜头的动作节点数 + 合计秒数（纯函数，导出供 MCP/调试直调）。
+ * @param {string} action 镜头动作描述
+ * @returns {{segs: number, beats: number, totalSec: number}}
+ */
+export function countActionBeats(action) {
+  const segs = String(action == null ? '' : action)
+    .split(/[，。；！？、\n]/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+  const beats = segs.filter(s => ACTION_VERB_RE.test(s) && !ACTION_STATE_RE.test(s))
+  const totalSec = beats.reduce((a, s) => a + (ACTION_MOVE_RE.test(s) ? DUR_CFG.moveSec : DUR_CFG.beatSec), 0)
+  return { segs: segs.length, beats: beats.length, totalSec }
+}
 
 /**
  * 单行台词的正文字数：跳过「说话人名：」前缀、剥句尾英文括注，汉字每字记 1、连续英数串记 1。
@@ -517,10 +559,14 @@ function dialogueWeight(text) {
 }
 
 /**
- * 内部共用：算单个镜头「内容所需时长」的三要素（durWarnings / durSuggest 同源，保证提示与建议永不打架）：
- *   chars/need —— 台词正文字数与所需秒数（÷4.5 + 停顿 1s，向上取整）
- *   sounds     —— 发声表演段数（每段 +2s 已计入 need）
- *   compound   —— 复合运镜（≥2 个运镜动词，或「随后/然后/再」衔接）
+ * 内部共用：算单个镜头「内容所需时长」的要素（durWarnings / durSuggest 同源，保证提示与建议永不打架）：
+ *   chars/need     —— 台词正文字数与所需秒数（÷语速 + 停顿 1s，向上取整）
+ *   sounds         —— 发声表演段数（每段 +soundSec 已计入 need）
+ *   beatsSec       —— 动作节点合计秒数（2026-10-26 新增；与台词**并行取大**，不是串行相加）
+ *   compound       —— 复合运镜（≥2 个运镜动词，或「随后/然后/再」衔接）
+ *
+ * 🔴 关键（2026-10-26 用户拍板）：台词与动作是**并行**发生的（说话时手/身仍可动），
+ *    所以 `need = max(台词时间, 动作节点时间) + 发声段×2`；只有发声（哭声等纯人声占位）才串行累加。
  */
 function durNeed(o) {
   const dur = Math.round(Number(o.dur) || 0)
@@ -528,13 +574,16 @@ function durNeed(o) {
   // 发声表演段数（大笑、痛哭这类有明确声源的发声，只写画面动词=无声）
   const act = String(o.action || '')
   const sounds = (act.match(/大笑|狂笑|痛哭|哭喊|嚎啕|惊呼|尖叫|喘息|抽泣|呜咽|长叹/g) || []).length
+  // 动作节点时间（2026-10-26 新增）：动作与台词并行取大
+  const beatsSec = countActionBeats(act).totalSec
   let need = 0
   if (chars > 0) need += Math.ceil(chars / CPS) + PAUSE
-  if (sounds > 0) need += sounds * 2
+  if (beatsSec > 0) need = Math.max(need, beatsSec)
+  if (sounds > 0) need += sounds * DUR_CFG.soundSec
   const cam = String(o.camera || '')
   const verbs = new Set((cam.match(/推|拉|摇|移|跟|环绕|甩|升降/g) || []))
   const compound = verbs.size >= 2 || /随后|然后|，再|、再/.test(cam)
-  return { dur, chars, sounds, need, compound }
+  return { dur, chars, sounds, beatsSec, need, compound }
 }
 
 /**
@@ -543,10 +592,11 @@ function durNeed(o) {
  * LLM 心算失误或手改过小时，台词会被挤到镜头时长之外直接丢掉
  * （时长不够的视频里，台词/笑声都会被截）。只提示、不拦截、不覆盖手改。
  *
- * 校验三条（对应 shots.md「时长规则」）：
+ * 校验（对应 shots.md「时长规则」）：
  *   1) 台词：字数 ÷ 4.5 字/秒 + 起止停顿 1s（对白行「说话人名：台词」，只计台词正文）
  *   2) 台词外发声表演（大笑/痛哭/惊呼/喘息…）：每段 +2s
- *   3) 复合运镜（camera 出现 ≥2 个运镜动词，或「随后/然后/再」衔接两段运镜）：建议 ≥6s
+ *   3) 动作节点（2026-10-26 新增）：可感知动作/位移数 × 每动作秒数，与台词并行取大
+ *   4) 复合运镜（camera 出现 ≥2 个运镜动词，或「随后/然后/再」衔接两段运镜）：建议 ≥6s
  * @param {object} s 单个镜头 { dur, dialogue, camera, action }
  * @returns {Array<string>} 违规说明列表，空数组 = 通过
  */
@@ -557,12 +607,13 @@ export function durWarnings(s) {
 
   const why = []
   if (n.chars > 0) why.push('台词约 ' + n.chars + ' 字')
+  if (n.beatsSec > 0) why.push('动作约 ' + n.beatsSec + 's')
   if (n.sounds > 0) why.push(n.sounds + ' 段发声表演')
   if (n.need > DUR_MAX) {
     // 内容本身超过单镜生成上限：把 dur 拉满也念不完（上限是硬顶），只能拆镜头
     out.push(why.join(' + ') + ' ≈ 需 ' + n.need + 's，超过单镜 ' + DUR_MAX + 's 上限，建议拆成两个镜头')
   } else if (n.need > 0 && n.dur < n.need) {
-    out.push(why.join(' + ') + ' ≈ 至少需 ' + n.need + 's（当前 ' + n.dur + 's），声音会被截')
+    out.push(why.join(' + ') + ' ≈ 至少需 ' + n.need + 's（当前 ' + n.dur + 's），内容会被截')
   }
 
   // 复合运镜：≥2 个不同运镜动词，或用「随后/然后/再」衔接两段运镜
@@ -574,9 +625,9 @@ export function durWarnings(s) {
 }
 
 /**
- * 内容所需的镜头时长（整数秒，**不看 dur 字段本身**）：台词/发声所需秒数与复合运镜下限 6s 取大者，
+ * 内容所需的镜头时长（整数秒，**不看 dur 字段本身**）：台词/动作节点（并行取大）/发声所需秒数与复合运镜下限 6s 取大者，
  * 上限封到 15s（H3 单镜生成上限；真超了就该拆镜头，不是把 dur 拉长——本来也拉不动）。
- * 返回 0 = 内容对时长无约束（无台词、无发声、非复合运镜），调用方应保留原值。
+ * 返回 0 = 内容对时长无约束（无台词、无动作、无发声、非复合运镜），调用方应保留原值。
  *
  * 生成分镜时程序直接用它写 dur：让模型逐字数数做除法已被实测否定——
  * shots.md 里写着与程序完全相同的自检公式、还带「18 ÷ 4.5 + 1 = 5 秒」的算例，
@@ -844,7 +895,7 @@ export function splitShotParts(s, want, gid) {
     if (snap.continuity) seg.continuity = snap.continuity
     if (k === parts - 1 && snap.change) seg.change = snap.change
     const fit = durFit(seg)
-    seg.dur = Math.min(DUR_MAX, Math.max(4, fit > 0 ? fit : Math.round((snap.dur || 8) / parts)))
+    seg.dur = Math.min(DUR_MAX, Math.max(DUR_CFG.durMin, fit > 0 ? fit : Math.round((snap.dur || DUR_CFG.durDefault) / parts)))
     seg._split = { gid: id, k, n: parts, ai: false, src: snap }
     out.push(seg)
   }
@@ -1132,7 +1183,7 @@ export function mergeAllShots(list) {
     if (last && !last._split && !cur._split && mergeWarnings([last, cur])[1]) {
       const m = mergeShotPair(last, cur)
       const fit = durFit(m)
-      m.dur = Math.min(DUR_MAX, Math.max(4, fit > 0 ? fit : (Number(m.dur) || 0)))
+      m.dur = Math.min(DUR_MAX, Math.max(DUR_CFG.durMin, fit > 0 ? fit : (Number(m.dur) || 0)))
       out[out.length - 1] = m
       map.push([out.length - 1])
       merged.push(out.length - 1)
@@ -1145,8 +1196,97 @@ export function mergeAllShots(list) {
   return { shots: out, count, map, merged }
 }
 
+// ---------------------------------------------------------------
+// 三阶段分镜后处理（2026-10-26 · 用户拍板「按内容量定时长 + 两遍分镜」）
+//   背景：视频模型物理区间 [4,15]s，任何 <4s / >15s 的镜头都不能送去生成。
+//   第一遍分镜允许出 1s 碎镜（真实节奏），这里做：
+//     · 阶段2 mergeFragments：把相邻碎镜合并（scene 相等 + 至少一个 <4s + 合并后 ≤15s）
+//     · 阶段3 planDurationFix：识别仍需「拉长(<4s)」或「拆镜(>15s)」的镜头，返回修复计划
+//   LLM 再优化（拉长加画面不加台词 / 拆镜衔接缝合）由**调用方注入回调**执行 ——
+//   纯函数层不碰 IPC，只产出「需要修什么」，保证可测试、可被 MCP 直调。
+// ---------------------------------------------------------------
+
 /**
- * 把镜头时长分布到「脚本各段秒数之和」上（纯函数，2026-10-09）。
+ * 阶段2：合并第一遍产生的相邻碎镜（纯函数，2026-10-26）。
+ * 判据（与两遍分镜离线实验一致）：
+ *   · 相邻两镜 scene 逐字相等
+ *   · 至少一个 < durMin(4s)（碎镜）
+ *   · 合并后 durFit ≤ durMax(15s)（装得下）
+ * 贪婪从左往右，一轮即可（与 mergeAllShots 同思路，但判据放宽为「允许碎镜合并」——
+ * mergeAllShots 要求「只有一方有台词」，这里碎镜合并不需要，因为第一遍的碎镜本身就该被并）。
+ * @returns {{shots: Array, count: number, merged: number[]}}
+ */
+export function mergeFragments(list) {
+  const arr = Array.isArray(list) ? list : []
+  const out = []
+  const merged = []
+  let count = 0
+  for (const s of arr) {
+    const cur = s || {}
+    const last = out[out.length - 1]
+    const aShort = (Number(last && last.dur) || 0) < DUR_CFG.durMin
+    const bShort = (Number(cur.dur) || 0) < DUR_CFG.durMin
+    let can = false
+    if (last && !last._split && !cur._split &&
+        last.scene && cur.scene && last.scene === cur.scene && (aShort || bShort)) {
+      const probe = mergeShotPair(last, cur)
+      const fit = durFit(probe)
+      if (fit > 0 && fit <= DUR_MAX) can = true
+      else if ((Number(probe.dur) || 0) <= DUR_MAX && fit === 0) can = true
+    }
+    if (can) {
+      const m = mergeShotPair(last, cur)
+      const fit = durFit(m)
+      m.dur = Math.min(DUR_MAX, Math.max(DUR_CFG.durMin, fit > 0 ? fit : (Number(m.dur) || 0)))
+      out[out.length - 1] = m
+      merged.push(out.length - 1)
+      count++
+      continue
+    }
+    out.push({ ...cur })
+  }
+  return { shots: out, count, merged }
+}
+
+/**
+ * 阶段3：识别仍超出物理区间 [durMin,durMax] 的镜头，产出修复计划（纯函数，2026-10-26）。
+ * @returns {{stretch: Array<number>, split: Array<number>, ok: boolean}}
+ *   stretch —— 下标数组：<4s 需「拉长到 4s」（LLM 加画面动作，不加台词）
+ *   split   —— 下标数组：>15s 需「拆镜」（程序按动作断点切，LLM 衔接缝合）
+ *   ok      —— 是否全部落在合法区间
+ */
+export function planDurationFix(list) {
+  const arr = Array.isArray(list) ? list : []
+  const stretch = []
+  const split = []
+  for (let i = 0; i < arr.length; i++) {
+    const d = Math.round(Number((arr[i] || {}).dur) || 0)
+    if (d < DUR_CFG.durMin) stretch.push(i)
+    else if (d > DUR_MAX) split.push(i)
+  }
+  return { stretch, split, ok: stretch.length === 0 && split.length === 0 }
+}
+
+/**
+ * 把带 `_split` 标记的拆分段按 gid 归组（纯函数，2026-10-26，阶段3 衔接缝合用）。
+ * splitAll 拆出的段散落在 shots 数组里，阶段3 要对「同一原镜拆出的相邻两段」做首尾衔接
+ * 缝合，需要先按组把它们找齐。组内下标已按数组顺序升序（相邻两段天然相邻）。
+ * @returns {Array<{gid:string, at:number, idx:number[]}>} 每组：gid、组头下标、全部段下标
+ */
+export function splitGroups(list) {
+  const arr = Array.isArray(list) ? list : []
+  const map = new Map()
+  const order = []
+  arr.forEach((s, i) => {
+    const gid = (s && s._split && s._split.gid) || null
+    if (!gid) return
+    if (!map.has(gid)) { map.set(gid, []); order.push(gid) }
+    map.get(gid).push(i)
+  })
+  return order.map(gid => ({ gid, at: map.get(gid)[0], idx: map.get(gid) }))
+}
+
+/**
  *
  * 为什么需要：合并与 durFit 都只管**单镜**，管不住**全片总长**。单镜 dur 是模型按
  * 「5~8 秒好看」填的节奏值，12 镜 × 4s 的硬下限就有 48 秒；实测 V9X-4 脚本 28 秒、
@@ -1169,11 +1309,11 @@ export function fitDurs(list, totalSec, keep) {
   const sum = (a) => a.reduce((x, s) => x + (Number(s.dur) || 0), 0)
   if (!arr.length || !t) return { shots: arr, changed: 0, total: sum(arr) }
   const isKeep = typeof keep === 'function' ? keep : () => false
-  const cl = (v) => Math.min(DUR_MAX, Math.max(4, v))
+  const cl = (v) => Math.min(DUR_MAX, Math.max(DUR_CFG.durMin, v))
   const floor = arr.map((s, i) => {
-    if (isKeep(s, i)) return cl(Number(s.dur) || 4)
+    if (isKeep(s, i)) return cl(Number(s.dur) || DUR_CFG.durMin)
     const need = durFit(s)
-    return cl(need > 0 ? need : 4)
+    return cl(need > 0 ? need : DUR_CFG.durMin)
   })
   const out = arr.map((s, i) => ({ ...s, dur: floor[i] }))
   const free = arr.map((s, i) => i).filter(i => !isKeep(arr[i], i))
@@ -1528,7 +1668,7 @@ export function pacingPlan({ adapted = '', shots = 0, targetSec = 0, limits = {}
   const tgt = Math.round(Number(targetSec) || 0)
   const T = tgt || (u.hasSec ? u.totalSec : 0)
   const Tfrom = tgt ? 'target' : (u.hasSec ? 'script' : '')
-  const shotSec = pair2(p.shotSec, [4, DUR_MAX])
+  const shotSec = pair2(p.shotSec, [DUR_CFG.durMin, DUR_MAX])
   const secPerBeat = pair2(p.secPerBeat, [0, 0])
   const maxB = Math.max(1, Number(p.beatsPerShotMax) || 2)
   const tgtB = Math.min(maxB, Math.max(1, Number(p.beatsPerShot) || 1))

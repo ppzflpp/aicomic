@@ -30,7 +30,9 @@ export const usePipeline = defineStore('pipeline', {
     /** 第 1 块点「改编」→ 置位后由内容AI优化模块消费：进入即自动开始优化（不落库） */
     autoAdapt: false,
     /** 第 2 块点「生成分镜」→ 置位后由分镜脚本模块消费：进入即自动开始生成分镜（不落库） */
-    autoShots: false
+    autoShots: false,
+    /** 改编模式（2026-10-24）：true = 深度改编（读 adapt.md 全套共创规则）；false = 简单格式化（读 adapt-format.md，忠实整理 + 语句通顺）。默认 false。 */
+    deepAdapt: false
   }),
   getters: {
     // 🔴 2026-09-21 起全面去掉锁定：所有模块随时可编辑，「上游变化」改由脏标记（⚠ stale）提示。

@@ -2,6 +2,24 @@
   <div>
     <div v-if="busy || pBusy || vBusy" class="progress"><div class="bar indeterminate"></div></div>
 
+    <!-- 分镜生成三阶段加载框（2026-10-26）：点「生成分镜」后全程模态，实时显示大模型在干什么。
+         带「停止」按钮，点击**立即硬停**（stopGenerate 调 llmCancel 掐断当前 LLM 请求 + genStop 置位兜住后续检查点）。
+         阶段文案由 generate() 通过 setGenStage() 推进；关闭条件 = genStage 清空。
+         🔴 Teleport 到 #stage-mask-host（App.vue 的 .main 内），只遮功能区、不遮顶部/侧边菜单栏与底部状态栏。 -->
+    <Teleport to="#stage-mask-host">
+      <div v-if="genStage" class="gen-mask">
+        <div class="gen-card">
+          <div class="gen-ring"><i class="gen-spin"></i></div>
+          <div class="gen-txt">
+            <div class="gen-title">正在生成分镜</div>
+            <div class="gen-stage">{{ genStage }}</div>
+            <div v-if="genLive" class="gen-live">{{ genLive }}</div>
+          </div>
+          <button class="btn gen-stop" :disabled="genStopBusy" @click="stopGenerate()">{{ genStopBusy ? '停止中…' : '停止生成' }}</button>
+        </div>
+      </div>
+    </Teleport>
+
     <div v-if="!shots.length && !adapted && !busy" class="placeholder" style="margin-bottom:8px">尚无分镜。先在第 2 块完成改编稿再点「生成分镜」，或直接手动添加镜头。</div>
 
     <!-- 分镜自检横幅（2026-10-09）：规范写了镜头量上限（广告 = 段落数 × 1.5 / 总时长 ±20%），
@@ -54,8 +72,10 @@
 
     <!-- 场景三方一致性横幅（2026-10-10）：改编稿 §三 声明 → scenes.json 落地 → 镜头引用。
          此前这三方从未比对过，导致「座舱·内 丢了」「四季被并成一条」这类事故程序全绿灯。
-         与上面 .shot-check 分开：那个只判镜头量/时长（广告体裁专属），这个是场景档案的结构问题（所有体裁都可能）。 -->
-    <div v-if="sceneDeclInfo.issues.length" class="scene-check">
+         与上面 .shot-check 分开：那个只判镜头量/时长（广告体裁专属），这个是场景档案的结构问题（所有体裁都可能）。
+         🔴 2026-10-27：按用户要求**隐藏**（不是删除）。需要再展示时，把下面 v-if="false" 改回
+            v-if="sceneDeclInfo.issues.length" 即可恢复。 -->
+    <div v-if="false" class="scene-check">
       <span class="sc-ico">⚠</span>
       <span class="sc-txt">场景对不上：{{ sceneDeclInfo.issues.map(x => x.text).join('；') }}
         <b v-if="sceneDeclInfo.declared.length">（声明 {{ sceneDeclInfo.declared.length }} 条 · 落地 {{ sceneDeclInfo.landed.length }} 条 · 镜头用到 {{ sceneDeclInfo.used.length }} 个名字）</b>
@@ -132,10 +152,14 @@
             <button class="del-btn head-x" title="删除此镜头" @click="askDelShot(i)">✕</button>
           </div>
           <!-- 第二行提示区（2026-09-27，Dragon：时长建议 + 可合并提示不挤行头；都无时整行不渲染不占位）。
-               可合并提示可点击 → 打开合并确认弹窗 -->
-          <div v-if="durWarn(i).length || mergeWarn(i) || splitTag(i)" class="shot-sub">
+               可合并提示可点击 → 打开合并确认弹窗。
+               🔴 2026-10-27：「可与上一镜合并」黄标已隐藏，容器条件同步去掉 mergeWarn(i)，
+                 否则只有合并提示的镜头会留下一个空行占位。 -->
+          <div v-if="durWarn(i).length || splitTag(i)" class="shot-sub">
             <span v-if="durWarn(i).length" class="dur-warn" :title="durWarn(i).join('\n')">{{ durTag(i) }}</span>
-            <span v-if="mergeWarn(i)" class="dur-warn mrg" :title="mergeWarn(i) + '：点击查看并确认合并'"
+            <!-- 🔴 2026-10-27：按用户要求**隐藏**「可与上一镜合并」黄标（不是删除）。
+                 需要再展示时，把下面 v-if="false" 改回 v-if="mergeWarn(i)" 即可恢复。 -->
+            <span v-if="false" class="dur-warn mrg" :title="mergeWarn(i) + '：点击查看并确认合并'"
               @click.stop="openMerge(i)">⚠ {{ mergeWarn(i) }}</span>
             <!-- 拆镜黄标（第 2 批）：本镜由程序按台词边界拆开而来。台词/场景/角色/时长已算定；
                  画面是程序按标点粗切的（各段镜头语言相同）→ 组头挂「AI 重写 / 撤回」两个动作 -->
@@ -189,11 +213,23 @@
                              unused: refUnused(i, 'images', k) }"
                    @dragstart="refDragStart(i, k)" @dragover.prevent="refDragOver(i, k)"
                    @drop.prevent="refDragDrop(i, k)" @dragend="refDragEnd()">
-                <img :src="refSrc(f)" :title="refTitle(i, 'images', k, f)" />
+                <img :src="refSrc(f)" :title="refTitle(i, 'images', k, f)"
+                     @click.stop="previewRef(f)" style="cursor:zoom-in" />
                 <span class="rtag">参考图</span>
                 <button class="img-x" title="移除" @click.stop="delRef(i, 'images', k)">✕</button>
               </div>
-              <button v-if="caps.refImage !== false && prompts[i].refs.images.length < maxRefImg" class="ref-add" :title="'从本地选参考图（最多 ' + maxRefImg + ' 张）'" @click="addRef(i, 'images')">参考图</button>
+              <!-- 参考图入口（2026-10-27 改）：上下两层复合入口。上层整块「参考图」= 弹挑图浮层（项目角色场景库）；
+                   下层「+ 本地」走老流程（本地文件选择器）、「+ 角色库」= 同一个挑图浮层。 -->
+              <div v-if="caps.refImage !== false && prompts[i].refs.images.length < maxRefImg" class="ref-add ref-add-comp">
+                <button class="ref-add-main" title="从项目角色场景库挑一张图作为参考图"
+                        @click.stop="openLibPick(i)">参考图</button>
+                <div class="ref-add-sub">
+                  <button class="ref-add-sub-btn" title="从本地文件选一张图作为参考图（原流程）"
+                          @click.stop="addRef(i, 'images')">+ 本地</button>
+                  <button class="ref-add-sub-btn" title="从项目角色场景库挑图"
+                          @click.stop="openLibPick(i)">+ 角色库</button>
+                </div>
+              </div>
 
               <div v-for="(f, k) in prompts[i].refs.videos" :key="'rv' + k" class="ref-thumb vid"
                    :class="{ unused: refUnused(i, 'videos', k) }" :title="refTitle(i, 'videos', k, f)">
@@ -205,7 +241,8 @@
               <button v-if="caps.refVideo !== false && prompts[i].refs.videos.length < maxRefVid" class="ref-add wide" :title="'从本地选参考视频（最多 ' + maxRefVid + ' 个）'" @click="addRef(i, 'videos')">参考视频</button>
 
               <div v-if="prompts[i].refs.first" class="ref-thumb" :class="{ framestale: firstStale(i) }">
-                <img :src="refSrc(prompts[i].refs.first)" :title="firstTitle(i)" />
+                <img :src="refSrc(prompts[i].refs.first)" :title="firstTitle(i)"
+                     @click.stop="previewRef(prompts[i].refs.first)" style="cursor:zoom-in" />
                 <span class="rtag">首帧</span>
                 <button class="img-x" title="移除首帧" @click.stop="clearFrame(i, 'first')">✕</button>
                 <!-- 2026-10-10（Dragon）：首帧一旦选中就不再显示「重取」按钮 —— 想重新取，点 ✕ 清掉，
@@ -229,7 +266,8 @@
               </template>
 
               <div v-if="prompts[i].refs.last" class="ref-thumb">
-                <img :src="refSrc(prompts[i].refs.last)" title="尾帧" />
+                <img :src="refSrc(prompts[i].refs.last)" title="尾帧"
+                     @click.stop="previewRef(prompts[i].refs.last)" style="cursor:zoom-in" />
                 <span class="rtag">尾帧</span>
                 <button class="img-x" title="移除尾帧" @click.stop="clearFrame(i, 'last')">✕</button>
               </div>
@@ -238,9 +276,51 @@
             </div>
           </div>
 
-          <!-- 提示词文本：高度自适应，占满本区剩余空间（内容超出在框内滚动） -->
-          <div class="f ta-main"><textarea v-model="prompts[i].text" rows="6" :placeholder="promptPlaceholder()"
-                                           @change="touchPrompt(i)"></textarea></div>
+          <!-- 提示词文本：高度自适应，占满本区剩余空间（内容超出在框内滚动）。
+               2026-10-27：英中双栏。左侧英文始终是发给模型的权威数据；右侧中文是「只读草稿」译文，
+               点右下角「翻译」图标生成，点「←」箭头才把中文翻译回英文覆盖（弹框确认）。 -->
+          <div class="f ta-main">
+            <div class="prompt-duo" :class="{ open: promptZhOpen(i) }">
+              <!-- 左：英文原文 -->
+              <div class="pd-col pd-en">
+                <textarea v-model="prompts[i].text" rows="6" :placeholder="promptPlaceholder()"
+                          @change="touchPrompt(i)"></textarea>
+                <!-- 右下角一体式按钮组：zh（翻译）+ 收回/展开（左右箭头），中间竖分割线 -->
+                <div class="pd-tools">
+                  <button class="pd-tool pd-zh-btn" :class="{ on: promptZhBusy === i }"
+                          :title="promptZhBusy === i ? '正在翻译…' : (promptZhOpen(i) ? '重新翻译成中文（刷新译文）' : '把英文提示词翻译成中文')"
+                          :disabled="promptZhBusy === i || !prompts[i].text.trim()"
+                          @click.stop="translatePrompt(i)">zh</button>
+                  <span v-if="promptHasZh(i)" class="pd-sep"></span>
+                  <button v-if="promptHasZh(i)" class="pd-tool pd-toggle"
+                          :title="promptZhOpen(i) ? '收回中文栏' : '展开中文栏'"
+                          @click.stop="togglePromptZh(i)">
+                    <svg v-if="promptZhOpen(i)" viewBox="0 0 16 16" class="ico"><path d="M9 3L6 8l3 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <svg v-else viewBox="0 0 16 16" class="ico"><path d="M7 3l3 5-3 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 中：覆盖按钮（胶囊、箭头指向左：中文 → 英文，仅双栏态出现） -->
+              <button v-if="promptZhOpen(i)" class="pd-arrow"
+                      :title="'把右侧中文译文翻译回英文、覆盖左侧（当前英文会被替换）'"
+                      :disabled="promptZhBusy === i || !(prompts[i].textZh || '').trim()"
+                      @click.stop="askOverwriteZh(i)">
+                <svg viewBox="0 0 16 16" class="ico"><path d="M13 8H3M6 4L3 8l3 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+
+              <!-- 右：中文译文（可编辑草稿，改了不点 ← 永不生效） -->
+              <div v-if="promptZhOpen(i)" class="pd-col pd-zh">
+                <div v-if="promptZhStale(i)" class="pd-stale">译文已过期 · 英文被修改过，点右下角 zh 翻译刷新</div>
+                <textarea v-model="prompts[i].textZh" rows="6" :placeholder="'点英文框右下角「zh」生成中文译文'" class="zh"></textarea>
+              </div>
+
+              <!-- 整区加载遮罩：翻译中盖住整个文本编辑区 -->
+              <div v-if="promptZhBusy === i" class="pd-loading">
+                <span class="pd-loading-txt">正在翻译中…</span>
+              </div>
+            </div>
+          </div>
 
           <!-- 「生成提示词」（次级功能：绿色）：在提示词框下方，靠左单独一行。
                2026-10-19 Dragon：上游（分镜 / 参考素材）变过 → 这颗按钮直接变琥珀色（.stale-need），
@@ -295,7 +375,13 @@
              同一镜头的多个版本上下摆放，最多显示最新 2 个（两者平分上方剩余区域）；
              点击哪个哪个变当前版本（蓝框）= 即选中（生成完成自动选中最新版，无「采用」按钮） -->
         <div class="zone-3">
-          <div class="row-head"><span class="zone-tag">视频生成</span></div>
+          <div class="row-head">
+            <span class="zone-tag">视频生成</span>
+            <span style="flex:1"></span>
+            <button class="lock-btn head-x" :class="{ locked: s._lock }"
+              :title="s._lock ? '解锁此镜头' : '锁定此镜头（锁定后不可修改）'"
+              @click.stop="toggleShotLock(i)">{{ s._lock ? '🔓' : '🔒' }}</button>
+          </div>
           <!-- 固定 2 个等高槽位（标题 / 文案之外的空间平分），每槽一个 16:9 播放框；
                没有视频时两槽都显示占位符；只有 1 个视频时占第 1 槽、第 2 槽仍是占位符 → 行高与份高都不跳动。
                点击哪个哪个变当前版本（蓝框） -->
@@ -326,6 +412,17 @@
             <!-- 2026-10-19：视频「需要重生成」不再用一句提示语 —— 由左下角「生成视频」按钮的琥珀色表示 -->
           </div>
         </div>
+
+        <!-- 锁定蒙版（2026-10-27）：镜头锁定后整行盖蒙版，禁止任何修改；
+             中间显示「已锁定」+「如需修改请解锁」+ 解锁按钮。蒙版在最上层，拦截所有点击。 -->
+        <div v-if="s._lock" class="lock-mask" @click.stop>
+          <div class="lock-mask-box">
+            <div class="lock-mask-ico">🔒</div>
+            <div class="lock-mask-title">已锁定</div>
+            <div class="lock-mask-sub">如需修改请解锁</div>
+            <button class="btn sm" @click.stop="toggleShotLock(i)">解锁</button>
+          </div>
+        </div>
       </div>
 
       <!-- 手动加镜头：放在已生成镜头的最后一行（无镜头时就是唯一入口） -->
@@ -340,7 +437,7 @@
 
     <!-- 批量按钮：Teleport 到块 3 标题行右边（App.vue 的 #shots-batch）（2026-09-27 三改，Dragon：回到标题栏、恢复普通 .btn 样式）。
          🔴 Teleport 延迟挂载：切集时 <section :key> 整棵重建，mounted 前 #shots-batch 不在文档里 → 必须 tpReady。
-         空闲 = 「批量生成提示词 / 批量生成视频」；跑动中 = 「停止批量」（提示词那颗，软停：当前跑完即止）；
+         空闲 = 「批量生成提示词 / 批量生成视频」；跑动中 = 「停止批量」（提示词那颗，2026-10-24 改硬停：点了立刻中断当前 LLM）；
          视频那颗跑动中 = 「停止生成」（2026-10-09 改为硬停：点了立刻中断当前任务并结束整批）；
          已请求停止 = 「停止中…」（禁点，收尾后自动恢复） -->
     <!-- 分镜总时长（2026-10-13，Dragon）：所有镜头 dur 之和，**实时**跟随编辑 / 拆分 / 合并 / 增删。
@@ -357,12 +454,26 @@
       </span>
     </Teleport>
     <Teleport v-if="tpReady" to="#shots-audio">
+      <!-- 自动填充首帧开关（2026-10-26）：项目级，放在「禁止背景音」左边。
+           开 = 每次生成视频（单镜 & 批量）时逐镜接力：取上一镜末帧填本镜首帧 → 重生成提示词 → 生成视频。
+           第 1 镜不接；上一镜没视频则不接、也不重生成；提示词重生成失败则该镜跳过。 -->
+      <label class="llm-sw" :class="{ on: autoChainFirst, dis: busy }"
+             :title="autoChainFirst
+               ? '已开启：每次生成视频会自动取上一镜末帧填本镜首帧、重生成提示词再生成。点一下关闭。'
+               : '打开后，每次生成视频会自动取上一镜末帧填本镜首帧、重生成提示词再生成（逐镜接力，镜头更连贯）。'">
+        <input class="ls-box" type="checkbox" :checked="autoChainFirst" :key="'acf:' + autoChainFirst" :disabled="busy"
+               @change="setAutoChainFirst($event.target.checked)" />
+        <span class="sw-txt">自动填充首帧</span>
+        <span class="sw-track" aria-hidden="true"><span class="sw-knob"></span></span>
+      </label>
       <!-- 禁止背景音开关（2026-10-20）：项目级、一个开关控制本集全部镜头。
            开 = 视频提示词的两个声音字段都写 N/A（无配乐、无环境声，只留人物说话）；
            关 = 标准（配乐与环境底噪按集级声音基底写，对白出现时让路）。
            🔴 文案一律用户视角：不出现「档位 / 声音基底 / 字段 / 照抄」这类实现词。
-           🔴 不手动置脏：切完档 curPromptSig 里的 audio 变了 → 已生成的提示词自动变琥珀。 -->
-      <label class="llm-sw audio-sw" :class="{ on: audioSwOn, dis: busy }"
+           🔴 不手动置脏：切完档 curPromptSig 里的 audio 变了 → 已生成的提示词自动变琥珀。
+           🔴 2026-10-27：与「自动填充首帧」统一为常规蓝色开关（去掉 audio-sw 的琥珀色，
+              避免被误认为脏标记；两个开关视觉一致）。 -->
+      <label class="llm-sw" :class="{ on: audioSwOn, dis: busy }"
              :title="audioSwOn
                ? '已开启：生成的视频只有人物说话声，没有配乐和环境声。点一下恢复原来的声音。'
                : '打开后，生成的视频只有人物说话声，没有配乐和环境声。'">
@@ -375,7 +486,7 @@
     <Teleport v-if="tpReady" to="#shots-batch">
       <button class="btn sm" :class="{ regen: !batchP && !batchPStop && prompts.some(p => p.text.trim()), danger: batchP || batchPStop, 'stale-need': !batchP && !batchPStop && anyPromptStale }"
               :disabled="batchPStop || batchV"
-              :title="anyPromptStale && !batchP ? '有镜头的提示词过期了（分镜或素材改过）→ 点这里批量重做，也可以只补还没生成的' : (batchP ? '点击停止：当前这个镜头跑完就停，剩下的不再执行' : '重新生成所有镜头的提示词，也可以只补还没生成的')"
+              :title="anyPromptStale && !batchP ? '有镜头的提示词过期了（分镜或素材改过）→ 点这里批量重做，也可以只补还没生成的' : (batchP ? '点击停止：立即结束当前镜头，剩下的不再执行' : '重新生成所有镜头的提示词，也可以只补还没生成的')"
               @click="batchPrompts">
         <span v-if="batchPStop" class="busy-txt"><i class="spin"></i>停止中…</span>
         <span v-else-if="batchP">停止批量({{ batchPN }}/{{ batchPTotal }})</span>
@@ -437,6 +548,21 @@
           <button class="btn" @click="askBatchAll">全部重新生成</button>
           <button class="btn" @click="askBatchMissing">只生成缺失的</button>
           <button class="btn ghost" @click="askBatch = null">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 中文译文覆盖英文确认弹框（点双栏中间箭头触发） -->
+    <div v-if="zhOverwrite !== null" class="modal-mask" @click.self="zhOverwrite = null">
+      <div class="modal">
+        <div class="modal-title">将中文译文覆盖到英文提示词？</div>
+        <div class="modal-body" style="max-height:none; overflow:visible">
+          覆盖后，本镜<b>英文提示词</b>会被替换为「中文译文翻译回英文」的结果。
+          已生成的视频将标为<b>需要重做</b>（提示词内容变了）。台词 <code>&lt;d&gt;…&lt;/d&gt;</code> 里的中文原文不会被翻译。
+        </div>
+        <div class="modal-ops">
+          <button class="btn" @click="confirmOverwriteZh">确认覆盖</button>
+          <button class="btn ghost" @click="zhOverwrite = null">取消</button>
         </div>
       </div>
     </div>
@@ -529,6 +655,43 @@
          「刚分镜完就弹一个要我点合并的框」体验很差 —— 生成后自检超限时直接自动合并（见 generate 末尾），
          横幅与标题栏的按钮也都改成点一下直接执行。判据仍是行内黄标那一套（promptlib.mergeAllShots），
          被并掉的那一镜只是槽位记录清空（磁盘文件仍在），合并后的镜带 _rev 脏标（提示词/视频自动标过期）。 -->
+
+    <!-- 就地挑图浮层（2026-10-27）：数据源 = 项目角色场景库（跨集共享）。角色 tab 显示父图，
+         点选后父图 + 各视角子图整组填入该镜参考图；场景 tab 一张一填。 -->
+    <div v-if="libPick >= 0" class="modal-mask" @click.self="closeLibPick">
+      <div class="modal lib-pick-modal">
+        <div class="modal-title">挑参考图（镜头 {{ libPick + 1 }}）</div>
+        <div class="lib-pick-tabs">
+          <button class="lp-tab" :class="{ on: libPickTab === 'character' }"
+                  @click="libPickTab = 'character'">角色</button>
+          <button class="lp-tab" :class="{ on: libPickTab === 'scene' }"
+                  @click="libPickTab = 'scene'">场景</button>
+        </div>
+        <div class="modal-body lib-pick-body">
+          <div v-if="libPickBusy" class="hint"><i class="spin"></i> 正在读取项目角色场景库…</div>
+          <div v-else-if="!libPickList.length" class="hint">
+            项目角色场景库还没有{{ libPickTab === 'scene' ? '场景' : '角色' }}。
+            {{ libPickTab === 'scene' ? '场景' : '角色' }}需先在某集的「角色 & 场景」里「保存到项目」入库。
+          </div>
+          <div v-else class="lp-grid">
+            <div v-for="it in libPickList" :key="it.key" class="lp-item"
+                 :class="{ added: it.added }" :title="it.added ? (it.name + '（已添加）') : it.title"
+                 @click="it.added ? null : pickLibEntry(it)">
+              <div class="lp-thumb">
+                <img v-if="it.abs" :src="refSrc(it.abs)" />
+                <div v-else class="ph">{{ it.name[0] }}</div>
+                <span v-if="it.added" class="lp-added">已添加</span>
+              </div>
+              <div class="lp-name">{{ it.name }}</div>
+              <div v-if="it.n > 1" class="lp-count">{{ it.n }} 张</div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-ops">
+          <button class="btn ghost" @click="closeLibPick">取消</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -537,9 +700,9 @@ import { useProject as useProjectStore } from './stores/project.js'
 import { usePipeline, fmtMs } from './stores/pipeline.js'
 import { stepLog, secs, dbgPrompt } from './ulog.js'
 import { composeSystem, composeUser, normalizeProfile, currentStyleLimits } from './prompts.js'
-import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, mergeShotPair, mergeAllShots, fitDurs, fitShotCount, pacingPlan, shotCheck, storyUnits, sceneKey, sceneAlign, sceneCardIssues, sceneDeclIssues, charAlign, stripTailEnNote, profileBrief, splitShot, splitAll, splitTag, auditModelArchive, normSetting, settingBlock, audioBaseBlock, audioRulesBlock, anchorBrief, pickProfileField } from './promptlib.js'
+import { durWarnings, durSuggest, durFit, durTag, contWarnings, mergeWarnings, mergeShotPair, mergeAllShots, mergeFragments, planDurationFix, splitGroups, countActionBeats, DUR_CFG, fitDurs, fitShotCount, pacingPlan, shotCheck, storyUnits, sceneKey, sceneAlign, sceneCardIssues, sceneDeclIssues, charAlign, stripTailEnNote, profileBrief, splitShot, splitAll, splitTag, auditModelArchive, normSetting, settingBlock, audioBaseBlock, audioRulesBlock, anchorBrief, pickProfileField } from './promptlib.js'
 import { parseRes, resLabel, optsWith, clampDur, seg, joinPath } from './resutil.js'
-import { baseOf, variantOf, groupProfiles } from './variant.js'
+import { baseOf, variantOf, groupProfiles, groupCards } from './variant.js'
 import { touchRevs, sigStale, staleReason, refOrderSig, SIG_V } from './stale.js'
 import { overrideOf } from './llmSource.js'
 import { taskState } from './taskState.js'
@@ -567,6 +730,12 @@ export default {
   data() {
     return {
       shots: [], busy: false,
+      // 🔴 分镜生成三阶段加载框（2026-10-26）：genStage = 当前阶段文案，genStop = 用户是否点了停止。
+      //    genStage 为空 = 不显示加载框；有值 = 模态加载框带实时提示语 + 停止按钮。
+      genStage: '', genStop: false, genStopBusy: false,
+      // 🔴 大模型流式进度（2026-10-26）：llm:delta 事件回传的「已生成 N 字」，显示在加载框提示语下方，
+      //    让用户看到模型在逐字输出、不是卡死。setGenStage 切换阶段时清空。
+      genLive: '',
       // 参考图拖动排序（运行态，不落库）：dragFrom = 拖起的起点 {i,k}；dragTo = 当前悬停的目标位
       dragFrom: null, dragTo: null,
       // H3 提示词（原 StagePrompts）
@@ -577,6 +746,12 @@ export default {
       // chainBusy = 「一键续接首帧」在跑；frameStale = { 镜头下标: 'changed' | 'gone' }
       //   —— 首帧取自上一镜末帧、而上一镜后来又重新出片 → 这个首帧就过期了，行上给黄标。
       frameBusy: -1, chainBusy: false, frameStale: {},
+      // 中英翻译（2026-10-27）：promptZhOpenIdx = 当前展开中文栏的镜头下标（-1 = 全收起）；
+      // promptZhBusy = 正在翻译的镜头下标（-1 = 空闲）；zhOverwrite = 覆盖确认弹框的镜头下标（null = 关闭）
+      promptZhOpenIdx: -1, promptZhBusy: -1, zhOverwrite: null,
+      // 就地挑图浮层（2026-10-27）：libPick = 目标镜头下标（-1=关闭）；libPickTab = 'character'|'scene'；
+      // libPickBusy = 正在拉项目库。数据源 = 项目角色场景库（跨集共享），不是本集卡片。
+      libPick: -1, libPickTab: 'character', libPickBusy: false,
       // 批量任务（块 3 标题行的两个按钮）：batch*=队列在跑；*Stop=已点停止等当前子任务收尾；
       // askBatch=范围选择弹窗 { kind: 'prompts' | 'videos' }
       // batch*N/Total=按钮上的进度（正在生成第 N 个 / 共 Total 个），跑完/停止归零
@@ -638,6 +813,59 @@ export default {
     /** 参考素材上限（模板里显示「最多 N 张/个」用；method 里放常量不会挂到实例上，必须走 computed） */
     maxRefImg() { return MAX_REF_IMG },
     maxRefVid() { return MAX_REF_VID },
+    /**
+     * 就地挑图浮层的展示列表（2026-10-27）：读项目角色场景库，按 libPickTab 过滤。
+     * - 角色 tab：用 groupCards 按主体（baseOf，双横杠视角变体归组）归组，每组只显示父图（父卡当前选中图），
+     *   点选后整组（父 + 各视角子图）一起填入。n = 该组条目数（>1 表示带视角子图）。
+     * - 场景 tab：场景无变体，一条一图。
+     * - 🔴 added：该组是否已有一张图挂在本镜参考图区（已挂则浮层里置灰、不可再点）。
+     * @returns [{ key, name, abs, n, title, group, added }]
+     */
+    libPickList() {
+      const pid = this.epProjectId
+      const entries = this.st.libEntries(pid)
+      const cur = (this.libPick >= 0 && this.prompts[this.libPick] && this.prompts[this.libPick].refs.images) || []
+      const curSet = new Set(cur)
+      // 已挂图的「主体名」集合：从本集卡目录认领（refOwnerInfo 认 ep.assetsDir 前缀）。
+      // 🔴 判「已添加」不能只按绝对路径：项目库条目目录（assets/characters/李白）与本集图
+      //    （assets/episodes/第1集/characters/李白）是两套路径下的同名文件，路径对不上会漏判。
+      const curBases = new Set()
+      for (const abs of cur) { const b = this.refOwnerBase(abs); if (b) curBases.add(b) }
+      // 该组是否「已经挂过」：组内任一图 ① 绝对路径命中（同目录），或 ② 主体名命中已挂图。
+      const addedOf = (group, base) => group.some(e => {
+        const f = this._libSelFile(e)
+        if (!f) return false
+        if (curSet.has(joinPath(e.dir, f))) return true
+        const b = base != null ? base : baseOf(e.name)
+        return !!b && curBases.has(b)
+      })
+      if (this.libPickTab === 'scene') {
+        return entries.filter(e => e.kind === 'scene').map(e => {
+          const f = this._libSelFile(e)
+          const abs = f ? joinPath(e.dir, f) : ''
+          const group = [e]
+          return { key: 'sc-' + e.id, name: e.name, abs, n: 1, base: e.name,
+                   title: e.name, group, added: addedOf(group, e.name) }
+        }).filter(x => x.abs)
+      }
+      // 角色 tab：归组 → 只显示父图
+      const chars = entries.filter(e => e.kind !== 'scene')
+      const groups = groupCards(chars)
+      const out = []
+      for (const g of groups) {
+        const parent = g.parent ? g.parent.c : (g.items[0] && g.items[0].c)
+        if (!parent) continue
+        const f = this._libSelFile(parent)
+        if (!f) continue
+        const group = g.items.map(o => o.c)
+        out.push({
+          key: 'ch-' + g.base, name: g.base, abs: joinPath(parent.dir, f), base: g.base,
+          n: g.items.length, title: g.base + (g.items.length > 1 ? '（含视角图，整组填入）' : ''),
+          group, added: addedOf(group, g.base)
+        })
+      }
+      return out
+    },
     /** 当前视频方案的能力声明：不支持的素材入口直接不出现在界面上（换模型时 UI 自动降级） */
     caps() { return (this.st.caps && this.st.caps.video) || {} },
     /** 文件名前缀（= 集名）：2026-09-24 扁平化后一个项目共用「分镜/」「成片/」目录，
@@ -677,6 +905,15 @@ export default {
       return m === 'dialogue' ? 'dialogue' : 'full'
     },
     audioSwOn() { return this.audioMode === 'dialogue' },
+    /**
+     * 自动填充首帧（2026-10-26）：项目级开关，与 db 的 projects.auto_chain_first 同步。
+     * 🔴 与 audioMode 同款语义：从**项目行**实时读，改一次对本项目所有剧集立即生效。
+     * 开 = 每次生成视频时，自动取上一镜视频的末帧填到本镜首帧、再重生成提示词、再生成视频（逐镜接力）。
+     */
+    autoChainFirst() {
+      const p = (this.st.tree || []).find(x => x.id === this.epProjectId)
+      return !!(p && p.res && p.res.autoChainFirst)
+    },
     /**
      * 节奏体检卡的数据（双轨配时，2026-10-13）。
      * 返回 null = 当前体裁**没声明** limits.pacing（广告）→ 卡片恒不渲染，一行都不影响它。
@@ -899,25 +1136,84 @@ export default {
         if (p.task.result && p.task.result.videoState) {
           this.st.current.videoState = p.task.result.videoState
         }
-        this.initVideos(this.st.current)
+        // 🔴 2026-10-24 改：只局部合并有变化的镜头，不清 _b64 缓存（避免所有镜头视频重新读盘）。
+        //  首帧过期与左侧树仍要刷新（它们不涉及视频 base64，代价小）。
+        this.mergeVideoState(this.st.current.videoState)
         this.refreshFrameStale()
         this.st.invalidateMedia(this.epProjectId, 'shots')
       }
     })
     // 🔴 2026-10-22（Dragon 反馈「跑完一镜界面不动」）：批量每镜开跑时上一镜结果已落盘，
-    //   从磁盘重读 videoState 回填 store 缓存并重灌 vstate → 已完成的镜头实时出现在界面上
-    //   （不用等整批结束）。对发起组件（batchV=true，走本地缓存增量）也安全：重读磁盘数据一致。
+    //   从磁盘重读 videoState 回填 store 缓存并**局部**更新对应镜头 → 已完成的镜头实时出现在界面上
+    //   （不用等整批结束）。🔴 2026-10-24 改：不再 initVideos 全量重建（那会清空 _b64 缓存、
+    //   导致所有镜头视频重新读盘闪烁），改用 mergeVideoState 只合并有变化的镜头，其它镜头视频缓存不动。
     this._offTaskProg = subscribeTask('progress', (p) => {
       if (p && p.task && p.task.type === 'video' && this.st.current &&
           String(p.task.episodeId) === String(this.st.current.id) && !this.pBusy) {
+        // 🔴 首帧接力（2026-10-26）：批量逐镜接力时，run 把「接上的尾帧 + 重生成的提示词」
+        //   随 progress 透出（p.task.chain）。这里就地更新对应镜头的 UI：
+        //   首帧缩略图（refs.first）→ 新尾帧；提示词文本（text）→ 重生成结果。
+        //   逐镜实时可见，不用等整批结束。🔴 同时更新 store 权威副本 st.current.prompts，
+        //   否则切走再切回（initPrompts 读它）会短暂回到旧值 —— 虽然磁盘已写、重读会纠正，
+        //   但就地更新能保证「切回来瞬间」也是新的。
+        if (p.task.chain) {
+          const c = p.task.chain
+          const idx = Number(c.index)
+          if (Number.isInteger(idx) && idx >= 0 && this.prompts[idx]) {
+            const pp = this.prompts[idx]
+            pp.refs = pp.refs || emptyRefs()
+            if (c.firstFrame) {
+              const oldFirst = pp.refs.first
+              pp.refs.first = c.firstFrame
+              pp.refs.firstFrom = 'prev-shot'
+              pp.refs.firstSrc = c.firstSrc || undefined
+              // 首帧路径同名覆盖时清掉图片缓存，强制缩略图重读最新尾帧
+              if (oldFirst && this._ref64 && this._ref64[oldFirst] !== undefined) delete this._ref64[oldFirst]
+              if (this._ref64 && this._ref64[c.firstFrame] !== undefined) delete this._ref64[c.firstFrame]
+              if (this.frameStale) delete this.frameStale[idx]
+            }
+            if (c.prompt) {
+              pp.text = c.prompt
+              pp._rev = (pp._rev || 1) + 1
+              // 🔴 接力重生成后清签名（2026-10-27）：与 promptChain.regeneratePrompt / persistVideo 对称。
+              //   接力改了首帧 + 提示词，旧 _sig 已对不上新状态，留着会让「生成提示词」按钮
+              //   一直显示脏标记（promptStale 拿旧签名比新 curPromptSig 必判过期）。清 null →
+              //   不判过期，下次手动 genP 重写签名后恢复。
+              pp._sig = null
+              pp._gen = false
+              delete pp._genAt
+            }
+          }
+          // store 权威副本同步（就地，不整树刷新）
+          const sp = this.st.current && this.st.current.prompts
+          if (sp && sp[idx]) {
+            if (c.firstFrame) {
+              sp[idx].refs = sp[idx].refs || emptyRefs()
+              sp[idx].refs.first = c.firstFrame
+              sp[idx].refs.firstFrom = 'prev-shot'
+              sp[idx].refs.firstSrc = c.firstSrc || undefined
+            }
+            if (c.prompt) {
+              sp[idx].text = c.prompt
+              sp[idx]._rev = ((sp[idx]._rev || 1)) + 1
+              sp[idx]._sig = null
+            }
+          }
+        }
         window.studio.getEpisode(this.st.workspace, this.st.current.id).then(ep => {
           if (ep && ep.videoState && this.st.current && String(this.st.current.id) === String(ep.id) &&
               Object.keys(ep.videoState).length) {
             this.st.current.videoState = ep.videoState
-            this.initVideos(this.st.current)
+            this.mergeVideoState(ep.videoState)
           }
         }).catch(() => {})
       }
+    })
+    // 🔴 大模型流式进度（2026-10-26）：分镜生成期间实时回显「模型正在输出，已生成 N 字」，
+    //    解决「加载框提示语一直停在『正在执行第一遍分镜』、但日志其实在推进」的脱节。
+    this._offLlmDelta = window.studio.onLlmDelta((o) => {
+      if (!o || !this.genStage) return
+      this.genLive = '模型正在输出，已生成 ' + (Number(o.len) || 0) + ' 字…'
     })
   },
   /** 卸载时立刻释放视频 base64，避免常驻内存（视频是重内存块） */
@@ -928,6 +1224,7 @@ export default {
     if (this._batchVideoOff) { this._batchVideoOff.forEach(off => off && off()); this._batchVideoOff = null }
     if (this._offTaskIdle) { this._offTaskIdle(); this._offTaskIdle = null }
     if (this._offTaskProg) { this._offTaskProg(); this._offTaskProg = null }
+    if (this._offLlmDelta) { this._offLlmDelta(); this._offLlmDelta = null }
   },
   methods: {
     clampDur,   // 模板里 @change 夹取用
@@ -975,6 +1272,23 @@ export default {
           : '已关闭「禁止背景音」：视频会重新带上配乐和环境声。')
       } catch (e) { this.st.fail(e) }
     },
+    /**
+     * 切换「自动填充首帧」（2026-10-26）：项目级 → 对本项目所有剧集立即生效。
+     * 开 = 每次生成视频（单镜 & 批量）时逐镜接力：取上一镜末帧填本镜首帧 → 重生成提示词 → 生成视频。
+     * 🔴 不手动置脏：首帧变化会让该镜提示词签名对不上 → 已生成的视频自然标 ⚠。
+     */
+    async setAutoChainFirst(on) {
+      const pid = this.epProjectId
+      if (!pid) return
+      try {
+        const r = await window.studio.setProjectRes(pid, { autoChainFirst: !!on })
+        const p = (this.st.tree || []).find(x => x.id === Number(pid))
+        if (p && p.res) p.res.autoChainFirst = (r && r.autoChainFirst) || !!on
+        this.$root.toast(on
+          ? '已开启「自动填充首帧」：之后生成视频时，会自动取上一镜末帧填本镜首帧、重生成提示词再生成（第 1 镜不接）。'
+          : '已关闭「自动填充首帧」：视频按各自提示词独立生成，不再自动接上一镜末帧。')
+      } catch (e) { this.st.fail(e) }
+    },
     initShots(ep) {
       this.shots = JSON.parse(JSON.stringify(ep.shots || []))
       // 2026-09-23：本块不再展示档案产出条数提示行，
@@ -997,7 +1311,26 @@ export default {
       this.generate()
     },
     addRow() {
-      this.shots.push({ scene: '', chars: '', action: '', dialogue: '', camera: '中景', dur: 8, continuity: '', change: '' })
+      this.shots.push({ scene: '', chars: '', action: '', dialogue: '', camera: '中景', dur: 8, continuity: '', change: '', _lock: false })
+    },
+    /** 锁定/解锁单个镜头（2026-10-27）：锁定后整行盖蒙版禁止修改，状态随 shots 工件落库 */
+    async toggleShotLock(i) {
+      const s = this.shots[i]
+      if (!s) return
+      s._lock = !s._lock
+      this.$root.toast(s._lock ? '镜头 ' + (i + 1) + ' 已锁定' : '镜头 ' + (i + 1) + ' 已解锁')
+      await this.saveShots()
+    },
+    /** 返回所有已锁定镜头的编号（1 起） */
+    lockedShots() {
+      const arr = []
+      for (let i = 0; i < this.shots.length; i++) if (this.shots[i] && this.shots[i]._lock) arr.push(i + 1)
+      return arr
+    },
+    /** 批量任务被锁定镜头拦截时的提示文案 */
+    lockBlockMsg() {
+      const arr = this.lockedShots()
+      return '镜头 ' + arr.join('、') + ' 已锁定，请全部解锁后再批量'
     },
     /** 项目里已存在的角色/场景名（项目级资产目录 + 本集档案），让 LLM 跨集沿用同名同设定 */
     async knownNames() {
@@ -1022,10 +1355,52 @@ export default {
       const briefs = [...chars].map(([name, profile]) => ({ name, profile }))
       return { chars: [...chars.keys()], scenes: [...scenes], briefs }
     },
+    // 🔴 三阶段加载框（2026-10-26）：推进阶段提示语（界面 + 日志同步）。
+    //   stage 为空 = 关闭加载框；有值 = 显示模态框，并落一条日志。
+    setGenStage(stage, log) {
+      this.genStage = stage || ''
+      this.genLive = ''   // 切换阶段就清掉上一阶段的流式进度（「已生成 N 字」）
+      if (stage && log) { try { stepLog('阶段3 分镜脚本').info(stage) } catch (_) {} }
+    },
+    // 停止按钮：**立即硬停**（2026-10-26 二次拍板）。分两路：
+    //   ① 置 genStop → 后续检查点（合并/补画面/缝合等纯程序步骤）见即停；
+    //   ② 调 window.studio.llmCancel() → 主进程立刻 abort 当前那次 LLM 请求，
+    //      正在 await 的 llmChat 会抛「用户已停止生成」，generate 的 catch 认它走「已停止」，
+    //      不用等当前大模型调用自然跑完。
+    async stopGenerate() {
+      if (this.genStopBusy) return
+      this.genStopBusy = true
+      this.genStop = true
+      this.setGenStage('正在停止…', false)
+      try {
+        await window.studio.llmCancel()
+      } catch (e) {
+        // llmCancel 失败也不拦停止：genStop 已置位，检查点仍会兜住；这里只补一条日志
+        try { stepLog('阶段3 分镜脚本').warn('停止指令下发失败：' + (e && e.message ? e.message : e)) } catch (_) {}
+      } finally {
+        // 硬停会立刻让 generate 的 finally 清掉 genStage，这里不急着复位 genStopBusy，
+        // 但要在流程结束后复位（generate finally 里一并清）。此处先让按钮保持「停止中」短暂态。
+        setTimeout(() => { this.genStopBusy = false }, 800)
+      }
+    },
+    // 停止检查点：返回 true = 已被用户停止，调用方应中断。
+    _stopped() {
+      if (!this.genStop) return false
+      this.setGenStage('', false)
+      this.$root.toast('已停止生成分镜')
+      return true
+    },
+    // 🔴 是否为「取消 / 停止」错误（2026-10-26 云端失败弹框「取消」复用此判定）：
+    //   code 只在本地直调时在；跨 IPC 后 Error 只剩 message，所以还要匹配「已停止/已取消」字样。
+    isCancelled(e) {
+      return !!(e && (e.code === 'CANCELLED' || /已停止生成|已取消|SKIP_CANCELLED/.test(String(e.message || e))))
+    },
     async generate() {
       this.busy = true
+      this.genStop = false
       const t0 = Date.now()
       this.pl.beginGen(2)
+      this.setGenStage('正在执行第一遍分镜…', true)
       const L = stepLog('阶段3 分镜脚本')
       L.start('正在生成分镜：LLM 按改编稿拆分镜头并产出角色/场景档案（改编稿 ' + this.adapted.length + ' 字）')
       try {
@@ -1087,19 +1462,142 @@ export default {
           const scene = fixSceneName(s.scene, prev)
           prev = scene
           const fit = durFit(s)
-          const modeled = clampDur(s.dur)
-          const dur = fit > 0 ? clampDur(fit) : modeled
+          // 🔴 2026-10-26：第一遍分镜允许 1s 碎镜（clampDur 下限传 1），
+          //    碎镜随后由 mergeFragments 第二遍合并，第三遍再兜底到物理区间 [4,15]。
+          const modeled = clampDur(s.dur, DUR_CFG.pass1Min)
+          const dur = fit > 0 ? clampDur(fit, DUR_CFG.pass1Min) : modeled
           if (dur !== modeled) durFixed++
           return {
             scene, chars: s.chars || '', action: s.action || '',
             dialogue: s.dialogue || '', camera: s.camera || '', dur,
-            continuity: String(s.continuity || '').trim(), change: String(s.change || '').trim()
+            continuity: String(s.continuity || '').trim(), change: String(s.change || '').trim(),
+            // 🔴 2026-10-26：LLM 参考字段只读落库（不参与时长计算，供调试对照）
+            actionBeats: s.actionBeats != null ? Number(s.actionBeats) || 0 : 0,
+            estDur: s.estDur != null ? Number(s.estDur) || 0 : 0
           }
         })
+
+        // 🔴 阶段2（2026-10-26）：合并第一遍产生的相邻碎镜（scene 相等 + 至少一个 <4s + 装得下）。
+        this.setGenStage('正在执行第二遍分镜（合并碎镜）…', true)
+        if (this._stopped()) return
+        const frag = mergeFragments(this.shots)
+        if (frag.count) {
+          this.shots = frag.shots
+          L.info('第二遍分镜：已合并 ' + frag.count + ' 处相邻碎镜')
+        }
         // 第 2 批：内容超过单镜生成上限的镜头按台词边界拆开。程序全权执行、立即出结果，不依赖 LLM；
         // 拆出来的段带「✂ 程序拆分」黄标（画面是程序按标点粗切的），用户可再点「AI 重写」让模型补写画面。
         const sp = splitAll(this.shots)
         this.shots = sp.shots
+
+        // 🔴 阶段3（2026-10-26，方案Y）：物理区间 [4,15] 兜底 + LLM 再优化。
+        //   第一遍允许 1s 碎镜、第二遍合并后，仍可能残留两类超界镜头：
+        //     ① <4s（内容太少，合并判据没接上，或拆出来的尾段）→ 调 LLM「加画面不加台词」
+        //        撑满 4s（pad.md），dur 同时贴到 4s。
+        //     ② >15s → 已由 splitAll 拆成多段，但画面是程序按标点粗切、两段构图雷同，
+        //        这里调 LLM「首尾衔接缝合」（split.md），让拆出的两镜拼起来像一次连续动作，
+        //        不穿帮跳变。
+        //   两者都是「真调 LLM 改画面」而非改数字；每步推进加载框提示语 + 落日志 + 停止检查点。
+        this.setGenStage('正在校验镜头时长（物理区间 4~15s）…', true)
+        if (this._stopped()) return
+        const dfix = planDurationFix(this.shots)
+        const padSystem = dfix.stretch.length
+          ? await composeSystem({ specs: ['pad.md'], mustHave: ['"action"', '"camera"'], task: 'pad' })
+          : ''
+        const splitSystem = splitGroups(this.shots).length
+          ? await composeSystem({ specs: ['split.md'], mustHave: ['"shots"'], task: 'split' })
+          : ''
+        if (this._stopped()) return
+
+        // ① <4s 镜头：LLM 补画面撑满 4s（台词一字不动）。
+        for (const i of dfix.stretch) {
+          this.setGenStage('正在优化镜头 ' + (i + 1) + '（补画面撑满 4 秒，不加台词）…', true)
+          if (this._stopped()) return
+          const s = this.shots[i]
+          const src = (s._split || {}).src || s
+          try {
+            const user = await composeUser('pad.md', {
+              shot: JSON.stringify({
+                scene: src.scene, chars: src.chars, dialogue: src.dialogue,
+                dur: DUR_CFG.durMin, action: s.action, camera: s.camera
+              }, null, 2)
+            })
+            dbgPrompt('阶段3 补画面', '文字模型 · 第 ' + (i + 1) + ' 镜', [['system', padSystem], ['user', user]])
+            const text = await window.studio.llmChat([
+              { role: 'system', content: padSystem },
+              { role: 'user', content: user }
+            ], { temperature: 0.7, maxTokens: 2048, json: true, stage: 'split', providerOverride: overrideOf('split'), label: '阶段3 补画面' })
+            const r = parse_json(text) || {}
+            const act = String(r.action || '').trim()
+            const cam = String(r.camera || '').trim()
+            if (act) s.action = act
+            if (cam) s.camera = cam
+            s._rev = (s._rev || 1) + 1
+            s.dur = DUR_CFG.durMin
+            L.info('阶段3：第 ' + (i + 1) + ' 镜不足 4s，已调模型补画面并拉长到 4s（台词未动）')
+          } catch (e) {
+            // 🔴 云端失败弹框后用户点「取消」→ 必须中止整个分镜，不能当成「这镜补画面失败」吞掉继续跑。
+            if (this.isCancelled(e)) throw e
+            // 单个镜头补画面失败不致命：数字兜底到 4s，保证送去视频模型永远合法。
+            s.dur = DUR_CFG.durMin
+            L.warn('阶段3：第 ' + (i + 1) + ' 镜补画面失败（' + (e && e.message ? e.message : e) + '），已按 4s 数字兜底')
+          }
+        }
+
+        // ② >15s 拆出的组：LLM 首尾衔接缝合（把同一「瞬间」写成上一段结尾=下一段开头）。
+        const groups = splitGroups(this.shots)
+        for (const g of groups) {
+          if (g.idx.length < 2) continue
+          this.setGenStage('正在缝合镜头 ' + (g.idx[0] + 1) + '~' + (g.idx[g.idx.length - 1] + 1) + ' 的衔接…', true)
+          if (this._stopped()) return
+          const head = g.idx[0]
+          const src = (this.shots[head]._split || {}).src || this.shots[head]
+          const parts = g.idx.map((k, n) => ({
+            n: n + 1,
+            dialogue: String(this.shots[k].dialogue || ''),
+            dur: this.shots[k].dur,
+            action: String(this.shots[k].action || ''),
+            camera: String(this.shots[k].camera || '')
+          }))
+          try {
+            const user = await composeUser('split.md', {
+              shot: JSON.stringify(src, null, 2),
+              parts: JSON.stringify(parts, null, 2),
+              n: g.idx.length
+            })
+            dbgPrompt('阶段3 衔接缝合', '文字模型 · 镜头 ' + (g.idx[0] + 1) + ' 拆 ' + g.idx.length + ' 段', [['system', splitSystem], ['user', user]])
+            const text = await window.studio.llmChat([
+              { role: 'system', content: splitSystem },
+              { role: 'user', content: user }
+            ], { temperature: 0.7, maxTokens: 3072, json: true, stage: 'split', providerOverride: overrideOf('split'), label: '阶段3 衔接缝合' })
+            const parsed = parse_json(text)
+            const list = Array.isArray(parsed) ? parsed : pickArr(parsed, ['shots', '镜头', '镜头列表'], new Set())
+            if (!Array.isArray(list) || list.length !== g.idx.length) {
+              L.warn('阶段3：镜头 ' + (g.idx[0] + 1) + ' 的衔接缝合返回 ' + (Array.isArray(list) ? list.length : 0) +
+                ' 段，与段数 ' + g.idx.length + ' 不符，本次缝合放弃（保留程序粗切画面）')
+              continue
+            }
+            g.idx.forEach((k, n) => {
+              const s = this.shots[k]
+              const r = list[n] || {}
+              const act = String(r.action || '').trim()
+              const cam = String(r.camera || '').trim()
+              if (act) s.action = act
+              if (cam) s.camera = cam
+              s._rev = (s._rev || 1) + 1
+              if (s._split) s._split.ai = true
+            })
+            L.info('阶段3：镜头 ' + (g.idx[0] + 1) + ' 拆出的 ' + g.idx.length + ' 段已衔接缝合（首尾连续、防穿帮）')
+          } catch (e) {
+            // 🔴 云端失败弹框后用户点「取消」→ 必须中止整个分镜，不能当成「这组缝合失败」吞掉继续跑。
+            if (this.isCancelled(e)) throw e
+            L.warn('阶段3：镜头 ' + (g.idx[0] + 1) + ' 的衔接缝合失败（' + (e && e.message ? e.message : e) + '），保留程序粗切画面')
+          }
+        }
+
+        if (dfix.split.length) {
+          L.warn('阶段3：仍有 ' + dfix.split.length + ' 个镜头超过 15s 上限，请检查拆分结果')
+        }
 
         // 🔴 时长容量闭环（2026-10-12）：**镜头数装不下脚本声明时长**时按段落秒数补镜。
         //    与 splitAll 是两件事：splitAll 治「单个镜头内容太多」（台词念不完），
@@ -1295,17 +1793,32 @@ export default {
         }
 
         // 🔴 2026-10-16 二次拍板（Dragon：「不需要用户点识别装扮；你自动识别出来并且建卡」）：
-        //    分镜是建卡的原料，生成完就地**置票**，后面的
-        //    「按档案生成图片提示词 → 识别装扮 → 建派生卡」
+        //    分镜是建卡的原料，生成完就地**置票**，后面的「识别装扮 → 建派生卡」
         //    由常驻挂载的角色&场景块收到票之后自己跑完 —— 用户只需要点这一次「生成分镜」。
         //    （出图与填镜头仍是用户手点的「生成图片」「一键填充」两个按钮。）
+        //    🔴 2026-10-26 二次拍板：「按档案生成图片提示词」**不再**随「生成分镜」自动触发，
+        //       改由用户手动点「批量生成提示词」或单卡生成按钮（StageChars.runBatchP）。
+        //       所以这里置的票现在只驱动「识别装扮 → 建派生卡」这一步。
         //    位置必须在自检 / 自动合并**之后**：自动流程读的是**最终**的镜头列表（合并会改 shots）。
         //    ⚠️ 只置票不执行：两个阶段是两个组件，执行那部分要动 cards / busy，是 StageChars 的事。
         this.st.requestAuto(this.st.current && this.st.current.id)
       } catch (e) {
-        L.fail('分镜生成失败', Date.now() - t0, e)
-        this.st.fail(e)
-      } finally { this.busy = false; this.pl.endGen(2) }
+        // 🔴 云端失败弹框「取消」/ 用户点停止 → 走「已停止」而非「失败」（不是真的出错了）
+        if (this.isCancelled(e)) {
+          L.warn('分镜生成已停止：' + (e && e.message ? e.message : e))
+          this.$root.toast('已停止生成分镜')
+        } else {
+          L.fail('分镜生成失败', Date.now() - t0, e)
+          this.st.fail(e)
+        }
+      } finally {
+        this.busy = false
+        this.genStage = ''
+        this.genLive = ''
+        this.genStop = false
+        this.genStopBusy = false
+        this.pl.endGen(2)
+      }
     },
     async confirmShots() {
       // 确认前再兜底夹取一次（4~15s 含边界），确保下游视频生成的秒数永远合法
@@ -1590,6 +2103,89 @@ export default {
       p._rev = (p._rev || 1) + 1
       await this.savePrompts()
     },
+    /* ---- 中英翻译（2026-10-27）---- */
+    /** 本镜是否翻译过中文（决定「收回」按钮是否显示；字段存在过即算，清空草稿后仍能收回） */
+    promptHasZh(i) {
+      const p = this.prompts[i]
+      return !!(p && typeof p.textZh === 'string')
+    },
+    /** 本镜中文栏是否展开 */
+    promptZhOpen(i) { return this.promptZhOpenIdx === i },
+    /** 中文译文是否过期：英文原文变了（与翻译时记录的快照不同）。译文为空不判过期 */
+    promptZhStale(i) {
+      const p = this.prompts[i]
+      if (!p || !(p.textZh || '').trim()) return false
+      return (p.textZhSig || '') !== (p.text || '')
+    },
+    /** 展开/收回中文栏 */
+    togglePromptZh(i) {
+      this.promptZhOpenIdx = this.promptZhOpenIdx === i ? -1 : i
+    },
+    /** 点「←」：弹覆盖确认框 */
+    askOverwriteZh(i) {
+      const p = this.prompts[i]
+      if (!p || !(p.textZh || '').trim()) { this.$root.toast('还没有中文译文，先点右下角翻译'); return }
+      this.zhOverwrite = i
+    },
+    /** 翻译的台词保护指令：<d>…</d> 与 says:"…" 里的中文台词保持原文不译 */
+    _zhGuardRule() {
+      return 'Do not translate any text inside <d>…</d> tags nor any text inside says:"…" — keep those Chinese dialogue lines exactly as-is (verbatim, including punctuation).'
+    },
+    /**
+     * 英→中翻译：把英文提示词翻成中文译文，落库到 textZh。
+     * 走 llmChat 单口（云端失败会自动弹「取消/使用本地」回退）。台词保持中文不译。
+     */
+    async translatePrompt(i) {
+      const p = this.prompts[i]
+      if (!p || !p.text.trim()) return
+      if (this.promptZhBusy !== -1) return
+      this.promptZhBusy = i
+      try {
+        const sys = 'You are a translator. Translate the given H3 video-generation prompt from English to Simplified Chinese, preserving structure, section headers, tags (like <Subject N>, <Picture N>, (Sx)), and line breaks. ' + this._zhGuardRule()
+        const text = await window.studio.llmChat([
+          { role: 'system', content: sys },
+          { role: 'user', content: p.text }
+        ], { temperature: 0.2, maxTokens: 4096, stage: 'prompt', providerOverride: overrideOf('prompt'), label: '提示词英译中' })
+        p.textZh = (text || '').trim()
+        p.textZhSig = p.text        // 记录翻译时的英文快照，用于判断「译文过期」
+        if (this.promptZhOpenIdx !== i) this.promptZhOpenIdx = i   // 翻译完自动展开中文栏
+        await this.savePrompts()
+        this.$root.toast('已生成中文译文（点「←」可覆盖回英文）')
+      } catch (e) {
+        if (e && (e.code === 'CANCELLED' || /已停止生成|已取消/.test(String(e.message || e)))) return
+        this.st.fail(e)
+      } finally {
+        this.promptZhBusy = -1
+      }
+    },
+    /** 确认覆盖：把中文译文翻译回英文，覆盖左侧英文框，并置脏（提示词/视频标 ⚠） */
+    async confirmOverwriteZh() {
+      const i = this.zhOverwrite
+      this.zhOverwrite = null
+      if (i == null) return
+      const p = this.prompts[i]
+      if (!p || !(p.textZh || '').trim()) return
+      this.promptZhBusy = i
+      try {
+        const sys = 'You are a translator. Translate the given Simplified Chinese H3 video-generation prompt back to English, preserving structure, section headers, tags (like <Subject N>, <Picture N>, (Sx)), and line breaks. ' + this._zhGuardRule()
+        const text = await window.studio.llmChat([
+          { role: 'system', content: sys },
+          { role: 'user', content: p.textZh }
+        ], { temperature: 0.2, maxTokens: 4096, stage: 'prompt', providerOverride: overrideOf('prompt'), label: '提示词中译英' })
+        p.text = (text || '').trim()
+        p.textZhSig = p.text        // 覆盖后英文=译文回译，快照对齐，不再过期
+        p._rev = (p._rev || 1) + 1  // 内容变了 → 已生成视频标 ⚠
+        await this.refreshAsig()
+        p._sig = this.curPromptSig(i)
+        await this.savePrompts()
+        this.$root.toast('已用中文译文覆盖英文提示词（本镜视频已标为需要重做）')
+      } catch (e) {
+        if (e && (e.code === 'CANCELLED' || /已停止生成|已取消/.test(String(e.message || e)))) return
+        this.st.fail(e)
+      } finally {
+        this.promptZhBusy = -1
+      }
+    },
     /** 视频「应该」匹配的上游签名（提示词版本 + 分镜版本 + 素材版本 + 素材顺序/内容） */
     curVideoSig(i) {
       const p = this.prompts[i] || {}
@@ -1649,13 +2245,21 @@ export default {
      */
     refOwnerInfo(abs) {
       const ep = this.st.current
-      if (!ep || !ep.assetsDir || !abs) return null
+      if (!ep || !abs) return null
+      // 🔴 卡图可能落在两个根下：本集私有卡（libReadonly!==true）在 ep.epAssetsDir（assets/episodes/<集名>/），
+      //    项目库共享卡在 ep.assetsDir（assets/）。两个根都要认，否则本集已挂图解析不出主体名，
+      //    会导致「按主体名判重」失效（见 libPickList.addedOf）。
+      const roots = []
+      if (ep.epAssetsDir) roots.push(ep.epAssetsDir)
+      if (ep.assetsDir && ep.assetsDir !== ep.epAssetsDir) roots.push(ep.assetsDir)
       const box = [[this.chars, 'characters', 'character sheet'], [this.scenes, 'scenes', 'scene sheet']]
-      for (const [list, kind, label] of box) {
-        for (const c of list || []) {
-          const dir = joinPath(joinPath(ep.assetsDir, kind), seg(c.name))
-          if (abs.indexOf(dir) === 0) {
-            return { label: label, name: c.name, base: baseOf(c.name), variant: variantOf(c.name) }
+      for (const root of roots) {
+        for (const [list, kind, label] of box) {
+          for (const c of list || []) {
+            const dir = joinPath(joinPath(root, kind), seg(c.name))
+            if (abs.indexOf(dir) === 0) {
+              return { label: label, name: c.name, base: baseOf(c.name), variant: variantOf(c.name) }
+            }
           }
         }
       }
@@ -1751,6 +2355,55 @@ export default {
         else delete this._refv[abs]
       })
       return ''
+    },
+    /** 库条目当前选中的图文件名（无选中则退回最后一张；库里 cur 语义与集内卡一致） */
+    _libSelFile(e) {
+      if (!e || !Array.isArray(e.images) || !e.images.length) return null
+      const i = (typeof e.cur === 'number' && e.cur >= 0 && e.cur < e.images.length) ? e.cur : e.images.length - 1
+      return e.images[i] || null
+    },
+    /** 打开就地挑图浮层（2026-10-27）：先确保项目库已加载，再打开 */
+    async openLibPick(i) {
+      if (!this.prompts[i]) return
+      this.libPick = i
+      this.libPickTab = 'character'
+      this.libPickBusy = true
+      try { await this.st.loadLibrary(this.epProjectId, true) } catch (_) {}
+      this.libPickBusy = false
+    },
+    closeLibPick() { this.libPick = -1 },
+    /**
+     * 点选浮层里的一个条目 → 填入当前镜头参考图区。
+     * - 角色：整组（父图 + 各视角子图）一起填。
+     * - 场景：单张填。
+     * 判重：按绝对路径去重（已存在的跳过）；上限 MAX_REF_IMG 截断。
+     */
+    async pickLibEntry(it) {
+      if (!it || this.libPick < 0) return
+      if (it.added) return   // 已挂过 → 不重复添加（模板里已置灰，这里再兜一道）
+      const i = this.libPick
+      const refs = this.prompts[i].refs || (this.prompts[i].refs = emptyRefs())
+      const existing = new Set(refs.images)
+      // 已挂主体的基名集合（判重用，见 libPickList.addedOf 的同口径注释）
+      const existingBases = new Set()
+      for (const abs of refs.images) { const b = this.refOwnerBase(abs); if (b) existingBases.add(b) }
+      let added = 0, skipped = 0
+      for (const e of (it.group || [])) {
+        const f = this._libSelFile(e)
+        if (!f) continue
+        const abs = joinPath(e.dir, f)
+        const b = it.base != null ? it.base : baseOf(e.name)
+        // 已挂过（同路径，或同主体）→ 跳过
+        if (existing.has(abs) || (b && existingBases.has(b))) { skipped++; continue }
+        if (refs.images.length >= MAX_REF_IMG) break
+        refs.images.push(abs); existing.add(abs); if (b) existingBases.add(b); added++
+      }
+      await this.savePrompts()
+      this.libPick = -1
+      const name = it.name
+      if (!added && skipped) this.$root.toast('「' + name + '」的图已经在参考图里了')
+      else if (!added) this.$root.toast('参考图已满（最多 ' + MAX_REF_IMG + ' 张）')
+      else this.$root.toast('已把「' + name + '」' + (added > 1 ? '整组 ' + added + ' 张' : '') + '填入参考图')
     },
     async addRef(i, kind) {
       const files = await window.studio.pickFiles(kind === 'videos' ? 'video' : 'image')
@@ -1915,6 +2568,9 @@ export default {
         }
         const st = await window.studio.fileStat(abs)
         const refs = this.prompts[i].refs || (this.prompts[i].refs = emptyRefs())
+        // 🔴 首帧路径同名覆盖（r.out 与旧 refs.first 是同一字符串）→ 清掉 _ref64 缓存，
+        //    否则缩略图仍显示上一张旧帧（大预览直接读盘是新的，小预览读缓存是旧的）。
+        if (this._ref64 && this._ref64[r.out] !== undefined) delete this._ref64[r.out]
         refs.first = r.out
         refs.firstFrom = 'prev-shot'
         // 记住「这帧是从哪个文件的哪个版本取的」——上一镜之后重新出片时靠它算过期
@@ -2096,17 +2752,29 @@ export default {
         L.done('第' + (i + 1) + '个镜头的提示词生成完成：' + text.trim().length + ' 字', ms)
         return true
       } catch (e) {
+        // 🔴 用户点了「停止」→ 不是失败：返回 'stopped'，批量循环靠它 break（不误报失败）
+        if (e && (e.code === 'CANCELLED' || /已停止生成|已取消|SKIP_CANCELLED/.test(String(e.message || e)))) {
+          L.warn('第' + (i + 1) + '个镜头的提示词生成已停止' + prog)
+          return 'stopped'
+        }
         L.fail('第' + (i + 1) + '个镜头的提示词生成失败' + prog, Date.now() - t0, e)
         this.st.fail(e)
         return false
       } finally { delete p._genAt; p._gen = false; this.pBusy = false; this.pl.endGen(4); if (!this.vBusy) this._busyEpId = null }
     },
     /* ================= 批量任务（块 3 标题行的两个按钮） ================= */
-    /** 「批量生成提示词」：跑动中点击 = 请求停止；空闲点击 = 弹框选范围 */
+    /** 「批量生成提示词」：跑动中点击 = 请求停止（硬停）；空闲点击 = 弹框选范围 */
     batchPrompts() {
-      if (this.batchP) { this.batchPStop = true; this.$root.toast('停止中：当前镜头完成后停止，剩余镜头不再执行'); return }
+      if (this.batchP) {
+        // 🔴 硬停（2026-10-24）：置停止位 + 立刻掐断当前那次 LLM 请求，不等它自然跑完
+        this.batchPStop = true
+        window.studio.llmCancel()
+        this.$root.toast('正在停止：立即结束当前镜头，剩余镜头不再执行')
+        return
+      }
       if (this.batchV) { this.$root.toast('视频批量进行中，请先等它结束或停止'); return }
       if (!this.shots.length) { this.$root.toast('还没有镜头，先点「生成分镜」'); return }
+      if (this.lockedShots().length) { this.$root.toast(this.lockBlockMsg()); return }
       this.askBatch = { kind: 'prompts' }
     },
     /** 「批量生成视频」：跑动中点击 = 整批停止（立刻中断当前任务 + 清排队 + 释放显存，结束整批）；
@@ -2115,6 +2783,7 @@ export default {
       if (this.batchV || this.taskVideoTask) { this.stopBatchV(); return }
       if (this.batchP) { this.$root.toast('提示词批量进行中，请先等它结束或停止'); return }
       if (!this.shots.length) { this.$root.toast('还没有镜头，先点「生成分镜」'); return }
+      if (this.lockedShots().length) { this.$root.toast(this.lockBlockMsg()); return }
       const missing = []
       for (let i = 0; i < this.shots.length; i++) if (!(this.prompts[i] && this.prompts[i].text.trim())) missing.push(i + 1)
       if (missing.length) { this.$root.toast('镜头 ' + missing.join('、') + ' 没有提示词，请先生成提示词'); return }
@@ -2159,23 +2828,28 @@ export default {
       if (this.stopBusy) return
       if (!this.batchVRunning && !this.vBusy) return
       this.stopBusy = true
-      // 批量走任务中心：取消任务中心的批量任务（含排队中的）+ 硬停 ComfyUI（后者让 batchVideo 的循环抛「已停止」收尾）。
-      // 🔴 取消任务中心只会标记 queued 任务取消；正在跑的靠 comfyCancel 让 comfyGenerate 抛异常收尾。
+      // 批量走任务中心：取消任务中心的批量任务（含排队中的）+ 硬停 ComfyUI。
+      // 🔴 三条互补的停止路径（2026-10-24 闭环）：
+      //   ① cancelTask(taskId) → 任务中心对 running 任务置 _cancelRequested，batchVideo.run 每镜开始前检查 → break；
+      //   ② comfyCancel('full') → inference 层 _cancelRequested，让正在轮询的 comfyGenerateInner 抛 CancelledError；
+      //   ③ inference.isCancelRequested() → 拉起 ComfyUI（ensureComfy/startComfy/waitHealth）期间也能立刻放弃等待。
+      //  三条任一命中都能停，覆盖「轮询中 / 镜头间隙 / 还在拉起 ComfyUI」三种时机。
       // 🔴 taskId 优先用组件保存的 _batchVideoTaskId；切集后它丢了 → 改用 taskVideoTask.id（任务中心里的活跃任务）。
       const taskId = this._batchVideoTaskId || (this.taskVideoTask && this.taskVideoTask.id)
       if (this.batchVRunning && taskId) cancelTask(taskId)
       if (this.batchV) { this.batchVStop = true }
       const L = stepLog('阶段6 H3视频')
-      this.$root.toast('正在停止生成并释放显存…')
+      this.$root.toast('正在停止生成…')
       try {
-        const r = await window.studio.comfyCancel('full')
+        // 🔴 2026-10-24：freeAsync=true —— 立即中断当前任务并立刻返回，不再同步等「idle + 释放显存」
+        // 那十几秒（否则按钮一直「正在停止…」，用户以为没停）。释放显存转后台补做，下次生成前会自动重载权重。
+        const r = await window.studio.comfyCancel('full', { freeAsync: true })
         const bits = []
         if (r && r.interrupted) bits.push('已中断当前任务')
         if (r && r.cleared) bits.push('已清掉 ' + r.cleared + ' 个排队任务')
-        if (r && r.freed) bits.push('已释放显存')
         const msg = bits.length ? bits.join('，') : '已发送停止指令'
         L.warn('停止生成：' + msg + (r && r.errors && r.errors.length ? '（' + r.errors.join('；') + '）' : ''))
-        this.$root.toast('已停止生成：' + msg)
+        this.$root.toast('已停止生成：' + msg + '（显存稍后自动释放）')
       } catch (e) {
         // ComfyUI 彻底无响应时这里会失败：给明确出路，别让用户以为按钮没生效
         L.fail('停止生成失败', null, e)
@@ -2197,7 +2871,7 @@ export default {
       else if (k === 'videos') this.runBatchV(false)
     },
     /** 批量生成提示词：all=true 全部重生成并覆盖；false 只补没有提示词的镜头。
-     *  逐个顺序执行，batchPStop 置位后当前子任务跑完即停（剩余丢弃），结束统一统计 */
+     *  逐个顺序执行，batchPStop 置位后立即结束（含中断当前镜头，剩余丢弃），结束统一统计 */
     async runBatchP(all) {
       const L = stepLog('阶段5 H3提示词')
       const idx = []
@@ -2207,7 +2881,7 @@ export default {
       if (!idx.length) { this.$root.toast('没有需要生成的镜头'); return }
       this.batchP = true; this.batchPStop = false; this.pBusy = true
       this.batchPN = 0; this.batchPTotal = idx.length
-      L.start('开始批量生成提示词（' + (all ? '全部重生成，覆盖已有' : '只补缺失') + '）：待生成 ' + idx.length + ' 个（共 ' + this.shots.length + ' 个镜头）；可随时点「停止批量」，当前镜头跑完后停止')
+      L.start('开始批量生成提示词（' + (all ? '全部重生成，覆盖已有' : '只补缺失') + '）：待生成 ' + idx.length + ' 个（共 ' + this.shots.length + ' 个镜头）；可随时点「停止批量」，立即结束当前镜头')
       const tAll = Date.now()
       let okN = 0, badN = 0, stopped = false
       try {
@@ -2216,6 +2890,8 @@ export default {
           this.batchPN = k + 1
           taskState.shots.text = '批量提示词 ' + (k + 1) + '/' + idx.length
           const okFlag = await this.genP(idx[k], { n: k + 1, total: idx.length })
+          // 🔴 硬停：底层 LLM 被掐断返回 'stopped' → 立即结束整批（不是失败）
+          if (okFlag === 'stopped') { stopped = true; break }
           okFlag ? okN++ : badN++
         }
         const left = idx.length - okN - badN
@@ -2255,6 +2931,31 @@ export default {
       this.vstate = s
       // 首帧接力：切集/重开时重算一次「首帧是否过期」（模板里只读结果，不在渲染路径改状态）
       this.refreshFrameStale()
+    },
+    /**
+     * 局部合并 videoState（2026-10-24 Dragon：生成视频后只刷新对应镜头，不全量刷新）。
+     * 与 initVideos（全量重建 + 清 _b64 缓存）不同：这里只把**有变化**的镜头替换进 this.vstate，
+     * 保留 _b64 缓存 → 其它镜头的视频 <video> 不重新读盘、不闪烁。
+     * 判断「变化」用序列化比较（每个镜头的 videoState 对象很小，代价可忽略），
+     * 运行时字段 _gen/_genAt 先剥掉再比（它们是 UI 态，不该触发替换）。
+     */
+    mergeVideoState(newVs) {
+      if (!newVs || typeof newVs !== 'object') return
+      const keys = Object.keys(newVs)
+      if (!keys.length) return
+      let dirty = false
+      const next = { ...(this.vstate || {}) }
+      for (const k of keys) {
+        const nv = newVs[k]
+        if (nv == null) continue
+        const old = next[k]
+        const strip = (v) => { if (!v) return v; const o = { ...v }; delete o._gen; delete o._genAt; return o }
+        if (!old || JSON.stringify(strip(old)) !== JSON.stringify(strip(nv))) {
+          next[k] = JSON.parse(JSON.stringify(nv))
+          dirty = true
+        }
+      }
+      if (dirty) this.vstate = next
     },
     /** 该镜头当前生效的分辨率（2026-10-21 起锁定 = 档位推荐画布，不再取每镜头独立值） */
     resOf(i) {
@@ -2654,6 +3355,13 @@ export default {
     },
     /** 路径 → 文件名（Windows / 通用分隔符都兼容） */
     baseName(p) { return String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() },
+    /** 点参考图缩略图 → 打开 App.vue 的媒体预览弹窗放大查看（2026-10-24 Dragon）。
+     *  refs.images 里存的是绝对路径字符串，这里拆出文件名喂给 openPreview。
+     *  拖拽排序走 drag 事件、不会触发 click，所以直接挂 @click 不会与拖动冲突。 */
+    previewRef(abs) {
+      if (!abs) return
+      this.$root.openPreview({ file: this.baseName(abs), path: abs }, 'image', '参考图')
+    },
     /** 视频卡片上的素材一行字：用了什么、什么模式 */
     refsText(ru) {
       const bits = []
@@ -2704,9 +3412,67 @@ export default {
     },
     async genV(i, ctx) {
       const s = this.shots[i]
+      // 🔴 立即进入 busy 态（2026-10-26 优化）：点「生成视频」的瞬间就让按钮变「停止生成」、
+      //   视频区显示「生成中…」、顶部进度条出现 —— 而不是等「首帧接力 + 重生成提示词」那几秒
+      //   跑完才给反馈（旧版那几秒按钮毫无反应，用户误以为卡死）。
+      if (this._busyEpId !== 'SWITCHED') this._busyEpId = this.st.current && this.st.current.id
+      this.vBusy = true
+      if (!this.vstate[i]) this.vstate[i] = { files: [], cur: -1, confirmed: false }
+      this.vstate[i]._gen = true
+      this.vstate[i]._genAt = Date.now()   // 「生成中 已用 X」的起点
+      // 后续「接力失败 / 缺提示词 / 能力降级」等提前退出时，统一经此回滚 busy 态。
+      const rollback = () => {
+        delete this.vstate[i]._genAt; delete this.vstate[i]._gen
+        this.vBusy = false
+        if (!this.pBusy) this._busyEpId = null
+      }
+      // 🔴 日志实例提前定义（2026-10-27）：首帧接力 / 提示词脏重生成都发生在提交 ComfyUI 之前，
+      //    要用它把「是否重生成提示词、为什么重生成」打出来，方便排查「点了生成却直接出片」这类问题。
+      const L = stepLog('阶段6 H3视频')
+      // 🔴 提示词脏 → 重生成（与「自动填充首帧」开关无关，2026-10-27 修）：
+      //    用户明确「不管哪种情况，提示词脏了就重写」。关掉开关后提示词脏也必须重生成，
+      //    不能再拿旧提示词直接生成视频。
+      const wasStale = this.promptStale(i)
+      let regenerated = false   // 是否已通过「首帧接力」重生成过提示词（避免重复 genP）
+
+      // 🔴 首帧接力（2026-10-26）：开关开且非第 1 镜 → 取上一镜末帧填本镜首帧、再重生成提示词。
+      //    上一镜没视频 → 不接、也不重生成；重生成失败/停止 → 该镜跳过（不生成视频）。
+      //    🔴 2026-10-27 修：首帧接力**只负责「首帧来源变了」**这一件事，重生成提示词不是无条件的
+      //    —— 首帧没变时不重新抽帧（抽帧重写 png mtime → 指纹变 → 提示词按钮假脏）。
+      //    「提示词脏了就重生成」是独立逻辑，走下面 wasStale 分支，不绑在开关上。
+      if (this.autoChainFirst && i > 0 && !ctx && this.prevShotVideo(i)) {
+        const pRefs = this.prompts[i] && this.prompts[i].refs
+        const oldFirst = pRefs && pRefs.firstSrc
+        const prevAbs = this.prevShotVideo(i)
+        const prevSt = await window.studio.fileStat(prevAbs)
+        const srcChanged = !oldFirst ||
+          oldFirst.video !== prevAbs ||
+          (prevSt && prevSt.exists &&
+            (oldFirst.mtime !== (prevSt.mtime || 0) || oldFirst.size !== (prevSt.size || 0)))
+        if (srcChanged) {
+          L.info('镜头 ' + (i + 1) + ' 首帧来源已变 → 取上一镜末帧 + 重生成提示词')
+          const fine = await this.takePrevLastFrame(i, true)
+          if (!fine) { rollback(); this.$root.toast('镜头 ' + (i + 1) + ' 取上一镜末帧失败，已跳过生成'); return false }
+          const gp = await this.genP(i)
+          if (gp === 'stopped') { rollback(); return 'canceled' }
+          if (gp === false) { rollback(); this.$root.toast('镜头 ' + (i + 1) + ' 提示词重生成失败，已跳过生成'); return false }
+          regenerated = true
+        } else {
+          L.info('镜头 ' + (i + 1) + ' 首帧来源未变 → 不抽帧、不因首帧重生成')
+        }
+      }
+      // 🔴 提示词脏了（与开关无关）：上面首帧接力没重生成过，这里补一次重生成（不抽首帧）。
+      if (wasStale && !regenerated) {
+        L.info('镜头 ' + (i + 1) + ' 提示词已脏（分镜/素材/声音档位变了）→ 重生成提示词（不抽首帧）')
+        const gp = await this.genP(i)
+        if (gp === 'stopped') { rollback(); return 'canceled' }
+        if (gp === false) { rollback(); this.$root.toast('镜头 ' + (i + 1) + ' 提示词重生成失败，已跳过生成'); return false }
+      } else if (wasStale) {
+        L.info('镜头 ' + (i + 1) + ' 提示词已脏，但首帧接力已重生成过 → 不再重复重生成')
+      }
       const pr = ((this.st.current.prompts || [])[i] || {})
       const prompt = pr.text
-      if (!prompt) { this.st.fail(new Error('镜头 ' + (i + 1) + ' 缺少 ' + this.promptZoneName() + '，请先生成本镜头的提示词')); return false }
+      if (!prompt) { rollback(); this.st.fail(new Error('镜头 ' + (i + 1) + ' 缺少 ' + this.promptZoneName() + '，请先生成本镜头的提示词')); return false }
       // 2026-10-19：单镜点「生成视频」= 接受重做 → 按钮立刻褪掉琥珀色（批量走签名自然清除）
       if (!ctx && this.videoStale(i)) await this.ackVideo(i, true)
       // 参考素材全部来自本行该镜头的设置（可不选）
@@ -2729,19 +3495,13 @@ export default {
       if (firstFrame && caps.firstFrame === false) bad.push('首帧')
       if (lastFrame && caps.lastFrame === false) bad.push('尾帧')
       if (bad.length) {
+        rollback()
         this.st.fail(new Error('当前视频模型不支持：' + bad.join('、') +
           '。请到「设置 → 生成模型方案」换一个支持它们的模型，或去掉本镜头的这些素材后再生成。'))
         return false
       }
-      // 记录本次生成所属的集（收尾写库守卫的比对基准；切集哨兵 'SWITCHED' 不覆盖）
-      if (this._busyEpId !== 'SWITCHED') this._busyEpId = this.st.current && this.st.current.id
-      this.vBusy = true
-      if (!this.vstate[i]) this.vstate[i] = { files: [], cur: -1, confirmed: false }
-      this.vstate[i]._gen = true
-      this.vstate[i]._genAt = Date.now()   // 「生成中 已用 X」的起点
       const t0 = Date.now()
       this.pl.beginGen(5)
-      const L = stepLog('阶段6 H3视频')
       const prog = ctx ? '（第 ' + ctx.n + '/' + ctx.total + ' 个）' : ''
       const mode = hasRef ? '参考模式' : (firstFrame || lastFrame ? '首尾帧模式' : '纯文字模式')
       const inputs = []
@@ -2846,6 +3606,9 @@ export default {
         episodeId: this.st.current.id,
         projectId: this.st.current.projectId,
         shotDir: this.st.current.shotDir,
+        autoChainFirst: this.autoChainFirst,
+        promptFiles: this.st.promptFiles || {},
+        audioMode: this.audioMode,
         shots: idx.map(i => this.videoShotSnapshot(i))
       }
 
@@ -2859,7 +3622,7 @@ export default {
         label: '批量生成视频',
         episodeId,
         type: 'video',
-        run: (report) => runBatchVideoTask(snapshot, report)
+        run: (report, shouldStop) => runBatchVideoTask(snapshot, report, shouldStop)
       })
       this._batchVideoTaskId = taskId
 
@@ -2875,9 +3638,13 @@ export default {
             this.st.current && this.st.current.id === episodeId) {
           this.st.current.videoState = task.result.videoState
         }
-        // 若仍停在提交时的集：重灌 vstate（任务中心已落盘）+ 刷新首帧过期 + 树 + 成片格
+        // 若仍停在提交时的集：局部合并有变化的镜头（不清 _b64 缓存，其它镜头视频不闪烁）
+        // + 刷新首帧过期 + 树 + 成片格。🔴 2026-10-26 修：原来这里 initVideos 全量重建会清空
+        // _b64 缓存、让所有镜头的视频 <video> 重新读盘闪烁 —— 尤其是「批量停止」时，
+        // 用户看到的正是「每个镜头视频区域都闪一下」。改用 mergeVideoState（与 mounted 里
+        // 两处全局订阅一致），只替换有变化的镜头，其余镜头缓存不动。
         if (this.st.current && this.st.current.id === episodeId) {
-          this.initVideos(this.st.current)
+          this.mergeVideoState(this.st.current.videoState)
           this.refreshFrameStale()
           this.st.invalidateMedia(this.epProjectId, 'shots')
         }
@@ -2904,6 +3671,9 @@ export default {
       return {
         index: i,
         prompt: pr.text,
+        // 🔴 2026-10-27：「提示词脏」标记随快照下发——批量循环据此独立重生成提示词
+        //   （与「自动填充首帧」开关无关；runBatchV 已先 refreshAsig，这里算得准）。
+        promptStale: this.promptStale(i),
         refImages: refImages.slice(), refVideos: refVideos.slice(),
         firstFrame, lastFrame,
         width: rw, height: rh, seconds: dur,
@@ -3037,7 +3807,8 @@ function fixSceneName(v, prev) {
   if (!s || /同上|如上|一样|相同|同上场景/.test(s) || s === '一致') return prev || '未命名场景'
   return s
 }
-/** 档案归一化：字符串/对象都能吃，统一成 {kind,name,role,profile,prompt,negative,candidates,cur,res,_imgRev} */
+/** 档案归一化：字符串/对象都能吃，统一成 {kind,name,role,profile,prompt,negative,candidates,cur,res,_imgRev}。
+ *  🔴 2026-10-26 起 prompt 恒置空（丢弃分镜 LLM 同批产出的生图提示词）：提示词只由用户手动生成 */
 function normArchive(list, kind) {
   const out = []
   for (const raw of list || []) {
@@ -3052,7 +3823,12 @@ function normArchive(list, kind) {
       profile: normalizeProfile(o.profile || o.档案 || ''),
       _profRev: o._profRev || 0,
       _profRevAt: o._profRevAt || 0,
-      prompt: String(o.prompt || o.promptEn || o.desc || '').trim(),
+      // 🔴 2026-10-26 用户拍板：**不写 prompt**。分镜 LLM（shots.md）同批产出的角色/场景
+      //    `prompt` 字段是完整的中文生图提示词，但用户要求「生成分镜不产出提示词」——
+      //    提示词只能由用户手动点「批量生成提示词」/ 单卡生成按钮（StageChars.runBatchP →
+      //    genPromptFromProfile → promptgen.md）按档案生成。这里把 prompt 一律置空，
+      //    negative 保留（它是反动漫词表 + 质量负面词的默认，不算「生成」）。
+      prompt: '',
       negative: o.negative || '',
       candidates: Array.isArray(o.candidates) ? o.candidates.slice() : [],
       cur: typeof o.cur === 'number' ? o.cur : -1,
@@ -3067,7 +3843,8 @@ function normArchive(list, kind) {
  * 本次生成结果 + 旧条目里的**豁免项** = 新的档案列表（2026-10-09，Dragon）。
  *
  * 语义：**重新生成分镜 = 从零重来**，本次结果就是唯一事实来源 ——
- *   - 旧档案一律不继承（**同名也不继承**）：档案内容按本次结果、已出的图归零、单卡提示词重算。
+ *   - 旧档案一律不继承（**同名也不继承**）：档案内容按本次结果、已出的图归零、单卡提示词清空
+ *     （2026-10-26 起分镜 LLM 产出的 prompt 被丢弃，提示词要手动「批量生成提示词」/ 单卡生成才回来）。
  *     所以这里不再有「同名合并」那套（旧版 mergeArchive 把 candidates / cur / _imgRev 从旧条带过来，
  *     后果是「点完重新生成分镜，卡片上还是上一批的图」，与「下游全部清空」直接冲突）。
  *   - 只有两类旧条目留下（都是**用户自己造的**，不在模型产出里）：

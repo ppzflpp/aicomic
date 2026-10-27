@@ -75,7 +75,7 @@
         <div class="tree-node">
           <div class="tree-row" @click="toggleProject(p.id)">
             <span class="caret">{{ st.expanded.has('p'+p.id) ? '▼' : '▶' }}</span>
-            <span>{{ p.name }}</span>
+            <span class="tree-title">{{ p.name }}</span>
             <i v-if="projectHasTask(p)" class="nav-dot" title="该项目下有任务在跑"></i>
             <span class="ops">
               <button title="项目配置（分辨率 / 视频质量 / 风格）" @click.stop="openProjCfg(p.id)">配置</button>
@@ -88,7 +88,7 @@
             <folder-node v-for="f in p.folders" :key="f.id" :node="f" :depth="1" />
             <div v-for="e in p.episodes" :key="e.id" class="tree-row ep-row"
                  :class="{active: st.view==='dash' && st.current && st.current.id===e.id}" @click="st.openEpisode(e.id)">
-              📄 {{ e.name }}
+              <span class="tree-title">📄 {{ e.name }}</span>
               <i v-if="episodeHasVideoTask(e.id)" class="nav-dot" title="该集有视频任务在跑（切菜单/切集不中断）"></i>
               <span class="ops">
                 <button class="op-del" title="删除集数" @click.stop="st.askDelete('episode', e.id, e.name)">✕</button>
@@ -106,7 +106,7 @@
               <div v-for="g in mediaGroups(p.id, 'scripts')" :key="'rg'+g.episodeId">
                 <div class="tree-row sub2-row" @click="st.toggleExpand('rg' + p.id + ':' + g.episodeId)">
                   <span class="caret">{{ st.expanded.has('rg' + p.id + ':' + g.episodeId) ? '▼' : '▶' }}</span>
-                  <span>{{ g.name }}</span>
+                  <span class="tree-title">{{ g.name }}</span>
                   <span class="cnt">{{ g.files.length }}</span>
                 </div>
                 <template v-if="st.expanded.has('rg' + p.id + ':' + g.episodeId)">
@@ -129,7 +129,7 @@
               <div v-for="g in assetGroups(p.id)" :key="'ca'+g.name">
                 <div class="tree-row sub2-row" @click="st.toggleExpand('c' + p.id + ':' + g.name)">
                   <span class="caret">{{ st.expanded.has('c' + p.id + ':' + g.name) ? '▼' : '▶' }}</span>
-                  <span>{{ g.name }}</span>
+                  <span class="tree-title">{{ g.name }}</span>
                   <span class="cnt">{{ g.files.length }}</span>
                 </div>
                 <template v-if="st.expanded.has('c' + p.id + ':' + g.name)">
@@ -151,7 +151,7 @@
               <div v-for="g in mediaGroups(p.id, 'shots')" :key="'sg'+g.episodeId">
                 <div class="tree-row sub2-row" @click="st.toggleExpand('sg' + p.id + ':' + g.episodeId)">
                   <span class="caret">{{ st.expanded.has('sg' + p.id + ':' + g.episodeId) ? '▼' : '▶' }}</span>
-                  <span>{{ g.name }}</span>
+                  <span class="tree-title">{{ g.name }}</span>
                   <span class="cnt">{{ g.files.length }}</span>
                 </div>
                 <template v-if="st.expanded.has('sg' + p.id + ':' + g.episodeId)">
@@ -173,7 +173,7 @@
               <div v-for="g in mediaGroups(p.id, 'films')" :key="'fg'+g.episodeId">
                 <div class="tree-row sub2-row" @click="st.toggleExpand('fg' + p.id + ':' + g.episodeId)">
                   <span class="caret">{{ st.expanded.has('fg' + p.id + ':' + g.episodeId) ? '▼' : '▶' }}</span>
-                  <span>{{ g.name }}</span>
+                  <span class="tree-title">{{ g.name }}</span>
                   <span class="cnt">{{ g.files.length }}</span>
                 </div>
                 <template v-if="st.expanded.has('fg' + p.id + ':' + g.episodeId)">
@@ -258,6 +258,8 @@
 
   <!-- 主区域 -->
   <div class="main">
+    <!-- 分镜生成加载框落点（StageShots 通过 Teleport 挂到这里，只遮功能区、不遮顶部/侧边菜单栏与底部状态栏） -->
+    <div id="stage-mask-host"></div>
     <div class="pathbar">
       <button class="btn ghost" style="padding:3px 10px; font-size:12px"
               v-if="st.view==='settings' || st.view==='prompts' || st.view==='imggen' || st.view==='vidgen'"
@@ -328,6 +330,17 @@
             <span id="adapt-ms" style="display:inline-flex;align-items:center"></span>
             <!-- 分隔线：左边是信息（字数 / 耗时），右边全是按钮 -->
             <span class="head-sep"></span>
+            <!-- 深度改编开关（2026-10-24）：默认关 = 点「改编」只做简单格式化（忠实整理 + 语句通顺）；
+                 勾上 = 点「改编」走深度共创（加戏、补血肉、改写不可拍摄的写法）。两份输出结构一致，下游分镜零改动。 -->
+            <label class="llm-sw adapt-deep-sw" :class="{ on: pl.deepAdapt, dis: adaptBusy }"
+                   :title="pl.deepAdapt
+                     ? '已勾选：点「改编」会深度共创——加戏、补血肉、改写不可拍摄的写法，改动较大。'
+                     : '默认不勾选：点「改编」只做简单格式化——忠实整理 + 语句通顺，不大改。勾上则深度共创。'">
+              <input class="ls-box" type="checkbox" :checked="pl.deepAdapt" :key="'da:' + pl.deepAdapt" :disabled="adaptBusy"
+                     @change="pl.deepAdapt = $event.target.checked" />
+              <span class="sw-txt">深度改编</span>
+              <span class="sw-track" aria-hidden="true"><span class="sw-knob"></span></span>
+            </label>
             <button class="btn h-sm" :class="{ 'stale-need': !!headStale('adapt') }"
                     :disabled="chapter.trim().length<50"
                     :title="headStale('adapt') ? '章节在上次改编后又改过 → 这里点下去会按新章节重新改编' : ''"
@@ -504,7 +517,8 @@
       </div>
 
       <input v-if="projModal.mode === 'create'" class="proj-name" type="text" v-model="projModal.name"
-             placeholder="项目名称" @keyup.enter="confirmProj" />
+             placeholder="项目名称" @keyup.enter="confirmProj" @input="projModal.nameErr = ''" />
+      <p v-if="projModal.mode === 'create' && projModal.nameErr" class="proj-name-err">{{ projModal.nameErr }}</p>
 
       <!-- 视频质量 / 视频比例（2026-10-15；2026-10-21 改版：三档 × A/B 方案 + 分辨率并进比例文案）：
            质量与比例是**上游两个输入**，选完档位后，推荐画布分辨率自动拼到「视频比例」选项标题上（如「横版 16:9 · 864×480」）。
@@ -722,6 +736,8 @@ export default {
   computed: {
     st() { return useProjectStore() },
     pl() { return usePipeline() },
+    /** 改编是否进行中（2026-10-24）：改编生成用 pl.beginGen(1) 置位，据此锁「深度改编」开关 */
+    adaptBusy() { return !!this.pl.genStartAt[1] },
     logs() { return useLogs() },
     workspaceName() { return (this.st.workspace || '').split(/[\\/]/).pop() },
     /** 分镜模块是否有后台任务在跑：任务中心里的视频任务 + 组件内的提示词/单镜任务。
@@ -1063,7 +1079,7 @@ export default {
       // 兜底：档位表没声明画布（老方案 / 加载未完成）时退回「该比例下下拉的第一项」
       const fb = (kind, dv) => ((this.st.resOptsFor(kind, aspect) || [])[0] || {}).value || dv
       this.projModal = {
-        mode: 'create', id: null, name: '',
+        mode: 'create', id: null, name: '', nameErr: '',
         img: rec ? rec.img : fb('img', '1920x1080'),
         vid: rec ? rec.vid : fb('vid', '864x480'),
         out: rec ? rec.out : fb('out', 'auto'),
@@ -1224,7 +1240,14 @@ export default {
       const res = { img: m.img, vid: m.vid, out: m.out, tier: m.tier, aspect: m.aspect, style }
       if (m.mode === 'create') {
         const name = (m.name || '').trim()
-        if (!name) { this.toast('请填写项目名称'); return }
+        if (!name) { m.nameErr = '请填写项目名称'; return }
+        // 🔴 重名检测（2026-10-26）：项目名同时是磁盘目录名，重名会互相覆盖。
+        //    前置用已加载的项目树比对（tree 的 name 是 sanitize 后的落库名），命中就在**弹窗内**
+        //    输入框下方就地红字提示（toast 会被弹窗遮住），不关弹窗；主进程 createProject 还有 DB 兜底。
+        if (this.st.tree.some(p => (p.name || '') === name)) {
+          m.nameErr = '项目名「' + name + '」已存在，请换个名字'
+          return   // 弹窗保持打开，让用户改名字
+        }
         this.projModal = null
         await this.st.createProject(name, res)
         this.toast('已新建项目：' + name)
@@ -1409,10 +1432,11 @@ export default {
       if (ws) { this.st.workspace = ws; await this.st.refresh(); await this.st.refreshEnv() }
     },
     askUnlock() { /* 🔴 锁定已全面移除：保留空实现防止遗留调用报错 */ },
-    toast(msg) {
+    toast(msg, ms) {
       this.toastMsg = msg
       clearTimeout(this._t)
-      this._t = setTimeout(() => this.toastMsg = null, 2600)
+      // 文字较多的提示可传更长的停留时间（默认 2600ms）
+      this._t = setTimeout(() => this.toastMsg = null, ms || 2600)
     }
   }
 }

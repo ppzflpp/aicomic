@@ -396,6 +396,12 @@ function normAudioMode(v) {
   return (s === 'full' || s === 'dialogue') ? s : null;
 }
 
+/** 自动填充首帧（2026-10-26）：0/1 布尔。null/undefined = 不改（COALESCE 语义）。 */
+function normAutoChainFirst(v) {
+  if (v == null || v === '') return null;
+  return v ? 1 : 0;
+}
+
 /** 规整 {img,vid,out,tier,targetSec,aspect,audioMode} 配置元组；全部非法则返回 null（tier 非法 → 回默认档） */
 function normResAll(res) {
   if (!res || typeof res !== 'object') return null;
@@ -413,8 +419,10 @@ function normResAll(res) {
   const aspect = normAspect(res.aspect);
   // 声音档位（2026-10-20）：同上，只在显式提交时写
   const audioMode = normAudioMode(res.audioMode);
-  if (!img && !vid && !out && !style && targetSec == null && !aspect && !tier && !audioMode) return null;
-  return { img, vid, out, tier, style, targetSec, aspect, audioMode };
+  // 自动填充首帧（2026-10-26）：同上，只在显式提交时写
+  const autoChainFirst = normAutoChainFirst(res.autoChainFirst);
+  if (!img && !vid && !out && !style && targetSec == null && !aspect && !tier && !audioMode && autoChainFirst == null) return null;
+  return { img, vid, out, tier, style, targetSec, aspect, audioMode, autoChainFirst };
 }
 
 function readRes(row) {
@@ -429,6 +437,8 @@ function readRes(row) {
   // 声音档位（2026-10-20）：只有 projects 有 audio_mode 列（剧集实时读所属项目，不做集级快照）。
   // 老库该列为 NULL 的理论情况按 'full' 兜底 —— 与改造前逐字一致。
   if (row.audio_mode !== undefined) r.audioMode = normAudioMode(row.audio_mode) || 'full';
+  // 自动填充首帧（2026-10-26）：只有 projects 有 auto_chain_first 列。'0'/'1' → 布尔。
+  if (row.auto_chain_first !== undefined) r.autoChainFirst = !!(Number(row.auto_chain_first) || 0);
   // 同理只有 projects 有 aspect 列（视频比例 16:9 / 9:16）。
   // 🔴 存量项目该列为 NULL → **按 res_vid 的宽高推断**，而不是给个默认值：
   //    这样老项目打开配置弹窗时看到的是它实际在用的比例，且老项目行不会被迁移改写。
@@ -452,8 +462,8 @@ function getProjectRes(db, projectId) {
 function setProjectRes(db, projectId, res) {
   const n = normResAll(res);
   if (!n) throw new Error('项目配置格式不合法：分辨率应为 宽x高（如 864x480），单集目标时长应为 0~1800 的整数秒，声音档位应为 full / dialogue');
-  db.raw.prepare('UPDATE projects SET res_img=COALESCE(?,res_img), res_vid=COALESCE(?,res_vid), res_out=COALESCE(?,res_out), res_tier=COALESCE(?,res_tier), style=COALESCE(?,style), target_sec=COALESCE(?,target_sec), aspect=COALESCE(?,aspect), audio_mode=COALESCE(?,audio_mode) WHERE id=?')
-    .run(n.img, n.vid, n.out, n.tier, n.style, n.targetSec, n.aspect, n.audioMode, projectId);
+  db.raw.prepare('UPDATE projects SET res_img=COALESCE(?,res_img), res_vid=COALESCE(?,res_vid), res_out=COALESCE(?,res_out), res_tier=COALESCE(?,res_tier), style=COALESCE(?,style), target_sec=COALESCE(?,target_sec), aspect=COALESCE(?,aspect), audio_mode=COALESCE(?,audio_mode), auto_chain_first=COALESCE(?,auto_chain_first) WHERE id=?')
+    .run(n.img, n.vid, n.out, n.tier, n.style, n.targetSec, n.aspect, n.audioMode, n.autoChainFirst, projectId);
   return getProjectRes(db, projectId);
 }
 
@@ -503,6 +513,15 @@ function getTree(db, workspace) {
 
 function createProject(db, workspace, name, res) {
   const clean = sanitize(name);
+  // 🔴 重名检测（2026-10-26）：项目名同时是磁盘目录名（<工作区>/projects/<项目名>），
+  //    重名会让两个项目指向同一目录，图片/视频/剧本互相覆盖。这里在落库前拦一道，
+  //    抛错让渲染层提示「项目名已存在，请换个名字」。
+  const dup = db.raw.prepare('SELECT id FROM projects WHERE name=?').get(clean);
+  if (dup) {
+    const err = new Error('项目名已存在：' + name);
+    err.code = 'DUPLICATE_PROJECT';
+    throw err;
+  }
   const n = normResAll(res) || {};
   // 视频比例（2026-10-15）：null = 用户没选 → 读时按 res_vid 推断（存量行为不变）
   const aspect = n.aspect || null;

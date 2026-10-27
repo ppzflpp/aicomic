@@ -157,6 +157,14 @@ contextBridge.exposeInMainWorld('studio', {
 
   inferHealth: () => ipcRenderer.invoke('infer:health'),
   llmChat: (messages, opts) => ipcRenderer.invoke('infer:llm', messages, opts),
+  // 强制取消当前 LLM 请求（批量提示词硬停用）：立刻掐断进行中的那次 LLM 调用
+  llmCancel: () => ipcRenderer.invoke('infer:llm-cancel'),
+  // 订阅大模型流式输出进度（{len, stage}）：加载框据此显示「模型正在输出，已生成 N 字」
+  onLlmDelta: (cb) => {
+    const h = (_e, o) => { try { cb(o); } catch (_) {} };
+    ipcRenderer.on('llm:delta', h);
+    return () => ipcRenderer.removeListener('llm:delta', h);
+  },
   // 大模型来源（本地 / 云端）：设置页是唯一持久入口；testLlm 只做一次连通性探测
   llmConfig: () => ipcRenderer.invoke('llm:config:get'),
   setLlmCloud: (patch) => ipcRenderer.invoke('llm:config:set', patch),
@@ -167,7 +175,8 @@ contextBridge.exposeInMainWorld('studio', {
   comfyUpscale: (args) => ipcRenderer.invoke('comfy:upscale', args),
   // 强制停止生成（2026-10-09）：中断当前任务 + 清排队 + 释放显存。
   // mode='skip' = 单镜跳过（只中断当前镜、保留模型不释放显存，下一镜接着跑）；默认 'full' 整批停止。
-  comfyCancel: (mode) => ipcRenderer.invoke('comfy:cancel', mode),
+  // opts.freeAsync=true = 立即中断立即返回，等 idle + 释放显存转后台（批量停止用，别卡 UI）。
+  comfyCancel: (mode, opts) => ipcRenderer.invoke('comfy:cancel', mode, opts),
   exportVideo: (args) => ipcRenderer.invoke('export:video', args),
   findFfmpeg: () => ipcRenderer.invoke('ffmpeg:find'),
   videoLastFrame: (payload) => ipcRenderer.invoke('video:lastFrame', payload),

@@ -35,6 +35,85 @@ function safeStorageCrypto() {
   } catch (_) { return null; }
 }
 
+/**
+ * 把云端大模型调用的原始错误翻译成「用户能看懂的话」（2026-10-26）。
+ * 返回 { title, detail }：title = 一句话结论，detail = 展开的原因与建议。
+ * 分不清具体原因时就给通用兜底文案，绝不把堆栈 / 英文 raw 甩给用户。
+ */
+function friendlyLlmError(err, stage) {
+  const raw = String((err && err.message) || err || '');
+  const where = (() => {
+    const s = String(stage || '');
+    if (!s) return '';
+    const hit = llmProvider.STAGES.find(x => x.id === s) || llmProvider.STAGES.find(x => s.indexOf(x.id) >= 0);
+    return hit ? '（' + hit.label.replace('创作台·', '') + '环节）' : '';
+  })();
+  const KEY = /未配置 API Key/i;
+  const NET = /请求失败|连接中断|fetch failed|网络|ENOTFOUND|ECONN/i;
+  const HTTP = /返回错误 (\d+)/i;
+  const STREAM = /流式读取中断/i;
+  const EMPTY = /返回内容为空/i;
+  const TRUNC = /max_tokens=.*截断|finish_reason=length/i;
+  const TIMEOUT = /超时/i;
+
+  if (KEY.test(raw)) {
+    return {
+      title: '云端大模型还没配置密钥',
+      detail: '当前' + where + '走的是云端大模型，但「设置 → 大模型来源」里还没有填 API 密钥。\n\n'
+        + '可以点「使用本地模型」改用内置本地模型继续跑；或点「取消」先去设置页填好密钥再重试。'
+    };
+  }
+  if (NET.test(raw)) {
+    return {
+      title: '连不上云端大模型',
+      detail: '当前' + where + '走的是云端大模型，但网络请求没成功（可能是没联网、网络不稳定，或云端地址配错了）。\n\n'
+        + '可以点「使用本地模型」改用内置本地模型继续跑；或点「取消」去检查网络 / 云端地址后重试。'
+    };
+  }
+  if (HTTP.test(raw)) {
+    const m = raw.match(HTTP);
+    const code = m ? m[1] : '';
+    const reason = code === '401' ? '密钥不对或已失效'
+      : code === '402' || code === '429' ? '云端额度不足或请求太频繁'
+      : code === '404' ? '云端地址或模型名配错了'
+      : /^5\d\d$/.test(code) ? '云端服务暂时出问题'
+      : '云端返回了错误（状态码 ' + code + '）';
+    return {
+      title: '云端大模型拒绝了请求',
+      detail: '当前' + where + '走的是云端大模型，但云端返回了错误：' + reason + '。\n\n'
+        + '可以点「使用本地模型」改用内置本地模型继续跑；或点「取消」去检查密钥 / 额度 / 地址后重试。'
+    };
+  }
+  if (STREAM.test(raw)) {
+    return {
+      title: '云端大模型的回答中断了',
+      detail: '当前' + where + '走的是云端大模型，但返回内容读到一半就断了（通常是网络波动）。\n\n'
+        + '可以点「使用本地模型」改用内置本地模型继续跑；或点「取消」稍后再试。'
+    };
+  }
+  if (TIMEOUT.test(raw)) {
+    return {
+      title: '云端大模型响应超时',
+      detail: '当前' + where + '走的是云端大模型，但等了很久都没返回结果。\n\n'
+        + '可以点「使用本地模型」改用内置本地模型继续跑；或点「取消」稍后再试。'
+    };
+  }
+  if (EMPTY.test(raw) || TRUNC.test(raw)) {
+    return {
+      title: '云端大模型没给出可用结果',
+      detail: '当前' + where + '走的是云端大模型，但它没有返回完整、可用的内容。\n\n'
+        + '可以点「使用本地模型」改用内置本地模型继续跑；或点「取消」重试。'
+    };
+  }
+  // 通用兜底
+  return {
+    title: '云端大模型调用失败',
+    detail: '当前' + where + '走的是云端大模型，但调用没有成功。\n\n'
+      + '可以点「使用本地模型」改用内置本地模型继续跑；或点「取消」终止本次任务。\n\n'
+      + '（原始信息：' + (raw.slice(0, 120) || '未知错误') + '）'
+  };
+}
+
 /** 注册全部 IPC。getWin 返回主窗口（用于目录选择对话框），测试环境可传 () => null。 */
 function registerIpc(db, getWin, fallbackWorkspace) {
   // 日志总线与系统监控都要拿到窗口才能推事件；在这里统一初始化，
@@ -537,12 +616,67 @@ function registerIpc(db, getWin, fallbackWorkspace) {
   ipcMain.handle('infer:health', () => inference.health());
   ipcMain.handle('infer:llm', async (e, messages, opts) => {
     const o = opts || {};
+    // 🔴 流式进度回传（2026-10-26）：大模型逐字输出时，把累计字数实时推给渲染层，
+    //    加载框据此显示「模型正在输出，已生成 N 字」，不再停在「正在执行第一遍分镜」干等。
+    //    节流：每满 300 字才推一次，避免逐字刷屏。
+    let lastLen = 0;
+    const onDelta = (_delta, full) => {
+      const n = String(full || '').length;
+      if (n - lastLen < 300) return;
+      lastLen = n;
+      try {
+        if (e.sender && !e.sender.isDestroyed()) e.sender.send('llm:delta', { len: n, stage: o.stage || '' });
+      } catch (_) { /* 窗口没了就算了 */ }
+    };
     // 🔴 只有**本地**环节才去确保 / 拉起 llama-server：走云端的环节与本地引擎无关，
     //    以前无条件 ensure，会把「只想用云」的用户强行拖起 10GB 的本地模型。
-    if (llmProvider.resolve(o.stage || o.label, o.providerOverride).kind === 'local') {
+    const first = llmProvider.resolve(o.stage || o.label, o.providerOverride);
+    if (first.kind === 'local') {
       await orchestrator.ensureLlm(o.label || logger.tag());
     }
-    return inference.llmChat(messages, o);
+    try {
+      return await inference.llmChat(messages, { ...o, onDelta });
+    } catch (err) {
+      // 🔴 云端失败「交互式回退」（2026-10-26 用户拍板，撤销了此前的自动回退）：
+      //    云端调用失败时**不自动换模型**，而是弹框问用户——「取消」= 中止本次任务、
+      //    「使用本地模型」= 切本地继续跑。用户主动「停止」不在此列（直接照常抛取消错误）。
+      if (first.kind !== 'cloud') throw err;                 // 本来就走本地，失败没有回退余地
+      if (err && (err.name === 'LlmCancelledError' || err.code === 'CANCELLED')) throw err; // 用户停止，不弹框
+      const friendly = friendlyLlmError(err, o.stage || o.label);
+      logger.warn('云端大模型调用失败，等待用户选择：' + (err && err.message ? err.message : err));
+      const win = getWin ? getWin() : null;
+      // 没窗口（理论上不会发生：渲染层 invoke 必然有窗口）→ 兜底直接抛原错
+      if (!win) throw err;
+      const { response } = await dialog.showMessageBox(win, {
+        type: 'warning',
+        title: '云端大模型调用失败',
+        message: friendly.title,
+        detail: friendly.detail,
+        buttons: ['取消', '使用本地模型'],
+        defaultId: 1,        // 默认聚焦「使用本地模型」（更符合「继续跑」的直觉）
+        cancelId: 0,
+        noLink: true
+      });
+      if (response === 0) {
+        // 用户点「取消」→ 停止调用大模型：抛一个可识别的错误让调用方走「已停止」路径。
+        // 🔴 message 必须含「已停止生成」：跨 IPC 后 Error 的 code 属性会丢，渲染层靠 message 关键字识别取消。
+        const e2 = new Error('用户已停止生成（云端调用失败后选择取消）');
+        e2.name = 'LlmCancelledError';
+        e2.code = 'CANCELLED';
+        throw e2;
+      }
+      // 用户点「使用本地模型」→ 拉起本地引擎 + 强制本地重试一次
+      logger.info('用户选择使用本地模型，拉起本地引擎重试');
+      await orchestrator.ensureLlm(o.label || logger.tag());
+      return inference.llmChat(messages, { ...o, providerOverride: 'local', onDelta });
+    }
+  });
+  // 强制取消当前进行中的 LLM 请求（2026-10-24）：批量生成提示词时点「停止」要立刻掐断那次 LLM 调用，
+  // 而不是等它自然跑完。必须是独立通道——停止时 infer:llm 那次 invoke 还挂着，没有这条路插不进指令。
+  ipcMain.handle('infer:llm-cancel', () => {
+    logger.setTag('停止生成');
+    inference.cancelLlm();
+    return { ok: true };
   });
 
   /* ---- 大模型来源（本地 / 云端）：设置页是唯一持久入口 ---- */
@@ -573,6 +707,13 @@ function registerIpc(db, getWin, fallbackWorkspace) {
   });
   ipcMain.handle('comfy:generate', async (e, { templateKey, dir, baseName, params, label }) => {
     await orchestrator.ensureComfy(label || (templateKey === 'video' ? '阶段6 H3视频' : '阶段4 角色出图'));
+    // 🔴 2026-10-24：ensureComfy（拉起 ComfyUI）期间用户可能已点「停止」——这里再兜一道，
+    //   避免 ComfyUI 刚好起来后又把任务提交出去白跑一镜。取消时直接抛「已停止」，批量循环 break。
+    // 🔴 2026-10-27：改用 consumeCancelRequested —— 检查即消费，让「停止」只拦这一次、不残留成
+    //   僵尸标记（否则下次点「生成视频」仍被误杀，日志秒退「镜头 N 视频生成已停止」）。
+    if (inference.consumeCancelRequested()) {
+      throw new Error('用户已停止生成（ComfyUI 已就绪，但停止请求已发出）');
+    }
     // 兜底闸门：自动编排被关 / 自动拉起失败时，上面不会报错但 ComfyUI 仍不在线
     // → 生成前再探一次，没起来就给用户明确出路，而不是让请求打到 8188 上连接挂死
     const h = await inference.health();
@@ -588,9 +729,10 @@ function registerIpc(db, getWin, fallbackWorkspace) {
   // 必须是独立通道——点「停止生成」时 comfy:generate 那次 invoke 还挂着（要等它返回），
   // 没有这条路就插不进去任何指令。中断是 ComfyUI 全局级的（它没有"只中断某个 prompt"的接口）。
   // mode='skip' = 单镜跳过（只中断当前镜、保留模型不释放显存，下一镜接着跑）；默认 'full' 整批停止。
-  ipcMain.handle('comfy:cancel', async (e, mode) => {
+  // opts.freeAsync=true = 立即中断立即返回，等 idle + 释放显存转后台（批量停止用，别卡 UI）。
+  ipcMain.handle('comfy:cancel', async (e, mode, opts) => {
     logger.setTag('停止生成');
-    return inference.cancelComfy(mode);
+    return inference.cancelComfy(mode, opts);
   });
   // 成片超分（SeedVR2 · ComfyUI 内置节点）：一条镜头视频 → 放大一档 → 落到 outDir。
   // 与生成同一条前置闸门：先确保 ComfyUI 起来、再探一次在线，缺了给明确出路。
@@ -652,11 +794,15 @@ function registerIpc(db, getWin, fallbackWorkspace) {
       for (const f of files.filter(x => /\.(png|jpe?g|webp)$/i.test(x))) {
         const abs = path.join(root, day, f);
         let st = null; try { st = fs.statSync(abs); } catch (_) { continue; }
-        // 旁车文件（<图片名>.json，由生成侧写入）里记着耗时 → 历史图也能显示「生成时长」；
-        // 老图没有旁车就是 null，渲染层自然只显示分辨率，不做任何猜测
-        let ms = null;
-        try { const m = JSON.parse(fs.readFileSync(abs + '.json', 'utf8')); if (m && m.ms) ms = m.ms; } catch (_) {}
-        out.push({ file: f, path: abs, mtimeMs: st.mtimeMs, ms });
+        // 旁车文件（<图片名>.json，由生成侧写入）里记着耗时 + 生成快照 → 历史图也能
+        // 显示「生成时长」并支持「回填配置 / 查看提示词」；老图没有旁车就是 null。
+        let ms = null, snapshot = null;
+        try {
+          const m = JSON.parse(fs.readFileSync(abs + '.json', 'utf8'));
+          if (m && m.ms) ms = m.ms;
+          if (m && m.snapshot) snapshot = m.snapshot;
+        } catch (_) {}
+        out.push({ file: f, path: abs, mtimeMs: st.mtimeMs, ms, snapshot });
       }
       if (out.length >= 240) break;
     }

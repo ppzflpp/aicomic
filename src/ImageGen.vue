@@ -81,7 +81,7 @@
           </label>
           <span class="ig-msub">{{ editMode ? '指令改图' : '保构图重绘' }}</span>
         </div>
-        <button class="btn ig-genbtn" :disabled="!canGen || busy" @click="generate">{{ busy ? '生成中…' : '生 成' }}</button>
+        <button class="btn ig-genbtn" :disabled="!canGen" @click="generate">生 成</button>
       </div>
       <div class="ig-gensub err" v-if="errMsg">{{ errMsg }}</div>
       <div class="ig-gensub" v-else-if="infoMsg">{{ infoMsg }}</div>
@@ -104,10 +104,11 @@
       <div class="ig-gallery">
        <!-- 固定大小网格容器：格子 196×196（见 .ig-flow 的 --ig-cell），图片按原比例缩放到格内 -->
        <div class="ig-flow">
-        <div v-if="busy" class="ig-tile genning">
+        <!-- 🔴 多任务排队（2026-10-23）：按任务中心活跃列表渲染，区分「生成中/排队中」 -->
+        <div v-for="t in igTasks" :key="t.id" class="ig-tile genning" :class="{queued: t.status === 'queued'}">
           <i class="spin big"></i>
-          <span class="g-txt">{{ busyText || '生成中…' }}</span>
-          <button class="ig-stop" @click="stop">停止</button>
+          <span class="g-txt">{{ t.status === 'running' ? (t.text || '生成中…') : '排队中…' }}</span>
+          <button class="ig-stop" @click="stopTask(t.id)">取消</button>
         </div>
         <!-- 本次产物：最新一张排最前（results 是按下标追加上来的，展示时按 at 倒序） -->
         <div v-for="r in resultsDesc" :key="r.path" class="ig-tile">
@@ -120,7 +121,9 @@
             <div class="ig-ov">
               <div class="ig-ovb">
                 <button class="ig-m" title="把这张图加入参考图，继续迭代" @click="useAsRef(r)">用作参考</button>
-                <button class="ig-m" @click="reveal(r.path)">文件夹</button>
+                <button class="ig-m" title="把这次生成的配置回填到左侧，继续微调" @click.stop="fillBack(r)">回填配置</button>
+                <button class="ig-m" title="查看这条记录的用户提示词与参数" @click.stop="viewPrompt(r)">查看提示词</button>
+                <button class="ig-m del" title="把这张图片从硬盘永久删除" @click.stop="askDelete(r, 'results')">删除</button>
               </div>
             </div>
           </div>
@@ -134,15 +137,74 @@
             <div class="ig-ov">
               <div class="ig-ovb">
                 <button class="ig-m" title="把这张图加入参考图，继续迭代" @click="useAsRef(h)">用作参考</button>
-                <button class="ig-m" @click="reveal(h.path)">文件夹</button>
+                <button class="ig-m" title="把这次生成的配置回填到左侧，继续微调" @click.stop="fillBack(h)">回填配置</button>
+                <button class="ig-m" title="查看这条记录的用户提示词与参数" @click.stop="viewPrompt(h)">查看提示词</button>
+                <button class="ig-m del" title="把这张图片从硬盘永久删除" @click.stop="askDelete(h, 'history')">删除</button>
               </div>
             </div>
           </div>
         </div>
-        <div v-if="!results.length && !history.length" class="ig-tile empty">
+        <div v-if="!results.length && !history.length && !igTasks.length" class="ig-tile empty">
           <span>还没有生成记录<br>左侧配置好参数点「生成」</span>
         </div>
        </div>
+      </div>
+    </div>
+
+    <!-- ═══ 查看提示词弹框（只读） ═══ -->
+    <div class="ig-modal" v-if="promptView" @click.self="promptView=null">
+      <div class="ig-modal-box">
+        <div class="ig-modal-head">
+          <span class="ig-modal-title">查看提示词</span>
+          <button class="ig-modal-x" @click="promptView=null">✕</button>
+        </div>
+        <div class="ig-modal-body">
+          <div class="ig-pb">
+            <div class="ig-pb-lab">用户提示词</div>
+            <div class="ig-pb-text">{{ promptView.raw || '（无）' }}</div>
+          </div>
+          <div class="ig-pb">
+            <div class="ig-pb-lab">负面提示词</div>
+            <div class="ig-pb-text" :class="{empty: !promptView.negative}">{{ promptView.negative || '（无）' }}</div>
+          </div>
+          <div class="ig-pb">
+            <div class="ig-pb-lab">本次参数</div>
+            <div class="ig-pb-text">
+              <span>模式：{{ promptView.mode || '—' }}</span>
+              <span style="opacity:.5"> · </span>
+              <span>分辨率：{{ promptView.res || '—' }}</span>
+              <span style="opacity:.5"> · </span>
+              <span>步数：{{ promptView.steps || '—' }}</span>
+              <span style="opacity:.5"> · </span>
+              <span>CFG：{{ promptView.cfg != null ? promptView.cfg : '—' }}</span>
+              <span style="opacity:.5"> · </span>
+              <span>调度器：{{ promptView.scheduler || '—' }}</span>
+              <span v-if="promptView.seed" style="opacity:.5"> · </span>
+              <span v-if="promptView.seed">Seed：{{ promptView.seed }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="ig-modal-foot">
+          <button class="btn ghost" @click="promptView=null">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ 删除确认框 ═══ -->
+    <div class="ig-modal" v-if="delAsk" @click.self="delAsk=null">
+      <div class="ig-modal-box" style="width:460px">
+        <div class="ig-modal-head">
+          <span class="ig-modal-title">删除这张图片</span>
+          <button class="ig-modal-x" @click="delAsk=null">✕</button>
+        </div>
+        <div class="ig-modal-body">
+          <p class="ig-del-tip">确定要从硬盘<b>永久删除</b>这张图片吗？删除后不可恢复。</p>
+          <p class="ig-del-path">{{ delAsk.path }}</p>
+        </div>
+        <div class="ig-modal-foot">
+          <button class="btn ghost" @click="delAsk=null">取消</button>
+          <button class="btn danger" @click="doDelete">确认删除</button>
+        </div>
       </div>
     </div>
 
@@ -159,12 +221,15 @@
 import { useProject as useProjectStore } from './stores/project.js'
 import { igState } from './imggenState.js'
 import { mediaUrl } from './mediaUrl.js'
+import { subscribe, submit, cancel, activeCount, activeTasks } from './taskCenter.js'
 
 const MODES = [
   { k: 't2i',  t: '文生图', tpl: 'character_qwen_image' },
   { k: 'edit', t: '图片编辑', tpl: 'character_edit' },
   { k: 'i2i',  t: '图生图', tpl: 'character_qwen_image' }
 ]
+
+const TYPE = 'imggen'
 
 const EXAMPLES = {
   t2i: '电影感夜景，中国古代婚礼婚房内，红烛高照，新娘身着大红嫁衣与点翠凤冠端坐床沿，红盖头未掀，暖黄烛光与冷月色对比，写实摄影质感',
@@ -187,11 +252,12 @@ export default {
       scheduler: 'simple', // 调度器
       lockSeed: false,
       seed: 0,
-      busy: false,
-      busyText: '',
+      _submitting: false,  // 🔴 提交锁：防连点重复提交任务（多任务排队，按钮不再被「生成中」阻塞）
       errMsg: '',
       infoMsg: '',
-      results: [],         // 本次会话产物 [{path, mode, ms, at}]
+      promptView: null,    // 查看提示词弹框数据 {raw, negative, mode, res, steps, cfg, scheduler, seed}
+      delAsk: null,        // 删除确认框数据 {path, from}（from='results'|'history'，用于删除后局部移除）
+      results: [],         // 本次会话产物 [{path, mode, ms, at, snapshot}]
       history: [],         // <workspace>/图片生成/ 历史产物
       resOpts: null,       // [{value,label}] —— 独立页不依赖当前项目，直接从主进程取
       dims: {}             // path → 'W×H'（img onload 记录，悬浮 meta 显示）
@@ -236,6 +302,8 @@ export default {
         i2i: '描述「整体氛围怎么变」：构图与人物自动保留' }[this.effMode]
     },
     canGen() {
+      // 🔴 多任务排队（2026-10-23）：不再因「有任务在跑」禁用按钮，只要参数就绪且未在提交中即可点
+      if (this._submitting) return false
       if (this.effMode === 't2i') return this.prompt.trim().length > 0
       return this.prompt.trim().length > 0 && this.refs.length > 0
     },
@@ -244,13 +312,18 @@ export default {
      * 不能直接拿数组顺序铺；at 缺失的老数据回落到 0（排最后）。 */
     resultsDesc() {
       return this.results.slice().sort((a, b) => (b.at || 0) - (a.at || 0))
+    },
+    /** 本模块当前活跃任务（在跑 + 排队），进行中在前、排队在后。change 订阅触发重渲染。 */
+    igTasks() {
+      return activeTasks().filter(t => t.type === TYPE).map(t => ({
+        id: t.id,
+        status: t.status,           // running | queued
+        label: t.label || '图片生成',
+        text: t.text || ''
+      })).sort((a, b) => (a.status === 'running' ? -1 : 1) - (b.status === 'running' ? -1 : 1))
     }
   },
-  /* 任务状态镜像到 igState：页面本身用 v-show 常驻（切菜单不销毁，生成不中断），
-   * 但侧栏看不见结果区 → 需要这个跨组件的小状态显示「还在跑」的小圆点。 */
   watch: {
-    busy(v) { igState.busy = !!v; if (!v) igState.text = '' },
-    busyText(v) { igState.text = v || '' },
     // 🔴 本页常驻挂载（v-show），mounted 只跑一次、且可能早于「工作区加载完成」→
     //    那时 imgHistory('') 拿到空数组就再也不会重试，用户看到的「历史全空」就是这个：
     //    其他页面每次进入都重新拉数据，只有本页不会。盯住 workspace，一到就刷。
@@ -260,6 +333,23 @@ export default {
     try { this.resOpts = (await window.studio.resOptions() || {}).img || [] } catch (_) {}
     if (this.resList.length && !this.resList.some(o => o.value === this.res)) this.res = this.resList[0].value
     this.reloadHistory()
+    // 订阅任务中心事件：本模块任务结束 → 回填结果；进度 → 更新侧栏悬浮文案
+    this._offDone = subscribe('done', t => { if (t && t.task && t.task.type === TYPE) this.onTaskDone(t.task) })
+    this._offFail = subscribe('fail', t => { if (t && t.task && t.task.type === TYPE) this.onTaskDone(t.task) })
+    this._offCancel = subscribe('cancel', t => { if (t && t.task && t.task.type === TYPE) this.onTaskDone(t.task) })
+    this._offProgress = subscribe('progress', t => { if (t && t.task && t.task.type === TYPE) this.onTaskProgress(t.task) })
+    // 🔴 侧栏闪点统一走 change 事件重算（时序正确：change 在 bumpType(-1) 之后 emit）
+    this._offChange = subscribe('change', () => {
+      igState.busy = activeCount(TYPE) > 0
+      if (!igState.busy) igState.text = ''
+    })
+  },
+  beforeUnmount() {
+    this._offDone && this._offDone()
+    this._offFail && this._offFail()
+    this._offCancel && this._offCancel()
+    this._offProgress && this._offProgress()
+    this._offChange && this._offChange()
   },
   methods: {
     /** 每次切回本页时由 App 调用：常驻挂载没有 mounted 时机，历史得手动刷（见 App.vue 的 st.view watcher） */
@@ -365,7 +455,6 @@ export default {
       return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
         ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
     },
-    reveal(p) { window.studio.revealFile(p) },
     openOutDir() { window.studio.openPath(this.st.workspace + '\\图片生成\\' + this.today) },
     toast(msg) {
       this.infoMsg = msg
@@ -380,50 +469,156 @@ export default {
       } catch (_) { this.history = [] }
     },
     stop() { window.studio.comfyCancel() },
-    async generate() {
-      if (!this.canGen || this.busy) return
-      this.busy = true; this.errMsg = ''
-      const mv = MODES.find(m => m.k === this.effMode)
-      const [w, h] = String(this.res).split('x').map(n => Number(n) || 0)
-      const dir = this.st.workspace + '\\图片生成\\' + this.today
-      const params = { prompt: this.prompt.trim(), negative: this.negative.trim(),
-        steps: this.steps, cfg: this.cfg, scheduler: this.scheduler }
-      if (this.effMode === 'edit') {
-        params.images = this.refs.map(r => r.path)
-        params.resolution = Math.max(w, h) || 1024
-        // 编辑通道输出宽高：官方编码节点 latent 跟参考图比例走，必须显式指定（2026-10-17 修分辨率不一致）
-        params.ew = w; params.eh = h
-      } else {
-        params.width = w; params.height = h
-        if (this.effMode === 'i2i' && this.refs.length) params.image = this.refs[0].path
+    /** 取消单个任务（排队中的立即取消；进行中的标记取消 + 中断 ComfyUI） */
+    stopTask(id) {
+      cancel(id)
+      const running = activeTasks().find(t => t.type === TYPE && t.status === 'running' && t.id === id)
+      if (running) window.studio.comfyCancel()
+    },
+    onTaskProgress(task) {
+      igState.text = task.text || '出图中'
+    },
+    onTaskDone(task) {
+      // igState.busy 由 change 订阅统一维护，这里只回填产物 + 提示失败
+      igState.text = ''
+      if (task && task.status === 'done' && task.result && task.result.images) {
+        for (const img of task.result.images) this.results.push(img)
+        this.reloadHistory()
+        this.toast('完成 ' + task.result.images.length + ' 张')
+      } else if (task && task.error && !/已停止生成|已取消|SKIP_CANCELLED/.test(String(task.error.message || task.error))) {
+        this.errMsg = (task.error.message || String(task.error))
       }
-      if (this.lockSeed && Number(this.seed) > 0) params.seed = Number(this.seed)
-      let okCnt = 0
-      for (let i = 0; i < this.count; i++) {
-        const t0 = Date.now()
-        try {
-          this.busyText = '生成中 · 第 ' + (i + 1) + '/' + this.count + ' 张…'
-          const r = await window.studio.comfyGenerate({
-            templateKey: mv.tpl, dir, baseName: 'imggen_' + Date.now(),
-            params
-          })
-          for (const f of (r && r.files) || []) {
-            // 🔴 comfyGenerate 返回的 files 只是文件名（writeUnique 只回 name）→ 必须拼绝对路径：
-            //    否则缩略图取不到文件（一块空白）、与历史去重也对不上（裸名 vs 全路径）→ 同一张图出现两次
-            const abs = /^[a-zA-Z]:[\\/]/.test(f) ? f : dir + '\\' + f
-            // 时长优先用主进程给的 elapsedMs（与落盘 sidecar 同源），保证本次与历史的数字一致
-            const ms = (r && r.elapsedMs) || (Date.now() - t0)
-            this.results.push({ path: abs, mode: mv.t, ms, at: Date.now() })
-          }
-          if (this.lockSeed && !params.seed && r && r.seed) params.seed = r.seed
-          okCnt++
-        } catch (e) {
-          this.errMsg = (e && e.message) || String(e)
-          break   // 第一张就报错（如模型缺失）就别连着烧完剩余数量
+    },
+    /** 回填配置：把某条结果记录的生成快照填回左侧输入区 */
+    fillBack(r) {
+      const s = r.snapshot
+      if (!s) { this.toast('这条记录没有保存配置快照'); return }
+      this.prompt = s.prompt || ''
+      this.negative = s.negative || ''
+      this.refs = (s.refs || []).map(p => ({ path: p, busy: false }))
+      // 参考图有/无决定 editMode 走向：有图 → 编辑模式；无图 → 文生图
+      if (this.refs.length) this.editMode = true
+      if (s.res) this.res = s.res
+      if (s.count) this.count = s.count
+      if (s.steps) this.steps = s.steps
+      if (s.cfg != null) this.cfg = s.cfg
+      if (s.scheduler) this.scheduler = s.scheduler
+      if (s.lockSeed != null) this.lockSeed = s.lockSeed
+      if (s.seed) this.seed = s.seed
+      this.toast('已回填这版生成配置，可继续微调')
+    },
+    /** 查看提示词弹框：显示用户原提示词 + 本次参数（只读） */
+    viewPrompt(r) {
+      const s = r.snapshot || {}
+      this.promptView = {
+        raw: s.prompt || '',
+        negative: s.negative || '',
+        mode: s.mode || '',
+        res: s.res || '',
+        steps: s.steps,
+        cfg: s.cfg,
+        scheduler: s.scheduler || '',
+        seed: s.seed || 0
+      }
+    },
+    /** 删除入口：弹确认框（记录来源，删除后只从对应数组局部移除，不整页重读） */
+    askDelete(r, from) {
+      this.delAsk = { path: r.path, from }
+    },
+    /** 确认删除：删主文件 + 同名 .json 旁车（存生成快照），然后只从对应数组 splice 掉这一项 */
+    async doDelete() {
+      const d = this.delAsk
+      if (!d) return
+      this.delAsk = null
+      const abs = d.path
+      try {
+        await window.studio.deleteFile(abs)
+        // 一并删旁车（<文件名>.json）：留着会成为孤儿，历史回读时读到没有主文件的快照
+        try { await window.studio.deleteFile(abs + '.json') } catch (_) { /* 旁车可能本就不存在 */ }
+        // 🔴 局部刷新：只移除被删那一项（按 path 定位），不 reloadHistory 全量重读
+        if (d.from === 'results') {
+          const i = this.results.findIndex(r => r.path === abs)
+          if (i >= 0) this.results.splice(i, 1)
+        } else {
+          const i = this.history.findIndex(h => h.path === abs)
+          if (i >= 0) this.history.splice(i, 1)
         }
+        this.toast('已删除这张图片')
+      } catch (e) {
+        this.toast('删除失败：' + ((e && e.message) || e))
       }
-      this.busy = false; this.busyText = ''
-      if (okCnt) { this.toast('完成 ' + okCnt + ' 张'); this.reloadHistory() }
+    },
+    async generate() {
+      if (!this.canGen) return
+      this._submitting = true   // 提交锁：防连点（任务本身走任务中心队列，不阻塞按钮）
+      try {
+        this.errMsg = ''
+        const mv = MODES.find(m => m.k === this.effMode)
+        const [w, h] = String(this.res).split('x').map(n => Number(n) || 0)
+        const dir = this.st.workspace + '\\图片生成\\' + this.today
+        const params = { prompt: this.prompt.trim(), negative: this.negative.trim(),
+          steps: this.steps, cfg: this.cfg, scheduler: this.scheduler }
+        if (this.effMode === 'edit') {
+          params.images = this.refs.map(r => r.path)
+          params.resolution = Math.max(w, h) || 1024
+          // 编辑通道输出宽高：官方编码节点 latent 跟参考图比例走，必须显式指定（2026-10-17 修分辨率不一致）
+          params.ew = w; params.eh = h
+        } else {
+          params.width = w; params.height = h
+          if (this.effMode === 'i2i' && this.refs.length) params.image = this.refs[0].path
+        }
+        if (this.lockSeed && Number(this.seed) > 0) params.seed = Number(this.seed)
+        // 🔴 锁定 seed 时，把当前 seed 固定下来，后续 N 张复用（原逻辑：第一张拿到 r.seed 后回填 params.seed）
+        const seedLocked = this.lockSeed && Number(this.seed) > 0 ? Number(this.seed) : null
+        const count = Math.max(1, Number(this.count) || 1)
+        const modeTag = mv.t
+        // 生成快照：本次生成的完整配置（供结果区「回填配置」「查看提示词」用）
+        const snapshot = {
+          prompt: this.prompt.trim(),              // 用户原提示词
+          negative: this.negative.trim(),          // 负面提示词
+          refs: this.refs.map(r => r.path),        // 参考图路径
+          mode: this.effMode,                      // t2i | edit | i2i
+          res: this.res,                           // 分辨率 "WxH"
+          count: count,                            // 张数
+          steps: this.steps,
+          cfg: this.cfg,
+          scheduler: this.scheduler,
+          lockSeed: this.lockSeed,
+          seed: Number(this.seed) || 0
+        }
+        // 🔴 快照一并塞进 params 传给主进程 → 写进产物旁车 JSON，历史图也能「回填配置 / 查看提示词」
+        params.snapshot = snapshot
+        // 提交任务中心：一次点击 = 一个任务（内含 count 张），排队串行跑
+        submit({
+          label: '图片生成 · ' + modeTag + (count > 1 ? ' ×' + count : ''),
+          type: TYPE,
+          episodeId: null,
+          run: async (report) => {
+            const images = []
+            for (let i = 0; i < count; i++) {
+              report({ done: i, total: count, label: '生成中 · 第 ' + (i + 1) + '/' + count + ' 张…' })
+              const t0 = Date.now()
+              const p = { ...params }
+              if (seedLocked != null && !p.seed) p.seed = seedLocked
+              const r = await window.studio.comfyGenerate({
+                templateKey: mv.tpl, dir, baseName: 'imggen_' + Date.now() + '_' + i,
+                params: p
+              })
+              for (const f of (r && r.files) || []) {
+                // 🔴 comfyGenerate 返回的 files 只是文件名（writeUnique 只回 name）→ 必须拼绝对路径
+                const abs = /^[a-zA-Z]:[\\/]/.test(f) ? f : dir + '\\' + f
+                const ms = (r && r.elapsedMs) || (Date.now() - t0)
+                images.push({ path: abs, mode: modeTag, ms, at: Date.now(), snapshot })
+              }
+            }
+            return { images }
+          }
+        })
+        // 🔴 提交成功后清空提示词（多任务排队：让用户能立刻输入下一个任务）
+        this.prompt = ''
+      } finally {
+        this._submitting = false
+      }
     }
   }
 }
@@ -543,9 +738,31 @@ export default {
 .ig-ovb{display:flex;flex-wrap:wrap;justify-content:center;gap:5px;}
 /* 生成中占位卡（结果区第一个格子）：与其它格子同尺寸，靠网格行高撑起来 */
 .ig-tile.genning{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;border-style:dashed;border-color:rgba(96,165,250,.4);height:100%;}
+/* 排队中的任务卡片：转圈变暗、描边变淡，与「生成中」区分 */
+.ig-tile.genning.queued{border-color:rgba(148,163,184,.3);}
+.ig-tile.genning.queued .spin.big{border-color:rgba(148,163,184,.2);border-top-color:rgba(148,163,184,.5);}
+.ig-tile.genning.queued .g-txt{color:var(--sub-2);}
 .ig-tile.genning .spin.big{width:22px;height:22px;border-width:3px;}
 .ig-tile.genning .g-txt{font-size:12px;color:var(--sub);text-align:center;line-height:1.6;}
 .ig-m{font-size:11px;color:#dbe4f0;background:rgba(255,255,255,.12);border:none;border-radius:6px;padding:2px 8px;cursor:pointer;}
 .ig-m:hover{background:rgba(59,130,246,.5);color:#fff;}
+.ig-m.del:hover{background:rgba(239,68,68,.6);color:#fff;}
+/* 删除确认框 */
+.ig-del-tip{font-size:13px;line-height:1.7;color:var(--text);}
+.ig-del-tip b{color:var(--danger);}
+.ig-del-path{font-size:11.5px;color:var(--sub-2);word-break:break-all;background:#0e1320;border:1px solid var(--line);border-radius:8px;padding:8px 10px;line-height:1.6;}
 .ig-tile.empty{display:flex;align-items:center;justify-content:center;color:var(--sub-2);font-size:12px;text-align:center;line-height:1.8;border-style:dashed;min-height:240px;grid-column:1 / -1;}
+/* 查看提示词弹框（与视频生成同款） */
+.ig-modal{position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:200;}
+.ig-modal-box{width:640px;max-width:92vw;max-height:84vh;background:var(--card);border:1px solid var(--line);border-radius:14px;display:flex;flex-direction:column;overflow:hidden;}
+.ig-modal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line-soft);flex-shrink:0;}
+.ig-modal-title{font-size:14px;font-weight:600;color:var(--text);}
+.ig-modal-x{background:none;border:none;color:var(--sub);font-size:16px;cursor:pointer;padding:2px 6px;border-radius:6px;}
+.ig-modal-x:hover{color:var(--text);background:rgba(255,255,255,.08);}
+.ig-modal-body{flex:1;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:16px;}
+.ig-pb{display:flex;flex-direction:column;gap:8px;}
+.ig-pb-lab{font-size:12px;font-weight:600;color:var(--sub);letter-spacing:.05em;}
+.ig-pb-text{background:#0e1320;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12.5px;line-height:1.7;color:var(--text);white-space:pre-wrap;word-break:break-word;}
+.ig-pb-text.empty{color:var(--sub-2);}
+.ig-modal-foot{display:flex;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--line-soft);flex-shrink:0;}
 </style>

@@ -1,0 +1,78 @@
+{
+  "_note": "画风族「国漫3D」= 三维渲染 + 极致理想化动漫美貌的国产3D动画画风（《凡人修仙传》《斗破苍穹》类 CG 质感）。与「3D 渲染」写实 CG 的刻意差异不在渲染技术（都是 3D），而在**五官动漫化美化程度**：写实 3D 是真人比例 + 真实皮肤，国漫 3D 是 V 字小脸 / 尖下巴 / 高鼻梁 / 细长眼 + 柔光磨皮 + 腮红化，一眼就是动漫而非真人。🔴 与「真人实拍」的关键区分：**绝不写真实皮肤纹理 / 毛孔**（那是真人词），改写「柔光磨皮、完美无瑕、腮红化」；与「动漫二次元」的区分：**无描边**（不写赛璐璐 / 线稿 / 色块），靠光影与次表面散射塑形。renderWho 用「国漫」，renderMedium 用「渲染画面」（不能以 renderWho 开头，否则与 w_subjectStart 里的 {{S.renderWho}} 拼重复）。",
+  "id": "toon",
+  "label": "国漫3D",
+  "desc": "国产3D动画CG：无描边、极致理想化美貌、柔光磨皮，凡人修仙传/斗破苍穹质感",
+  "order": 25,
+  "append": [],
+  "vars": {
+    "renderWho": "国漫",
+    "renderActor": "国漫角色",
+    "renderMedium": "渲染画面",
+    "renderMediumScene": "3D场景",
+    "realismPrefix": "精致唯美的",
+    "filmWord": "国漫3D动画镜头",
+    "enPhotoreal": "Stylized Chinese 3D animation",
+    "enPhotorealLC": "stylized Chinese 3D animation",
+    "renderEnWho": "Chinese 3D donghua",
+
+    "antiRenderWords": "真人，实拍，照片，摄影，照片级真实，真实皮肤纹理，毛孔，手绘，2D，平面插画，赛璐璐，线稿，色块，Q版，卡通，欧美3D",
+    "antiRenderWordsCn": "真人、实拍、照片、摄影、照片级真实、真实皮肤纹理、毛孔、手绘、2D、平面插画、赛璐璐、线稿、色块、Q版、卡通、欧美3D",
+    "antiRenderWordsEn": "live-action / photorealistic / real person / photography / photo / realistic skin texture / hand-drawn / 2D flat illustration / cel shading / line art / flat colors / chibi / cartoon / western 3D",
+
+    "equipStrip": "相机,单反,单反相机,镜头,人像镜头,机位,三脚架,云台,闪光灯,灯架,摄影棚,片场设备,摄像机,摄影师,拍摄设备",
+
+    "exFabric": "{{S.w_exFabric}}",
+    "exProp": "{{S.w_exProp}}",
+    "exSign": "{{S.w_exSign}}",
+    "exText": "{{S.w_exText}}",
+    "exAnchor": "{{S.w_exAnchor}}",
+    "exPalette": "{{S.w_exPalette}}",
+    "exWardrobe": "{{S.w_exWardrobe}}",
+    "exState": "{{S.w_exState}}",
+    "exLeak": "{{S.w_exLeak}}",
+
+    "styleName": "{{S.w_styleHead}}{{S.renderWho}}3D",
+    "dramaLabel": "{{S.w_full}}{{S.renderWho}}3D动画剧",
+    "worldShort": "{{S.w_full}}",
+    "worldRule": "{{S.w_worldRule}}",
+    "charRefKind": "{{S.renderActor}}的{{S.w_full}}设定图",
+    "sceneRefKind": "{{S.w_full}}{{S.renderMediumScene}}",
+    "styleCore": "{{S.renderWho}}3D渲染的{{S.w_noun}}、极致理想化美貌、柔光磨皮、次表面散射、{{S.t_core}}国漫3D质感",
+    "styleCoreName": "{{S.renderWho}}3D渲染{{S.w_noun}}剧质感",
+    "styleFeel": "{{S.renderWho}}3D渲染{{S.w_noun}}动画质感",
+
+    "startChar": "{{S.realismPrefix}}{{S.w_subjectStart}}{{S.renderMedium}}，极致理想化美貌，无描边，柔光磨皮，次表面散射，{{S.t_core}}国漫3D动画质感",
+    "endChar": "{{S.w_subjectEnd}}设定图，国漫3D动画质感",
+    "endCharFilm": "{{S.w_subjectEnd}}设定图，{{S.filmWord}}，国漫3D动画质感",
+    "actorShot": "{{S.t_core}}国漫3D动画质感的{{S.w_actorWorld}}{{S.renderActor}}设定图",
+
+    "costume": "{{S.w_costume}}",
+    "costumeNpc": "{{S.w_costumeNpc}}",
+
+    "startScene": "{{S.realismPrefix}}{{S.w_full}}{{S.renderMediumScene}}，极致理想化，无描边，柔光，体积光，{{S.t_core}}国漫3D动画质感",
+    "startSceneAlt": "{{S.realismPrefix}}{{S.w_full}}场景3D渲染，柔光与体积光，{{S.t_core}}国漫3D动画质感",
+    "endScene": "{{S.w_full}}{{S.renderMediumScene}}，国漫3D动画质感",
+    "endSceneFilm": "{{S.w_full}}{{S.renderMediumScene}}，{{S.filmWord}}，国漫3D动画质感",
+    "keeper": "{{S.w_keeper}}，画面内只有建筑、陈设与自然环境",
+
+    "materialSamples": "{{S.w_material}}",
+    "placeSamples": "{{S.w_place}}",
+    "lightSamples": "{{S.w_light}}",
+    "lightMain": "{{S.w_lightMain}}",
+
+    "antiStyleWords": "{{S.antiRenderWords}}{{S.w_antiWorld}}",
+    "antiStyleWordsCn": "{{S.antiRenderWordsCn}}{{S.w_antiWorldCn}}",
+    "extraExclude": "多余的{{S.w_excludeWorld}}物件",
+
+    "worldTerms": "{{S.w_terms}}",
+    "roleExamples": "{{S.w_roleExamples}}",
+    "lookTable": "{{S.w_lookTable}}",
+
+    "enShotSample": "[Shot 1] {{S.enPhotoreal}} {{S.renderEnWho}} {{S.w_enEra}} drama, no outlines, idealized beauty, soft skin, subsurface scattering, {{S.t_enGrade}}, a medium-wide shot frames ...",
+    "enStyleWords": "{{S.enPhotorealLC}}, {{S.renderEnWho}} {{S.w_enEra}} drama, no outlines, idealized beauty, soft skin, subsurface scattering, {{S.w_enLight}}, {{S.t_enGrade}}, ultra-detailed",
+    "enStyleSentence": "{{S.enPhotoreal}} {{S.renderEnWho}} {{S.w_enEra}} drama, ultra-detailed, no outlines, idealized beauty, soft skin, subsurface scattering, {{S.t_enGrade}}",
+    "enLtxSample": "a {{S.enPhotorealLC}} {{S.renderEnWho}} {{S.w_enLtxScene}}",
+    "enStyleWordsShort": "{{S.enPhotorealLC}}, {{S.renderEnWho}}, no outlines, idealized beauty, soft skin, {{S.t_enGrade}}"
+  }
+}

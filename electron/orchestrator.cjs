@@ -187,9 +187,17 @@ async function _ensureComfy(label) {
       logger.error('ComfyUI 启动失败：' + r.message);
       throw new Error(r.message + ' 也可以手动打开 ComfyUI（双击 Comfy Desktop 图标或便携版启动 bat），等它完全启动后再回来重试。');
     }
+    // 🔴 2026-10-24：拉起 ComfyUI 的过程中用户可能已点「停止」→ 别再继续等它就绪，直接抛取消，
+    //   让 comfy:generate 返回「已停止」，批量循环立刻 break（否则要干等 150s+120s 才停）。
+    if (inference.isCancelRequested()) {
+      throw new Error('用户已停止生成（ComfyUI 启动中）');
+    }
     if (!r.ready && !r.already) {
-      // startComfy 内部已等 150s，这里再兜底 120s（Desktop 偶发更慢）
-      const hw = await launcher.waitHealth('comfyui', 120000, { label: 'ComfyUI', stepMs: 15000 });
+      // startComfy 内部已等 150s，这里再兜底 120s（Desktop 偶发更慢）；同样要响应「停止」
+      const hw = await launcher.waitHealth('comfyui', 120000, { label: 'ComfyUI', stepMs: 15000, shouldAbort: () => inference.isCancelRequested() });
+      if (hw === 'aborted' || inference.isCancelRequested()) {
+        throw new Error('用户已停止生成（ComfyUI 启动中）');
+      }
       if (hw !== 'ok') {
         const m = 'ComfyUI 启动超时（共约 270 秒）。请检查 ComfyUI 窗口是否有报错；也可以手动打开 ComfyUI，等它完全启动后再回来重试。';
         logger.error(m);

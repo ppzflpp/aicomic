@@ -2,7 +2,7 @@
   <div class="tree-node">
     <div class="tree-row" :style="{paddingLeft: (10 + depth*16) + 'px'}" @click="st.toggleExpand('f'+node.id)">
       <span class="caret">{{ st.expanded.has('f'+node.id) ? '▼' : '▶' }}</span>
-      <span>📁 {{ node.name }}</span>
+      <span class="tree-title">📁 {{ node.name }}</span>
       <span class="ops">
         <button title="新建子文件夹" @click.stop="newFolder">＋夹</button>
         <button title="新建集数" @click.stop="newEpisode">＋集</button>
@@ -15,7 +15,7 @@
            :class="{active: st.current && st.current.id===e.id}"
            :style="{paddingLeft: (26 + depth*16) + 'px'}"
            @click="st.openEpisode(e.id)">
-        📄 {{ e.name }}
+        <span class="tree-title">📄 {{ e.name }}</span>
         <i v-if="episodeHasVideoTask(e.id)" class="nav-dot" title="该集有视频任务在跑（切菜单/切集不中断）"></i>
         <span class="ops">
           <button class="op-del" title="删除集数" @click.stop="st.askDelete('episode', e.id, e.name)">✕</button>

@@ -135,8 +135,35 @@ function contentLen(c) {
  * 2) 默认关闭思考模式（chat_template_kwargs.enable_thinking=false）。Qwen3.5 默认先吐
  *    大段 reasoning_content，content 为空；9B 模型仅 ~9 tok/s，开着思考会白烧几分钟。
  */
+// 🔴 LLM 强制取消（2026-10-24）：批量生成提示词时用户点「停止」要能立刻掐断当前那次 LLM 请求，
+//    而不是等它自然跑完（软停）。与 comfyGenerate 的 _cancelRequested 同理：串行使用（渲染层 pBusy/busy
+//    保证同一时刻只有一个 LLM 请求在跑），一个模块级 AbortController 就够。
+let _llmCtrl = null;   // 当前进行中的 LLM 请求的 AbortController（无请求时为 null）
+let _llmCancelled = false; // 取消请求已发出：llmChat 各阶段见到即抛 CancelledError
+
+/** 用户主动停止 LLM 生成（不是失败）：调用方据此走「已停止」而不是「生成失败」的提示路径 */
+class LlmCancelledError extends Error {
+  constructor() {
+    super('用户已停止生成');
+    this.name = 'LlmCancelledError';
+    this.code = 'CANCELLED';
+  }
+}
+
+/** 强制取消当前进行中的 LLM 请求（批量提示词硬停用）：立刻 abort 底层 fetch，让 llmChat 抛 LlmCancelledError */
+function cancelLlm() {
+  _llmCancelled = true;
+  if (_llmCtrl) { try { _llmCtrl.abort(); } catch (_) {} }
+}
+
 async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = false, thinking = false, timeoutMs = 900000, onDelta = null, stage = '', providerOverride = '' } = {}) {
   const t0 = Date.now();
+  // 进来先清取消标记（上一条被取消的请求已结束）；并把本次请求的 ctrl 登记到模块级，供 cancelLlm 掐断
+  _llmCancelled = false;
+  const ctrl = new AbortController();
+  _llmCtrl = ctrl;
+  // 取消后抛出的异常复用统一判定（见下方各 catch 分支）
+  const cancelled = () => { throw new LlmCancelledError(); };
   // 本环节走本地还是云端：设置页是**唯一持久入口**（见 llmProvider.cjs 顶部约定）；
   // providerOverride 是阶段页上的「本次运行」覆盖（纯内存，见 src/llmSource.js）。
   const prov = llmProvider.resolve(stage, providerOverride);
@@ -212,7 +239,7 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
   const headers = { 'Content-Type': 'application/json' };
   if (cloud) headers.Authorization = 'Bearer ' + prov.apiKey;
 
-  const ctrl = new AbortController();
+  // ctrl 已在函数顶部创建并登记到 _llmCtrl（供 cancelLlm 掐断）；这里只补超时兜底
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   // 🔴 超时文案按环节分（2026-10-19）：分镜是最容易「剧本一长就等不完」的环节，
   //    用户口径是「分镜最长等 10 分钟，超时直接告诉他剧本太长、建议分集」——
@@ -233,16 +260,20 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
     });
   } catch (e) {
     clearTimeout(timer);
+    // 🔴 用户点了「停止」→ 不是超时/失败，抛取消错误（区别于真正的连接中断）
+    if (_llmCancelled) cancelled();
     if (ctrl.signal.aborted) throw timeoutError();
     throw new Error((cloud ? '云端大模型' : 'LLM') + '请求失败（连接中断或超时）：' + (e && e.message || e));
   }
   if (!res.ok) {
     clearTimeout(timer);
+    if (_llmCancelled) cancelled();
     let t = '';
     try { t = await res.text(); } catch (_) {}
-    // 🔴 云端失败**不回退本地**（用户口径 2026-10-15）：宁可停在原地让人看清原因，也不偷偷换模型。
+    // 🔴 本函数单次调用「云端失败不回退本地」——是否回退 / 弹框由上层 ipc.cjs 的 infer:llm handler 决定
+    //   （2026-10-26：云端失败 → ipc 层弹框问用户「取消 / 使用本地模型」）。
+    //   这里仍只报本次云端的真实错误，供上层翻译成用户能看懂的话。
     throw new Error((cloud ? '云端大模型返回错误 ' : 'LLM 返回错误 ') + res.status
-      + (cloud ? '（本次不会自动改走本地：请检查密钥 / 余额 / 网络后重试，或把该环节改回本地）' : '')
       + ': ' + t.slice(0, 300));
   }
 
@@ -273,10 +304,12 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
       }
     }
   } catch (e) {
+    // 流式读到一半被取消：区分「用户停止」和「超时 abort」
+    if (_llmCancelled) cancelled();
     // 流式读到一半被超时 abort：同样走「剧本太长」那条文案，不要漏成裸的 AbortError
     if (ctrl.signal.aborted) throw timeoutError();
     throw new Error((cloud ? '云端大模型' : 'LLM') + '流式读取中断：' + (e && e.message || e));
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); _llmCtrl = null; }
 
   if (!content) {
     if (reasoning) throw new Error('模型只输出了思考内容、没有正文（max_tokens=' + maxTokens + ' 可能被思考耗尽）。请确认已关闭思考模式或增大 max_tokens。');
@@ -290,6 +323,7 @@ async function llmChat(messages, { temperature = 0.7, maxTokens = 4096, json = f
         : '请到设置里调大输出上限，或精简规范 / 拆短章节。'));
   }
   logger.done('LLM 返回 ' + content.length + ' 字' + (finishReason ? '（finish=' + finishReason + '）' : ''), Date.now() - t0);
+  _llmCtrl = null;
   return content;
 }
 
@@ -1316,6 +1350,10 @@ let vramFreeGen = 0;   // 代际计数：防「timer 恰好到点 vs 新任务�
 let _activePid = null;   // 正在等待结果的 prompt_id（没有任务时为 null）
 let _cancelPid = null;   // 被用户请求中断的 prompt_id：轮询循环见到即立刻退出
 let _cancelMode = 'full'; // 本次停止的语义：'full' 整批停止 / 'skip' 单镜跳过（传给 CancelledError）
+// 🔴 取消请求已发出（2026-10-23）：任务还在「提交前对账 / 提交 /prompt」阶段时 _activePid 还没打上，
+//    _cancelPid 自然也是 null —— 光靠 pid 匹配停不掉这种「卡在提交前」的任务。
+//    加一个全局布尔标记：cancelComfy 一进来就置 true，提交前的各阶段见到即抛 CancelledError。
+let _cancelRequested = false;
 
 function disarmVramFree() {
   if (vramFreeTimer) { clearTimeout(vramFreeTimer); vramFreeTimer = null; }
@@ -1347,6 +1385,27 @@ async function freeComfyVram(gen) {
   } catch (_) { /* 不可达就算了，下个任务自己会重试 */ }
 }
 
+/**
+ * 是否已请求取消生成（2026-10-24）：暴露给 launcher/orchestrator，让「拉起 ComfyUI」这类
+ * 不经过 comfyGenerateInner 的漫长等待（startComfy 150s + waitHealth 120s）也能响应取消 ——
+ * 否则用户点「停止」后，还要干等 ComfyUI 慢吞吞启动完，才在提交前检查到取消标记。
+ */
+function isCancelRequested() { return _cancelRequested; }
+
+/**
+ * 消费「取消已请求」标记（2026-10-27）：把 _cancelRequested 置回 false 并返回它原本的值。
+ * 🔴 背景：_cancelRequested 在 cancelComfy 里置 true，清除时机原本只有 comfyGenerate / upscaleVideo
+ *    的 finally —— 但 comfy:generate 入口在「拉起 ComfyUI 后、调用 comfyGenerate 之前」就会检查它并
+ *    直接抛「已停止」，导致这个标记在「没有正在跑的任务」时永远清不掉，变成僵尸标记：
+ *    用户之后每次点「生成视频」都被它误杀（日志表现为「镜头 N 视频生成已停止」秒退）。
+ *    入口检查处用它消费一次（读 + 清），让「停止」语义只拦这一次、不污染后续生成。
+ */
+function consumeCancelRequested() {
+  const was = _cancelRequested;
+  _cancelRequested = false;
+  return was;
+}
+
 /** 用户主动停止生成（不是失败）：调用方据此走「已停止」而不是「生成失败」的提示路径 */
 class CancelledError extends Error {
   constructor(pid, mode) {
@@ -1374,13 +1433,20 @@ class CancelledError extends Error {
  * 注意 /interrupt 是 ComfyUI 的**全局**中断（它没有"只中断某个 prompt"的接口）。
  * 本软件串行生成，所以只会中断我们自己的任务。
  */
-async function cancelComfy(mode = 'full') {
+async function cancelComfy(mode = 'full', opts = {}) {
   const ep = endpoint('comfyui');
+  // freeAsync（2026-10-24）：批量「停止生成」要**立即**中断、立即返回，别让「等 idle + 释放显存」
+  // 那十几秒同步卡住 UI（否则按钮一直「正在停止…」，用户以为没停）。
+  // 为 true 时：/interrupt + 清排队后立即返回，等 idle + /free 放到后台异步补做。
+  const freeAsync = !!opts.freeAsync;
   const out = { ok: false, pid: _activePid, interrupted: false, cleared: 0, freed: false, stillRunning: false, errors: [] };
   // 记录本次停止语义（'full' 整批停止 / 'skip' 单镜跳过），轮询退出时据此给 CancelledError 打 mode。
   // 🔴 必须在打 _cancelPid 之前设，否则轮询循环先读到 _cancelPid 抛错时 mode 还没就位。
   _cancelMode = mode === 'skip' ? 'skip' : 'full';
-  // 先打取消标记：正在轮询的 comfyGenerateInner 见到就立刻退出，不等这些 HTTP 请求的结果
+  // 🔴 先打「取消已请求」全局标记：即使任务还在提交前（_activePid 尚未设置），
+  //    提交前的对账/提交阶段见到它也会立刻停（见 comfyGenerateInner 提交前检查）。
+  _cancelRequested = true;
+  // 再打取消标记：正在轮询的 comfyGenerateInner 见到就立刻退出，不等这些 HTTP 请求的结果
   if (_activePid) _cancelPid = _activePid;
 
   const post = (p, body, ms) => fetchJson(ep + p, {
@@ -1389,9 +1455,9 @@ async function cancelComfy(mode = 'full') {
     body: JSON.stringify(body || {})
   }, ms || 8000);
 
-  // ① 中断正在执行的任务
+  // ① 中断正在执行的任务（🔴 2026-10-26：超时从 8s 压到 3s，点停止后 /interrupt 更快发出并返回）
   try {
-    await post('/interrupt', {}, 8000);
+    await post('/interrupt', {}, 3000);
     out.interrupted = true;
   } catch (e) {
     out.errors.push('中断当前任务失败：' + e.message);
@@ -1412,8 +1478,9 @@ async function cancelComfy(mode = 'full') {
 
   // ③ 等 ComfyUI 真正回到空闲（最多约 7.5s），否则下一步会把还在用的模型卸掉。
   //    🔴 'skip'（单镜跳过）不释放显存、下一镜马上接着跑，无需等 idle——跳过等待让响应更快。
-  let idle = false;
-  if (mode !== 'skip') {
+  //    🔴 freeAsync：把「等 idle + 释放显存」整体搬后台，函数在中断后立即返回。
+  const settleIdleAndFree = async () => {
+    let idle = false;
     for (let i = 0; i < 25; i++) {
       try {
         const q = await fetchJson(ep + '/queue', {}, 4000);
@@ -1421,27 +1488,34 @@ async function cancelComfy(mode = 'full') {
       } catch (_) { break; }   // 查不通就别硬等，直接试最后一步
       await new Promise(r => setTimeout(r, 300));
     }
-  } else {
-    idle = true;   // skip 模式不关心 idle，直接当空闲（不释放显存）
-  }
-  out.stillRunning = !idle;
-
-  // ④ 释放显存（下次生成会重新加载权重，H3 约十几秒）。
-  //    🔴 'skip'（单镜跳过）模式跳过释放：下一镜马上接着跑，保留模型加载状态更快。
-  if (mode !== 'skip') {
+    out.stillRunning = !idle;
     try {
       await post('/free', { unload_models: true, free_memory: true }, 8000);
       out.freed = true;
     } catch (e) {
       out.errors.push('释放显存失败：' + e.message);
     }
+    // 后台补做完成后补一行日志（此时 out.ok 已在主流程算过，这里只补 freed 状态）
+    logger.info('停止生成（后台收尾）：' + (out.freed ? '已释放显存' : '显存释放失败')
+      + (out.errors.length ? '（' + out.errors.join('；') + '）' : ''));
+  };
+
+  if (mode !== 'skip') {
+    if (freeAsync) {
+      // 立即返回：中断 + 清排队已完成，等 idle + free 交给后台，不阻塞 UI
+      settleIdleAndFree();
+    } else {
+      await settleIdleAndFree();
+    }
+  } else {
+    out.stillRunning = false;   // skip 模式不关心 idle（不释放显存）
   }
 
   out.ok = out.interrupted || out.cleared > 0 || out.freed;
   logger.info('停止生成（' + (mode === 'skip' ? '单镜跳过' : '整批停止') + '）：'
     + (out.interrupted ? '已中断当前任务' : '未中断到执行中的任务')
     + (out.cleared ? '，已清掉 ' + out.cleared + ' 个排队任务' : '')
-    + (mode === 'skip' ? '，保留模型不释放显存' : (out.freed ? '，已释放显存' : '，显存释放失败'))
+    + (mode === 'skip' ? '，保留模型不释放显存' : (out.freed ? '，已释放显存' : (freeAsync ? '，释放显存转入后台' : '，显存释放失败')))
     + (out.errors.length ? '（' + out.errors.join('；') + '）' : ''));
   return out;
 }
@@ -1456,6 +1530,9 @@ async function comfyGenerate(args) {
     // 任务彻底结束（成功 / 失败 / 被停止都一样）→ 注销活动任务，别让「停止生成」打到已结束的任务上
     _activePid = null;
     _cancelPid = null;
+    // 🔴 同步清掉「取消已请求」标记（2026-10-23）：否则 'skip'（单镜跳过）时下一镜一开始
+    //    就被残留标记误判成「已取消」；'full'（整批停止）后用户重新点生成同理会被误杀。
+    _cancelRequested = false;
   }
 }
 
@@ -1879,12 +1956,16 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   // 免得提交出去一个注定失败的任务，用户只拿到一段英文 JSON。
   // 🔴 探测失败（老内核没有单节点路由 / 请求超时 / 桩服务）一律**放行**：
   //    「查不到」不等于「有问题」，绝不能把网络问题变成阻止生成的墙。
+  // 🔴 提交前对账可能耗时（每个 class 6s 超时，节点多的模板累计可达几十秒），期间用户可能已点「停止」。
+  //    这时 _activePid 还没打上，轮询循环也还没开始 —— 只能靠 _cancelRequested 全局标记在这阶段兜底。
+  if (_cancelRequested) throw new CancelledError(null, _cancelMode);
   let chk = null;
   try {
     chk = await comfyProbe.verifyWorkflow(endpoint('comfyui'), wf, { modelsRoot: models.modelsRoot() || '' });
   } catch (e) {
     logger.detail('提交前对账跳过（探测器异常）：' + ((e && e.message) || e));
   }
+  if (_cancelRequested) throw new CancelledError(null, _cancelMode);
   if (chk && chk.skipped) logger.detail('提交前对账跳过：' + (chk.reason || 'ComfyUI 无响应'));
   if (chk && chk.ok && !chk.skipped) logger.detail('提交前对账通过（节点与模型文件均在 ComfyUI 可见）');
   if (chk && !chk.ok) {
@@ -1894,12 +1975,15 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
 
   let submit;
   try {
+    // 提交 /prompt 前再查一次取消标记（对账后到提交前的空档也能停）
+    if (_cancelRequested) throw new CancelledError(null, _cancelMode);
     submit = await fetchJson(endpoint('comfyui') + '/prompt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: wf, client_id: clientId })
     }, 15000);
   } catch (e) {
+    if (e && e.name === 'CancelledError') throw e;   // 用户主动停止，别吞成「服务不可达」
     throw new Error('ComfyUI 服务不可达（' + endpoint('comfyui') + '）。请先手动打开一次 ComfyUI Desktop'
       + '（之后软件会自己接管，不需要在本软件里配 ComfyUI 路径）。');
   }
@@ -1938,15 +2022,21 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   let unreachable = 0;                                          // ComfyUI 连续无响应次数
   while (Date.now() - t0 < hardMs) {
     // 用户点了「停止生成」→ 立刻退出，不再等 ComfyUI（interrupt 已由 cancelComfy 发出）
-    if (_cancelPid === pid) throw new CancelledError(pid, _cancelMode);
-    await new Promise(r => setTimeout(r, 1200));
+    // 🔴 也认 _cancelRequested：极窄窗口下（pid 刚登记、cancelComfy 尚未读到 _activePid）
+    //    _cancelPid 可能没打上，但全局标记已置位，靠它兜底立刻停。
+    if (_cancelPid === pid || _cancelRequested) throw new CancelledError(pid, _cancelMode);
+    // 🔴 2026-10-26：把轮询间隔从 1.2s 压到 300ms —— 点「停止生成」后取消检查能更快命中，
+    //    让「立即停止」不再是「再等一两秒才反应过来」。
+    await new Promise(r => setTimeout(r, 300));
     if (Date.now() - lastTick >= 30000) {
       lastTick = Date.now();
       logger.detail('执行中…已等待 ' + Math.round((Date.now() - t0) / 1000) + 's（' + baseName + '）');
     }
     let h;
     try {
-      h = await fetchJson(endpoint('comfyui') + '/history/' + pid, {}, 8000);
+      // 🔴 2026-10-26：history 拉取超时从 8s 压到 2s —— 点「停止」后正在等的这次请求能更快返回，
+      //    回到循环顶部立刻命中 _cancelRequested 抛 CancelledError，不再被 8s 拉取卡住。
+      h = await fetchJson(endpoint('comfyui') + '/history/' + pid, {}, 2000);
       unreachable = 0;
     } catch (_) {
       // ComfyUI 整个不可达（进程退出 / 端口断了）：连续拿不到响应就报错。
@@ -1966,7 +2056,7 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     } else if (Date.now() - t0 > 15000) {
       // ③ 既不在 history、也不在队列里 → 任务被中断 / ComfyUI 重启过
       let q = null;
-      try { q = await fetchJson(endpoint('comfyui') + '/queue', {}, 8000); } catch (_) { q = null; }
+      try { q = await fetchJson(endpoint('comfyui') + '/queue', {}, 2000); } catch (_) { q = null; }
       if (q && q.ok && q.json) {
         const inQueue = ['queue_running', 'queue_pending'].some(k =>
           Array.isArray(q.json[k]) && q.json[k].some(it => (Array.isArray(it) ? it[1] : it && it.prompt_id) === pid));
@@ -1988,7 +2078,7 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   // 到达硬上限退出前再确认一次：任务可能刚好在这一刻完成（避免差一两秒误报超时）
   if (!history) {
     try {
-      const h2 = await fetchJson(endpoint('comfyui') + '/history/' + pid, {}, 8000);
+      const h2 = await fetchJson(endpoint('comfyui') + '/history/' + pid, {}, 2000);
       if (h2.ok && h2.json && h2.json[pid]) history = h2.json[pid];
     } catch (_) { /* 查不到就按超时处理 */ }
   }
@@ -2016,11 +2106,20 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   }
 
   // 拉取产物
-  const saved = [];
+  // 🔴 只认「保存节点」/ type=output 的产物（2026-10-25 修复）：参考视频走 LoadVideo 注入、
+  //   参考图走 LoadImage 注入，它们在 history.outputs 里都会挂一条 type=input 的原样回显。
+  //   照单全收会把**上传的参考视频/参考图**当成生成产物下载回来（结果区把原视频当生成视频展示）。
+  //   方案声明了 nodes.save 时只取保存节点输出；没声明则退回全量遍历，但仍要滤掉 type≠output。
   const outputs = history.outputs || {};
-  for (const nodeId of Object.keys(outputs)) {
+  const saveId = isVideo
+    ? String((vidP && vidP.nodes && vidP.nodes.save) || '')
+    : String((imgP && imgP.nodes && imgP.nodes.save) || '');
+  const outNodes = (saveId && outputs[saveId]) ? [saveId] : Object.keys(outputs);
+  const saved = [];
+  for (const nodeId of outNodes) {
     for (const key of ['images', 'videos', 'gifs']) {
       for (const item of (outputs[nodeId][key] || [])) {
+        if ((item.type || 'output') !== 'output') continue;   // 滤掉 LoadVideo/LoadImage 的输入回显
         const q = new URLSearchParams({
           filename: item.filename, subfolder: item.subfolder || '',
           type: item.type || 'output'
@@ -2040,7 +2139,9 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   // 给每个产物配一个 <图片名>.json 旁的「旁车文件」，历史回读时带上 ms。
   // 🔴 2026-10-22：视频生成额外带一份「生成快照」（提示词/参考图/参考视频/首尾帧/档位等），
   //    一并写进旁车 —— 用户可从结果区一键回填这版视频当初的完整配置。
-  const snap = (isVideo && params && params.snapshot) ? params.snapshot : null;
+  // 🔴 2026-10-23：图片生成同样带「生成快照」（提示词/负面/参考图/模式/分辨率/步数等），
+  //    历史图也能「回填配置」「查看提示词」。故这里不再限 isVideo。
+  const snap = (params && params.snapshot) ? params.snapshot : null;
   for (const name of saved) {
     const meta = { ms: elapsedMs, mode: templateKey, at: new Date().toISOString() };
     if (snap) meta.snapshot = snap;
@@ -2163,12 +2264,14 @@ async function upscaleVideo({ file, outDir, scale, timeoutMs = 3600000 } = {}) {
   disarmVramFree();
   try {
     // 提交前对账：节点在不在 / 模型文件 ComfyUI 扫没扫到（探测失败一律放行）
+    if (_cancelRequested) throw new CancelledError(null, _cancelMode);
     let chk = null;
     try {
       chk = await comfyProbe.verifyWorkflow(endpoint('comfyui'), wf, { modelsRoot: models.modelsRoot() || '' });
     } catch (e) {
       logger.detail('超分提交前对账跳过（探测器异常）：' + ((e && e.message) || e));
     }
+    if (_cancelRequested) throw new CancelledError(null, _cancelMode);
     if (chk && chk.skipped) logger.detail('超分提交前对账跳过：' + (chk.reason || 'ComfyUI 无响应'));
     if (chk && !chk.ok) throw new Error(chk.message);
 
@@ -2176,11 +2279,13 @@ async function upscaleVideo({ file, outDir, scale, timeoutMs = 3600000 } = {}) {
     const tSubmit = Date.now();
     let submit;
     try {
+      if (_cancelRequested) throw new CancelledError(null, _cancelMode);
       submit = await fetchJson(endpoint('comfyui') + '/prompt', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: wf, client_id: clientId })
       }, 15000);
     } catch (e) {
+      if (e && e.name === 'CancelledError') throw e;
       throw new Error('ComfyUI 服务不可达（' + endpoint('comfyui') + '）。请先手动打开一次 ComfyUI Desktop。');
     }
     if (!submit.ok || !submit.json || !submit.json.prompt_id) {
@@ -2196,7 +2301,7 @@ async function upscaleVideo({ file, outDir, scale, timeoutMs = 3600000 } = {}) {
     let history = null, vanished = 0, unreachable = 0;
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
-      if (_cancelPid === pid) throw new CancelledError(pid);
+      if (_cancelPid === pid || _cancelRequested) throw new CancelledError(pid);
       await new Promise(r => setTimeout(r, 1500));
       let h;
       try { h = await fetchJson(endpoint('comfyui') + '/history/' + pid, {}, 8000); unreachable = 0; }
@@ -2285,6 +2390,7 @@ async function upscaleVideo({ file, outDir, scale, timeoutMs = 3600000 } = {}) {
     armVramFree();
     _activePid = null;
     _cancelPid = null;
+    _cancelRequested = false;
   }
 }
 
@@ -2955,7 +3061,7 @@ async function probeVideo(abs) {
 }
 
 module.exports = {
-  init, health, llmChat, extractJson, pickArray, endpoint, setEndpoint,
+  init, health, llmChat, cancelLlm, isCancelRequested, consumeCancelRequested, extractJson, pickArray, endpoint, setEndpoint,
   comfyGenerate, cancelComfy, workflowPath, ensureDefaultTemplates, findFfmpeg, exportVideo,
   upscaleVideo, probeVideo,
   extractLastFrame,

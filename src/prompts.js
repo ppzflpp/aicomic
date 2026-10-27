@@ -36,7 +36,8 @@ export const TASKS = [
   { id: 'scene', label: '场景提示词', desc: '场景档案 → 生图提示词', kind: 'image', specs: ['promptgen.md', 'profile.md', 'scenes.md'], mustHave: ['"prompt"', '"negative"'] },
   { id: 'video-base', label: '视频提示词 · 基础', desc: '分镜 → 视频提示词（文字 / 首尾帧）', kind: 'video', specs: ['h3.md'], mustHave: ['## 输出格式'], dyn: 'video.base' },
   { id: 'video-ref', label: '视频提示词 · 参考', desc: '分镜 → 视频提示词（参考图 / 参考视频）', kind: 'video', specs: ['h3ref.md'], mustHave: ['## 输出格式'], dyn: 'video.ref' },
-  { id: 'split', label: '拆镜重写', desc: '拆分后的镜头 → 画面补写', kind: '', specs: ['split.md'], mustHave: ['"shots"'] }
+  { id: 'split', label: '拆镜重写', desc: '拆分后的镜头 → 画面补写', kind: '', specs: ['split.md'], mustHave: ['"shots"'] },
+  { id: 'pad', label: '补画撑时', desc: '不足 4 秒的镜头 → 补画面撑满 4 秒（不加台词）', kind: '', specs: ['pad.md'], mustHave: ['"action"', '"camera"'] }
 ]
 
 export function taskById(id) { return TASKS.find(t => t.id === id) || null }

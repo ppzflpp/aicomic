@@ -10,8 +10,10 @@
     <textarea v-model="adapted" rows="12" :placeholder="chapter ? '点击「改编」，LLM 将基于本章内容生成改编稿' : '请先在左侧「原文输入」粘贴章节原文'"></textarea>
 
     <!-- 素材名单覆盖提示（2026-09-27，通用结构特征：标签+名单行）：
-         素材给了「参与人物 / 场景」清单而改编稿漏掉其中某些名字时提醒。只提示、不拦截、不改稿 -->
-    <div v-if="coverage.checked && (coverage.missing.length || coverage.missingScenes.length)" class="cov-warn">
+         素材给了「参与人物 / 场景」清单而改编稿漏掉其中某些名字时提醒。只提示、不拦截、不改稿。
+         🔴 2026-10-27：按用户要求**隐藏**（不是删除）。需要再展示时，把下面 v-if="false" 改回
+            v-if="coverage.checked && (coverage.missing.length || coverage.missingScenes.length)" 即可恢复。 -->
+    <div v-if="false" class="cov-warn">
       <b>⚠ 素材名单未落地（{{ coverage.missing.length + coverage.missingScenes.length }} 个）</b>
       <span>{{ coverage.missing.concat(coverage.missingScenes).join('、') }} —— 本章该出场 / 该有场景设定的请补充改编稿；本章没戏的人物按规范不建档。</span>
     </div>
@@ -133,11 +135,16 @@ export default {
       this.busy = true
       const t0 = Date.now()
       this.pl.beginGen(1)
+      // 🔴 2026-10-24：改编模式分流 —— 勾选「深度改编」读 adapt.md（深度共创），
+      //   不勾选读 adapt-format.md（忠实整理 + 语句通顺）。两份输出结构一致，下游分镜零改动。
+      //   逻辑名经 specAlias 自动按体裁映射（广告体裁把 adapt-format.md 换成 adapt-format-ad.md）。
+      const spec = this.pl.deepAdapt ? 'adapt.md' : 'adapt-format.md'
+      const modeName = this.pl.deepAdapt ? '深度改编' : '简单格式化'
       const L = stepLog('阶段2 内容AI优化')
-      L.start('正在生成改编稿：LLM 改编章节原文（' + this.chapter.length + ' 字，长文需数分钟）')
+      L.start('正在' + modeName + '章节原文（' + this.chapter.length + ' 字，长文需数分钟）')
       try {
-        const system = await composeSystem({ specs: ['adapt.md'], mustHave: ['## 输出格式'], task: 'adapt' })
-        const user = await composeUser('adapt.md', { chapter: this.chapter })
+        const system = await composeSystem({ specs: [spec], mustHave: ['## 输出格式'], task: 'adapt' })
+        const user = await composeUser(spec, { chapter: this.chapter })
         dbgPrompt('阶段2 内容AI优化', '文字模型', [['system', system], ['user', user]])
         const text = await window.studio.llmChat([
           { role: 'system', content: system },
@@ -147,8 +154,8 @@ export default {
         await this.st.saveArtifact('adapted', this.adapted)
         await this.recordChapterRev()   // 记录本次改编基于的章节版本（章节后再改才提示）
         this.pl.markGen(1, Date.now() - t0)
-        L.done('改编稿生成完成：' + this.adapted.length + ' 字', Date.now() - t0)
-        this.$root.toast('改编稿已生成，请检查编辑后确认')
+        L.done('改编稿生成完成（' + modeName + '）：' + this.adapted.length + ' 字', Date.now() - t0)
+        this.$root.toast('改编稿已生成（' + modeName + '），请检查编辑后确认')
       } catch (e) {
         L.fail('改编稿生成失败', Date.now() - t0, e)
         this.st.fail(e)
