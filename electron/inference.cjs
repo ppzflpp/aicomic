@@ -2151,7 +2151,12 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     writeSidecar(dir, name, meta);
   }
   logger.done(saved.join('、') + ' 生成完成', elapsedMs);
-  return { files: saved, seed: realParams.seed, elapsedMs };
+  // 🔴 真实画布（2026-10-27）：二采档的实际成片是第二遍画布（如 864×480 → 放大到 1344×768），
+  //   镜头格显示的分辨率要用这个真值，而不是「档位推荐画布」——旧实现返回里不带宽高，
+  //   渲染层拿不到真实值，v.res 一直停在档位预设，镜头格就永远显示旧分辨率。
+  const outW = realParams._twoPassOn ? realParams._twoPassOn.width : realParams.width;
+  const outH = realParams._twoPassOn ? realParams._twoPassOn.height : realParams.height;
+  return { files: saved, seed: realParams.seed, elapsedMs, width: outW, height: outH };
 }
 
 /* ---------------- 成片超分（SeedVR2 · ComfyUI 内置节点） ---------------- */

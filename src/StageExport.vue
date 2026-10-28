@@ -210,6 +210,9 @@ export default {
   data() {
     return {
       busy: false, exportFile: null, films: [], srcMap: {}, loadingSrc: {},
+      // 🔴 分镜目录实测分辨率映射（文件名 → {width,height}）。由主进程 listVideosWithMeta 探测，
+      //    用于镜头格显示「当前选中那版视频」的真实画布（不再依赖 v.res 档位预设，二采档才不显示旧值）。
+      shotMeta: {},
       outRes: 'auto', tpReady: false,
       // 导出设置弹窗（分辨率 / 字幕 / 响度归一 都收在这里，确认后才开始拼）
       ex: { open: false },
@@ -252,12 +255,18 @@ export default {
           ? (v.up.rel || (/[\\/]/.test(upFile) ? upFile : '_upscale\\' + upFile))
           : null
         const file = upRel || srcFile
+        // 🔴 真实画布（2026-10-28）：镜头格分辨率显示「当前选中那版视频」的**实测**分辨率，
+        //    不再依赖 v.res（档位预设）。二采档第一遍 864×480、第二遍放大 1344×768，
+        //    v.res 停在预设值就会显示旧分辨率。实测值由主进程探测缓存在 shotMeta（文件名→宽高）；
+        //    查不到（超分产物不在分镜目录 / 探测未完成）再回退 v.res。
+        const m = file && this.shotMeta[file]
+        const realRes = m && m.width ? (m.width + 'x' + m.height) : ''
         return {
           i, confirmed: !!v.confirmed, file, isUp: !!upRel,
           path: file && dir ? dir + '\\' + file : null,
           chars: s.chars || '', scene: s.scene || '', dur: s.dur || 8,
           srcRes: v.res || '',
-          res: upRel ? (v.up.res || '') : (v.res || ''),
+          res: upRel ? (v.up.res || realRes || v.res || '') : (realRes || v.res || ''),
           // 耗时：超分格显示**超分这次**的耗时（不是原视频生成耗时 —— 那是上一次的事）
           genMs: upRel ? (v.up.ms || 0) : (v.genMs || 0)
         }
@@ -504,6 +513,19 @@ export default {
         const films = await window.studio.listMedia(dir, pre)
         if (this.ep && this.ep.filmDir !== dir) return   // 异步期间可能已切到别的集
         this.films = films
+        // 🔴 分镜目录实测分辨率（2026-10-28）：扫一次拿每个镜头视频的真实画布，
+        //    cells() 用「当前选中那版视频」的文件名查它，显示真实分辨率（二采档不再停旧值）。
+        //    同样走 .meta.json 缓存，目录没变化时几乎零开销。
+        const sdir = this.ep.shotDir
+        this.shotMeta = {}
+        if (sdir) {
+          const shots = await window.studio.listMedia(sdir, '')   // 分镜目录不分前缀（单集目录）
+          const m = {}
+          for (const f of (Array.isArray(shots) ? shots : [])) {
+            if (f.width) m[f.file] = { width: f.width, height: f.height }
+          }
+          this.shotMeta = m
+        }
         // 与镜头模块一致：视频直接带播放控件展示。
         // 🔴 成片多次导出各自留档（2026-10-09）→ 只有**最新一版**需要预读 base64：
         //    历史成片不预加载，否则每多导一次就多几十 MB base64 常驻内存。

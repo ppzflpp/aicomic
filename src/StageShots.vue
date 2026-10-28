@@ -3542,6 +3542,9 @@ export default {
         })
         const ms = Date.now() - t0
         this.vstate[i].files = [...this.vstate[i].files, ...r.files]
+        // 🔴 真实画布（2026-10-27）：写回本镜实际生成的分辨率（二采档是放大后的第二遍画布），
+        //   组装成片模块的镜头格用它显示，不能再停在档位预设旧值。
+        if (r.width && r.height) this.vstate[i].res = r.width + 'x' + r.height
         // 每一版各自记一份生成耗时（2026-10-10）：显示在该版播放框右上角；
         // 超出 4 版上限被 shift 掉的旧版，连带清掉它的耗时记录（否则 fileMs 会无限增长）
         const fm = this.vstate[i].fileMs || (this.vstate[i].fileMs = {})

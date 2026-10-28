@@ -47,7 +47,7 @@ async function readEpisode(workspace, episodeId) {
 }
 
 /** 把某一镜的生成结果落回 videos.json（指定集，不依赖当前集）。返回写回后的完整 videoState。 */
-async function persistVideo(snapshot, shot, files, ms) {
+async function persistVideo(snapshot, shot, files, ms, width, height) {
   const vs = await readVideoState(snapshot.workspace, snapshot.episodeId)
   const key = String(shot.index)
   const cur = vs[key] || { files: [], cur: -1, confirmed: false }
@@ -62,6 +62,9 @@ async function persistVideo(snapshot, shot, files, ms) {
   cur.cur = cur.files.length - 1
   cur.confirmed = true
   cur.genMs = ms
+  // 🔴 真实画布（2026-10-27）：写回本镜实际生成的分辨率（二采档是放大后的第二遍画布），
+  //   组装成片模块的镜头格用它显示，不能再停在档位预设旧值。
+  if (width && height) cur.res = width + 'x' + height
   cur.refsUsed = shot.refsUsed
   // 🔴 首帧接力（2026-10-26）：接力改了本镜提示词 + 首帧后，快照里的旧 sig 已对不上新状态，
   //   硬写会制造「视频已过期」的假琥珀。接力过的镜头清掉签名（= 不判过期，与「重新生成即已处理」同义），
@@ -256,7 +259,7 @@ export async function run(snapshot, report, shouldStop) {
         params, label: '阶段6 H3视频'
       })
       const ms = Date.now() - t0
-      latestVs = await persistVideo(snapshot, shot, r.files, ms)
+      latestVs = await persistVideo(snapshot, shot, r.files, ms, r.width, r.height)
       // 首帧接力：本镜刚出片 → 缓存最新 videoState，供下一镜取尾帧用
       if (snapshot.autoChainFirst) chainEp = null
       ok++
