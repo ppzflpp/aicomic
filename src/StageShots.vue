@@ -1301,6 +1301,9 @@ export default {
         this.mergeVideoState(this.st.current.videoState)
         this.refreshFrameStale()
         this.st.invalidateMedia(this.epProjectId, 'shots')
+        // 批量收尾：接力过的镜头 prompts/videos 的 `_sig` 是 null（防假琥珀），这里补基线，
+        // 否则这些镜头「改了参考图/提示词也不标脏」——详见 rebaselineSigs 注释
+        this.rebaselineSigs()
       }
     })
     // 🔴 2026-10-22（Dragon 反馈「跑完一镜界面不动」）：批量每镜开跑时上一镜结果已落盘，
@@ -2408,6 +2411,46 @@ export default {
       if (!v || !v._sig || !v.files.length) return false
       return sigStale(v._sig, this.curVideoSig(i), v._ack)
     },
+    /**
+     * 给「有内容但没有签名」的记录补一次基线（2026-11-01 Bug 修复）。
+     *
+     * 背景：批量链路为了让「刚接力改过首帧 + 提示词」的镜头不出现**假**琥珀，会把 `_sig` 写成
+     * null（见 `promptChain.regeneratePrompt` 与 `batchVideo.persistVideo` 的注释）。代价是这些
+     * 镜头从此**永远**不参与脏标记判定 —— `promptStale` / `videoStale` 第一句就是
+     * `if (!p._sig) return false`，于是「改了参考图 / 改了提示词，两个按钮都不变色」。
+     * 实测存量：《古代结婚》镜 2-5 的 prompts 与 videos 全是无签名状态。
+     *
+     * 现在改成：在任务收尾（idle）与换集加载时，用**当前真实状态**给这些记录补一次基线。
+     * 🔴 只补 `_sig == null` 的，**绝不覆盖已有签名** —— 上游真的变了而留下的脏标记不会被抹掉。
+     */
+    async rebaselineSigs() {
+      const shots = this.shots || []
+      const ps = this.prompts || []
+      let hasP = false, hasV = false
+      for (let i = 0; i < shots.length; i++) {
+        const p = ps[i]
+        if (p && !p._sig && String(p.text || '').trim()) { hasP = true; break }
+      }
+      for (let i = 0; i < shots.length; i++) {
+        const v = this.vstate[i]
+        if (v && !v._sig && (v.files || []).length) { hasV = true; break }
+      }
+      if (!hasP && !hasV) return
+      // 基线里要带「素材顺序 + 文件指纹」这一维，先把指纹取回来（拿不到就退回不带 order 的基线）
+      if (!this.asigReady) { try { await this.refreshAsig() } catch (_) { /* 保持原状 */ } }
+      let dirty = false
+      for (let i = 0; i < shots.length; i++) {
+        const p = ps[i]
+        if (p && !p._sig && String(p.text || '').trim()) { p._sig = this.curPromptSig(i); dirty = true }
+      }
+      if (dirty) { try { await this.savePrompts() } catch (_) { /* 落盘失败下次再补 */ } }
+      let vdirty = false
+      for (let i = 0; i < shots.length; i++) {
+        const v = this.vstate[i]
+        if (v && !v._sig && (v.files || []).length) { v._sig = this.curVideoSig(i); v._ack = null; vdirty = true }
+      }
+      if (vdirty) { try { await this.saveVideos() } catch (_) { /* 同上 */ } }
+    },
     async ackVideo(i, quiet) {
       const v = this.vstate[i]
       v._ack = this.curVideoSig(i)
@@ -2845,8 +2888,12 @@ export default {
       const s = this.shots[i]
       if (!s) return false
       const p = this.prompts[i]
-      // 2026-10-19：单镜点「生成提示词」= 接受重做 → 按钮立刻褪掉琥珀色（批量传了 ctx，逐条靠新签名自然清除）
-      if (!ctx && this.promptStale(i)) await this.ackPrompt(i, true)
+      // 🔴 2026-11-01（Bug 修复）：**不要**在生成开始时就 ack。
+      //   旧逻辑「点生成 = 接受重做 → 立刻褪掉琥珀色」会污染 `_ack`：一旦这次生成失败 / 被停止 /
+      //   被能力校验提前拦下（LLM 报错、Key 失效、切集哨兵命中），`_ack` 已经等于当前签名，
+      //   于是这次「上游变了」被永久静音 —— 界面看起来「改完参考图也不标脏」。
+      //   现在只在**成功**后靠签名自然对齐（genP 末尾写 `_sig = curPromptSig`，两边一致即不脏）；
+      //   失败就保持琥珀色，用户可以再点一次。生成中的忙碌态由 `_gen` / 整区遮罩表达。
       // 记录本次生成所属的集（收尾写库守卫的比对基准；切集哨兵 'SWITCHED' 不覆盖）
       if (this._busyEpId !== 'SWITCHED') this._busyEpId = this.st.current && this.st.current.id
       this.pBusy = true
@@ -3160,6 +3207,8 @@ export default {
       })
       // 视频按需加载：先算一遍可视区间，把每镜当前那几版读进来
       this.refreshVidWins()
+      // 无签名记录补基线（见 rebaselineSigs 注释）：只补 null，不动已有签名
+      this.rebaselineSigs()
     },
     /**
      * 局部合并 videoState（2026-10-24 Dragon：生成视频后只刷新对应镜头，不全量刷新）。
@@ -3890,8 +3939,11 @@ export default {
       const pr = ((this.st.current.prompts || [])[i] || {})
       const prompt = pr.text
       if (!prompt) { rollback(); this.st.fail(new Error('镜头 ' + (i + 1) + ' 缺少 ' + this.promptZoneName() + '，请先生成本镜头的提示词')); return false }
-      // 2026-10-19：单镜点「生成视频」= 接受重做 → 按钮立刻褪掉琥珀色（批量走签名自然清除）
-      if (!ctx && this.videoStale(i)) await this.ackVideo(i, true)
+      // 🔴 2026-11-01（Bug 修复）：同 genP —— 不在开始生成时 ack。
+      //   旧写法「点生成视频 = 接受重做 → 立刻褪色」在生成失败/被停止/被能力校验拦下时会留下
+      //   一条等于当前签名的 `_ack`，此后无论提示词怎么改，这颗按钮都不会再变琥珀（实测在
+      //   《曹操杀吕伯奢2》镜1、《三生三世-1》镜3 都能看到残留 ack 把脏标记吃掉）。
+      //   成功路径末尾会写 `_sig = curVideoSig(i)` 并把 `_ack` 清 null → 自然褪色，无需提前 ack。
       // 参考素材全部来自本行该镜头的设置（可不选）
       // 🔴 2026-10-14：与提示词**同一份**过滤结果（按本镜 chars / scene）
       //    —— 否则提示词里的 <Picture N> 与实际注入 ComfyUI 的图对不上。
