@@ -200,10 +200,13 @@ export async function run(snapshot, report, shouldStop) {
       }
     }
 
-    // ---- 提示词脏 → 重生成（与「自动填充首帧」开关无关 · 2026-10-27）----
-    // 快照在提交时（runBatchV 里 refreshAsig 之后）已把 promptStale 算好带下来；
-    // 开关关、或第 1 镜、或上一镜没视频，只要提示词脏了都要重生成，不再拿旧提示词直接出片。
-    if (shot.promptStale && !chainRegenerated) {
+    // ---- 提示词脏 / 缺失 → 重生成（与「自动填充首帧」开关无关 · 2026-10-27，2026-11-01 扩到「缺失」）----
+    // 快照在提交时（runBatchV 里 refreshAsig 之后）已把 promptStale 算好带下来（空提示词也算 true）；
+    // 开关关、或第 1 镜、或上一镜没视频，只要提示词脏了/还没有，都要先生成再出片，不再拿旧提示词直接出片。
+    // 🔴 2026-11-01：这是「缺提示词就自动生成」的落点 —— 本镜先生成提示词，成功后紧接着生成本镜视频，
+    //    然后循环进入下一镜，天然就是「补一镜、出一镜」的交替节奏。
+    const promptMissing = !String(shot.prompt || '').trim()
+    if ((shot.promptStale || promptMissing) && !chainRegenerated) {
       chainEp = chainEp || (await readEpisode(snapshot.workspace, snapshot.episodeId))
       if (chainEp) {
         chainEp.promptFiles = snapshot.promptFiles || {}
@@ -211,15 +214,25 @@ export async function run(snapshot, report, shouldStop) {
       }
       if (shouldStop && shouldStop()) { stopped = true; break }
       if (!chainEp) {
-        // 读集失败 → 拿不到分镜/档案数据，无法重生成；按现有提示词继续（别因这个卡死整批）
+        // 读集失败 → 拿不到分镜/档案数据，无法重生成
+        if (promptMissing) {
+          // 🔴 本来就没有提示词，又没有可用的兜底 → 这一镜跳过（别拿空提示词去出片）
+          L.warn('镜头 ' + (i + 1) + ' 没有提示词且读集失败，跳过该镜（这一镜不出视频）' + prog)
+          skipped++
+          continue
+        }
+        // 提示词已脏但至少有旧文本 → 按现有提示词继续（别因这个卡死整批）
         L.warn('镜头 ' + (i + 1) + ' 提示词脏但读集失败，跳过重生成（按现有提示词生成）' + prog)
       } else {
-        L.info('镜头 ' + (i + 1) + ' 提示词已脏（分镜/素材/声音档位变了）→ 重生成提示词（不抽首帧）' + prog)
+        L.info('镜头 ' + (i + 1) + (promptMissing
+          ? ' 还没有提示词 → 先生成提示词，再出本镜视频'
+          : ' 提示词已脏（分镜/素材/声音档位变了）→ 重生成提示词（不抽首帧）') + prog)
         const rg = await regeneratePrompt(chainEp, i, { n: k + 1, total })
         if (shouldStop && shouldStop()) { stopped = true; break }
         if (rg.cancelled) { stopped = true; break }
         if (!rg.ok) {
-          L.warn('镜头 ' + (i + 1) + ' 提示词脏，重生成失败，跳过该镜（' + (rg.error || '未知原因') + '）' + prog)
+          L.warn('镜头 ' + (i + 1) + (promptMissing ? ' 提示词自动生成失败' : ' 提示词脏，重生成失败') +
+            '，跳过该镜（这一镜不出视频）：' + (rg.error || '未知原因') + prog)
           skipped++
           continue
         }
@@ -228,7 +241,7 @@ export async function run(snapshot, report, shouldStop) {
         // 写回重生成后的提示词（带 _rev；regeneratePrompt 已清 _sig）
         const persist = (chainEp.prompts || []).slice()
         await window.studio.saveArtifact(snapshot.workspace, snapshot.episodeId, 'prompts', persist)
-        L.done('镜头 ' + (i + 1) + ' 提示词已重生成（提示词脏了）' + prog)
+        L.done('镜头 ' + (i + 1) + (promptMissing ? ' 提示词已自动生成，接着出这一镜的视频' : ' 提示词已重生成（提示词脏了）') + prog)
         // 只透出 prompt（不带 firstFrame），订阅方据此只更新提示词文本、不动首帧
         report({
           done: k + 1, total, index: i,

@@ -205,15 +205,19 @@
           <div class="refs" v-if="prompts[i]">
             <div class="ref-row">
               <!-- 参考图可拖动改顺序（2026-10-08）：顺序决定提示词里 <Picture N> 的编号，
-                   松手才重排（拖动中只高亮目标位，避免 key 抖动导致图片闪一下） -->
+                   松手才重排（拖动中只高亮目标位，避免 key 抖动导致图片闪一下）。
+                   🔴 2026-11-01：有任务在跑（批量出片/出提示词）时**显式**写 draggable="false"。
+                   原因：那时镜头行会被实时重渲染，若正拖着的元素被替换，浏览器等不到 dragend，
+                   会一直停在拖拽会话里 —— 页面能看见、能最大最小化，但点击全被吞掉（表现为「整屏手掌、点不动」）。
+                   注意必须写成字符串 'false'：移除属性会退回 auto，img 默认可拖，等于没禁。 -->
               <div v-for="(f, k) in prompts[i].refs.images" :key="'ri' + k" class="ref-thumb"
-                   draggable="true"
+                   :draggable="taskBusy ? 'false' : 'true'"
                    :class="{ 'drag-src': dragFrom && dragFrom.i === i && dragFrom.k === k,
                              'drag-to': dragTo && dragTo.i === i && dragTo.k === k,
                              unused: refUnused(i, 'images', k) }"
-                   @dragstart="refDragStart(i, k)" @dragover.prevent="refDragOver(i, k)"
+                   @dragstart="refDragStart(i, k, $event)" @dragover.prevent="refDragOver(i, k)"
                    @drop.prevent="refDragDrop(i, k)" @dragend="refDragEnd()">
-                <img :src="refSrc(f)" :title="refTitle(i, 'images', k, f)"
+                <img :src="refSrc(f)" :title="refTitle(i, 'images', k, f)" draggable="false"
                      @click.stop="previewRef(f)" style="cursor:zoom-in" />
                 <span class="rtag">参考图</span>
                 <button class="img-x" title="移除" @click.stop="delRef(i, 'images', k)">✕</button>
@@ -494,8 +498,8 @@
       </button>
       <!-- 本模块的主操作 = 出视频；标题栏里只有它是实心蓝（pro），提示词 / 合并都是描边 -->
       <button class="btn sm pro" :class="{ regen: !batchVRunning && !batchVStop && shots.some((_, i) => vstate[i] && vstate[i].files.length), danger: batchVRunning || batchVStop, 'stale-need': !batchVRunning && !batchVStop && anyVideoStale }"
-              :disabled="batchVStop || batchP || (!batchVRunning && !prompts.some(p => p && p.text.trim()))"
-              :title="anyVideoStale && !batchVRunning ? '有镜头的视频过期了（提示词或素材改过）→ 点这里批量重做，也可以只补还没生成的' : (batchVRunning ? '点击立刻停止：当前这一镜马上中断，显存会释放，这一镜的进度会丢弃' : (prompts.some(p => p && p.text.trim()) ? '重新生成所有镜头的视频，也可以只补还没生成视频的镜头' : '还没有任何镜头提示词：先逐镜生成提示词，或点左边的「批量生成提示词」'))"
+              :disabled="batchVStop || batchP"
+              :title="anyVideoStale && !batchVRunning ? '有镜头的视频过期了（提示词或素材改过）→ 点这里批量重做，也可以只补还没生成的' : (batchVRunning ? '点击立刻停止：当前这一镜马上中断，显存会释放，这一镜的进度会丢弃' : (prompts.some(p => p && p.text.trim()) ? '重新生成所有镜头的视频，也可以只补还没生成视频的镜头' : '镜头还没有提示词：点这里会先自动生成提示词，再逐镜出视频'))"
               @click="batchVideos">
         <span v-if="batchVStop" class="busy-txt"><i class="spin"></i>停止中…</span>
         <span v-else-if="batchVRunning">停止生成({{ batchVShowN }}/{{ batchVShowTotal }})</span>
@@ -543,6 +547,9 @@
           <div><b>只生成缺失的</b> —— {{ askBatch.kind === 'prompts'
             ? '只为还没有提示词的镜头生成'
             : '只为还没有任何视频文件的镜头出片（已生成但未采用的不动）' }}。</div>
+          <div v-if="askBatch.kind === 'videos' && missingPromptCount" style="margin-top:6px">
+            其中 <b>{{ missingPromptCount }}</b> 个镜头还没有提示词 —— 这些镜头会<b>先自动生成提示词，再出这一镜的视频</b>，逐个进行；补不出来的镜头会跳过。
+          </div>
         </div>
         <div class="modal-ops">
           <button class="btn" @click="askBatchAll">全部重新生成</button>
@@ -810,6 +817,9 @@ export default {
     /** 本页是否有「上游变过、需要重做」的提示词 / 视频（标题栏批量按钮的琥珀态，2026-10-19） */
     anyPromptStale() { return this.prompts.some((_, i) => this.promptStale(i)) },
     anyVideoStale() { return this.shots.some((_, i) => this.videoStale(i)) },
+    /** 还没有提示词的镜头数（2026-11-01）：批量出视频时这些镜头会「先补提示词、再出这一镜」，
+     *  弹框里要把这件事说清楚，别让用户以为漏镜了。 */
+    missingPromptCount() { return this.shots.filter((_, i) => !(this.prompts[i] && this.prompts[i].text.trim())).length },
     /** 参考素材上限（模板里显示「最多 N 张/个」用；method 里放常量不会挂到实例上，必须走 computed） */
     maxRefImg() { return MAX_REF_IMG },
     maxRefVid() { return MAX_REF_VID },
@@ -1124,6 +1134,13 @@ export default {
     this.refreshAsig()
     this._onFocus = () => { this.refreshAsig() }
     window.addEventListener('focus', this._onFocus)
+    // 🔴 2026-11-01：拖拽会话兜底清理。
+    //   参考图拖动排序只在 dragend 里清 dragFrom/dragTo；若源元素在拖动过程中被重渲染替换掉，
+    //   dragend 可能发不出来，dragFrom 就一直挂着（高亮残留）。document 级**捕获**阶段监听能兜住
+    //   绝大多数「松手了但元素没了」的情况；配合模板里 taskBusy 时 draggable='false' 双保险。
+    this._onDocDragEnd = () => { this.dragFrom = null; this.dragTo = null }
+    document.addEventListener('dragend', this._onDocDragEnd, true)
+    document.addEventListener('drop', this._onDocDragEnd, true)
     // 🔴 2026-10-22（问题2）：切集重建组件后，旧的 _batchVideoOff 订阅已随旧实例销毁，新实例收不到
     //   任务完成的 done 事件 → 「停在原集等它跑完」时 vstate 不实时刷新。这里挂一个组件级全局订阅：
     //    任何任务进入 idle（done/fail/cancel）时，若它属于当前集，就刷新本集 vstate + 首帧过期 + 树。
@@ -1220,6 +1237,11 @@ export default {
   beforeUnmount() {
     this._b64 = {}; this._refv = {}
     if (this._onFocus) { window.removeEventListener('focus', this._onFocus); this._onFocus = null }
+    if (this._onDocDragEnd) {
+      document.removeEventListener('dragend', this._onDocDragEnd, true)
+      document.removeEventListener('drop', this._onDocDragEnd, true)
+      this._onDocDragEnd = null
+    }
     // 清理任务中心的事件订阅（批量任务本体仍在任务中心独立跑，不受本组件卸载影响）
     if (this._batchVideoOff) { this._batchVideoOff.forEach(off => off && off()); this._batchVideoOff = null }
     if (this._offTaskIdle) { this._offTaskIdle(); this._offTaskIdle = null }
@@ -2464,7 +2486,16 @@ export default {
        只在同一镜头的参考图之间排序（素材属于本镜头，不跨行搬运）。
        顺序会改变提示词里 <Picture N> 的编号（genP 按 refs.images 顺序标注来源），
        所以重排后该镜头的提示词会自然标 ⚠ 提醒重新生成——由素材签名比对得出，无需额外代码。 */
-    refDragStart(i, k) { this.dragFrom = { i, k } },
+    refDragStart(i, k, e) {
+      // 🔴 2026-11-01：任务运行中禁止起拖 —— 此时镜头行会被逐镜重渲染，
+      //   拖着的那颗缩略图可能被替换掉，浏览器等不到 dragend 就停在拖拽会话里，
+      //   表现为「窗口能最大最小化、鼠标变手掌、整页点不动」。模板层已写 draggable='false'，这里再兜一道。
+      if (this.taskBusy) {
+        if (e && e.preventDefault) e.preventDefault()
+        return
+      }
+      this.dragFrom = { i, k }
+    },
     refDragOver(i, k) {
       if (!this.dragFrom || this.dragFrom.i !== i) return
       this.dragTo = { i, k }   // 只记目标位；松手才真正重排（避免拖动中 key 抖动让图片闪）
@@ -2778,15 +2809,16 @@ export default {
       this.askBatch = { kind: 'prompts' }
     },
     /** 「批量生成视频」：跑动中点击 = 整批停止（立刻中断当前任务 + 清排队 + 释放显存，结束整批）；
-     *  空闲先校验提示词齐全（缺哪个全列出）再弹框 */
+     *  空闲直接弹框选范围。
+     *  🔴 2026-11-01：不再因「缺提示词」拦下整批 —— 缺哪个就在批量循环里**逐镜现补**：
+     *     本镜生成提示词 → 紧接着出本镜视频 → 下一个镜头，依此类推（补失败的镜头跳过，继续下一镜）。
+     *     判定与回填在 batchVideo.js 的「提示词脏 → 重生成」分支，快照里的 promptStale 已把
+     *     「提示词为空」算作需要重生成。 */
     batchVideos() {
       if (this.batchV || this.taskVideoTask) { this.stopBatchV(); return }
       if (this.batchP) { this.$root.toast('提示词批量进行中，请先等它结束或停止'); return }
       if (!this.shots.length) { this.$root.toast('还没有镜头，先点「生成分镜」'); return }
       if (this.lockedShots().length) { this.$root.toast(this.lockBlockMsg()); return }
-      const missing = []
-      for (let i = 0; i < this.shots.length; i++) if (!(this.prompts[i] && this.prompts[i].text.trim())) missing.push(i + 1)
-      if (missing.length) { this.$root.toast('镜头 ' + missing.join('、') + ' 没有提示词，请先生成提示词'); return }
       this.askBatch = { kind: 'videos' }
     },
     /**
@@ -2938,24 +2970,29 @@ export default {
      * 保留 _b64 缓存 → 其它镜头的视频 <video> 不重新读盘、不闪烁。
      * 判断「变化」用序列化比较（每个镜头的 videoState 对象很小，代价可忽略），
      * 运行时字段 _gen/_genAt 先剥掉再比（它们是 UI 态，不该触发替换）。
+     * 🔴 2026-11-01（「出 1 镜，全场重渲染」）：旧实现先在 next 副本上改、最后 `this.vstate = next`
+     *   整体换引用 —— 只要有一镜变化，v-for 里**所有** shot-row 的 render 函数都会重跑
+     *   （diff 最终只改一个 DOM，但 render 阶段一个不落，每行还要跑 slotList/optsFor/
+     *   refSrc/refTitle/refUnused/durWarn…，批量跑到后段界面明显发沉）。
+     *   改成**逐键赋值**：Vue 3 的 Proxy 按 key 追踪依赖，只有 vstate[该镜头号] 变了才触发
+     *   对应那一行的 effect，其余镜头连 render 都不跑。
+     *   🔴 必须直接写 this.vstate[k]，不能先拷副本再整体赋值，否则又退回全量更新。
      */
     mergeVideoState(newVs) {
       if (!newVs || typeof newVs !== 'object') return
       const keys = Object.keys(newVs)
       if (!keys.length) return
-      let dirty = false
-      const next = { ...(this.vstate || {}) }
+      if (!this.vstate || typeof this.vstate !== 'object') this.vstate = {}
+      const vs = this.vstate
+      const strip = (v) => { if (!v) return v; const o = { ...v }; delete o._gen; delete o._genAt; return o }
       for (const k of keys) {
         const nv = newVs[k]
         if (nv == null) continue
-        const old = next[k]
-        const strip = (v) => { if (!v) return v; const o = { ...v }; delete o._gen; delete o._genAt; return o }
+        const old = vs[k]
         if (!old || JSON.stringify(strip(old)) !== JSON.stringify(strip(nv))) {
-          next[k] = JSON.parse(JSON.stringify(nv))
-          dirty = true
+          vs[k] = JSON.parse(JSON.stringify(nv))
         }
       }
-      if (dirty) this.vstate = next
     },
     /** 该镜头当前生效的分辨率（2026-10-21 起锁定 = 档位推荐画布，不再取每镜头独立值） */
     resOf(i) {
@@ -3587,14 +3624,15 @@ export default {
       } finally { delete this.vstate[i]._genAt; delete this.vstate[i]._gen; this.vBusy = false; this.pl.endGen(5); if (!this.pBusy) this._busyEpId = null }
     },
     /** 批量生成视频：all=true 全部重生成（新版本追加，旧版保留可切换）；false 只补没有任何视频文件的镜头。
-     *  入口 batchVideos() 已保证全部镜头都有提示词；此处再逐个保险校验。
+     *  🔴 2026-11-01：不再要求「进批前每个镜头都有提示词」。缺提示词的镜头照样进清单，
+     *     由 batchVideo.js 在循环里逐镜现补提示词、紧接着出这一镜的视频（补失败则跳过该镜）。
      *  🔴 2026-10-22 改：不再在本组件内跑循环（旧实现依赖组件实例，切菜单/切集就断）。
      *     改为「算好每镜数据快照 → 提交到任务中心」，任务中心独立串行执行、切走不中断，
      *     完成后广播事件 → 本组件订阅刷新（vstate / 指纹 / 首帧过期 / 左侧树）。 */
     async runBatchV(all) {
       const idx = []
       for (let i = 0; i < this.shots.length; i++) {
-        if (!(this.prompts[i] && this.prompts[i].text.trim())) continue   // 保险：缺提示词的跳过
+        // 🔴 2026-11-01：缺提示词的镜头不再在这里跳过（原来 continue）—— 交给批量循环现补再出片
         const s = this.vstate[i]
         if (all || !(s && s.files.length)) idx.push(i)
       }
@@ -3671,12 +3709,15 @@ export default {
       const dur = this.durOf(i)
       const resStr = this.resOf(i)
       const [rw, rh] = parseRes(resStr)
+      // 🔴 2026-11-01：空提示词也当成「需要重生成」——批量循环据此先补本镜提示词、再出本镜视频。
+      //    promptStale(i) 本身对空文本返回 false（它只判「过期」），所以这里单独算一次 noPrompt。
+      const noPrompt = !(pr.text && String(pr.text).trim())
       return {
         index: i,
-        prompt: pr.text,
+        prompt: pr.text || '',
         // 🔴 2026-10-27：「提示词脏」标记随快照下发——批量循环据此独立重生成提示词
         //   （与「自动填充首帧」开关无关；runBatchV 已先 refreshAsig，这里算得准）。
-        promptStale: this.promptStale(i),
+        promptStale: noPrompt || this.promptStale(i),
         refImages: refImages.slice(), refVideos: refVideos.slice(),
         firstFrame, lastFrame,
         width: rw, height: rh, seconds: dur,
