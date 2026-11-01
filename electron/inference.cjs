@@ -1118,6 +1118,36 @@ function dropTwoPass(wf, profile) {
 /* ---------------- 放大二采：第二遍采样段装配 ---------------- */
 
 /**
+ * 给本次采样生成 BlockCache（T8）节点定义；不该挂时返回 null。
+ *
+ * 🔴 为什么按步数门控（2026-11-01「三生三世-1」第1集镜头1 实测，864×480 · 8 步 PDD）：
+ *    8 步蒸馏相邻两步的 σ 跨度 0.055~0.17，实测 video_diff 0.16~0.40 全部超过 0.12 阈值
+ *    → 日志 `cached 0/8`，一步都没跳过；G1（只开 INT8）与 G2（INT8 + T8）解码后逐帧 md5
+ *    完全相同，每步耗时 22.59 vs 22.44 s/it（噪声级）。插了等于没插，还白付一份 CPU 缓存开销。
+ *    20 步原生档 σ 跨度只有 0.05，才有命中空间 —— 所以由方案声明 minSteps 决定挂不挂。
+ * 🔴 不要为了「让它命中」把阈值调高：0.5 阈值实测时域脉动 +72%，画面发「假」（10-21 实验）。
+ */
+function blockCacheNode(accelCfg, steps) {
+  const bc = accelCfg && accelCfg.blockCache;
+  if (!bc || !bc.class) return null;
+  const minSteps = Number(bc.minSteps);
+  if (Number.isFinite(minSteps) && minSteps > 0 && (Number(steps) || 0) < minSteps) return null;
+  const pick = (v, d) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
+  return {
+    class_type: bc.class,
+    inputs: {
+      residual_diff_threshold: pick(bc.threshold, 0.12),
+      start_percent: pick(bc.start_percent, 0.08),
+      end_percent: pick(bc.end_percent, 0.95),
+      max_consecutive_hits: pick(bc.max_consecutive_hits, 2),
+      cache_device: bc.cache_device || 'cpu',
+      metric_stride: pick(bc.metric_stride, 8),
+      verbose: false
+    }
+  };
+}
+
+/**
  * 在第一遍采样结果之后接一段「放大 → 再采」，并让输出改读第二遍。
  *
  * 数据流（H3 的 latent 是「视频 + 音频」拼在一起的 AV 格式，不能只拿半边去放大）：
@@ -1248,8 +1278,10 @@ function applyTwoPass(wf, tp, ctx) {
       wf['720'] = { class_type: accelCfg.attention.class, inputs: { model: [modelRef, 0], attention: accelCfg.attention.backend || 'comfy kitchen attention' } };
       modelRef = '720';
     }
-    if (accelCfg.blockCache && accelCfg.blockCache.class) {
-      wf['721'] = { class_type: accelCfg.blockCache.class, inputs: { model: [modelRef, 0], residual_diff_threshold: 0.12, start_percent: 0.08, end_percent: 0.95, max_consecutive_hits: 2, cache_device: 'cpu', metric_stride: 8, verbose: false } };
+    // 第二遍步数：二采第二遍通常是 8 步蒸馏（tp.steps）→ 不满足 minSteps 时这里不会挂 BlockCache
+    const bc2 = blockCacheNode(accelCfg, Number(tp.steps) || Number(params.twopass_steps) || Number(params.steps));
+    if (bc2) {
+      wf['721'] = { class_type: bc2.class_type, inputs: { model: [modelRef, 0], ...bc2.inputs } };
       modelRef = '721';
     }
   }
@@ -1844,6 +1876,8 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     //    关（或值为 '0'）则什么都不插，画面回到纯 pytorch 注意力的基线。
     // 🔴 INT8 注意力会改变采样轨迹（画面有轻微差异、无硬伤），BlockCache 在 8 步以上才有净收益；
     //    两者叠加在 PDD 档位下也实测可跑（A3 实验 151s 无硬伤）。节点编号用 7xx 段，避开模板/媒体/二采。
+    // 🔴 现状（2026-11-01 实测）：8 步蒸馏档 BlockCache 命中 0/8（残差 0.16~0.40 全超 0.12），
+    //    与「只开 INT8」逐帧 md5 相同 —— 所以档位声明 blockCache.minSteps 后，8 步档实际只串 INT8。
     const accel = (Wg.attentionBoost) || null;
     // 🔴 默认开（2026-10-27 用户拍板）：缺省（从未设置过）即注入加速节点。只有用户明确
     //    把开关拨到「关」（值为 '0'）才关闭。T8 插件已随软件自动装进 custom_nodes，
@@ -1862,13 +1896,11 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
         };
         modelRef = [aid, 0];
       }
-      if (accel.blockCache && accel.blockCache.class) {
+      // BlockCache 只在步数够多（σ 跨度够小）时才有命中空间，由 minSteps 门控见 blockCacheNode()
+      const bc1 = blockCacheNode(accel, realParams.steps);
+      if (bc1) {
         const bid = '711';
-        wf[bid] = {
-          class_type: accel.blockCache.class,
-          inputs: { model: modelRef, residual_diff_threshold: 0.12, start_percent: 0.08, end_percent: 0.95,
-            max_consecutive_hits: 2, cache_device: 'cpu', metric_stride: 8, verbose: false }
-        };
+        wf[bid] = { class_type: bc1.class_type, inputs: { model: modelRef, ...bc1.inputs } };
         modelRef = [bid, 0];
       }
       wf[vidN.guider].inputs.model = modelRef;
@@ -3086,6 +3118,8 @@ module.exports = {
   // 放大二采（离线自测用；生产链路只经 comfyGenerate）
   __twoPassOf: twoPassOf, __applyTwoPass: applyTwoPass, __dropTwoPass: dropTwoPass,
   __firstPassCanvas: firstPassCanvas,
+  // 加速节点装配（离线自测用：8 步不挂 BlockCache / 20 步才挂）
+  __blockCacheNode: blockCacheNode,
   // 纯函数（离线自测用）
   contentLen,
   // 提示词反推（图片 → 正向提示词）

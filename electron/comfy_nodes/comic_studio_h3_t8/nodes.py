@@ -25,7 +25,16 @@ SPECTRUM_BINDING_KEY = "spectrum_h3_binding"
 BLOCK_SPARSE_CALLBACK_KEY = "block_sparse_attention"
 H3_RETURNS_RAW_AUDIO_VELOCITY = hasattr(comfy.model_sampling, "ModelSamplingAV")
 H3_FINAL_LAYER_TAKES_SAMPLING_ARGS = "sample_sigmas" in inspect.signature(FinalLayer.forward).parameters
-PREFETCH_CLEANUP_TAKES_MODULE = hasattr(comfy.model_prefetch, "GRAPH_MODULES")
+# 🔴 不能用 GRAPH_MODULES 探测：ComfyUI 0.41.2 已把该属性删掉，但 cleanup_prefetched_modules
+#    仍是两参签名 (module, comfy_modules) —— 用属性探测会判成「一参」→ 命中时
+#    TypeError: missing 1 required positional argument: 'comfy_modules'（2026-11-01 实测必现）。
+#    一律按真实参数个数判断，兼容 0.41.x 前后。
+try:
+    PREFETCH_CLEANUP_TAKES_MODULE = len(
+        inspect.signature(comfy.model_prefetch.cleanup_prefetched_modules).parameters
+    ) >= 2
+except (AttributeError, TypeError, ValueError):
+    PREFETCH_CLEANUP_TAKES_MODULE = False
 PREFETCH_SUPPORTS_MALLOC_SCOPE = "malloc_scope" in inspect.signature(comfy.model_prefetch.prefetch_queue_pop).parameters
 
 

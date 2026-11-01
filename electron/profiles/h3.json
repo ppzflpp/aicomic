@@ -202,9 +202,18 @@
       "enabled": true,
       "settingKey": "h3.attentionBoost",
       "label": "加速优化",
-      "desc": "INT8 注意力 + BlockCache（约省 30%，画面可能有轻微差异）",
+      "desc": "INT8 注意力加速（约省 30%）；BlockCache 仅在 12 步以上启用",
       "attention": { "class": "ModelAttentionBackend", "backend": "comfy kitchen attention" },
-      "blockCache": { "class": "MiniMaxH3BlockCacheT8" }
+      "blockCache": {
+        "class": "MiniMaxH3BlockCacheT8",
+        "minSteps": 12,
+        "threshold": 0.12,
+        "start_percent": 0.08,
+        "end_percent": 0.95,
+        "max_consecutive_hits": 2,
+        "cache_device": "cpu",
+        "metric_stride": 8
+      }
     },
     "nodeIds": {
       "firstImg": 200, "firstScale": 201,
