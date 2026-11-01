@@ -764,6 +764,41 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     else if (r.error !== 'NOPATH') logger.warn('取末帧失败：' + r.error);
     return r;
   });
+  /**
+   * 分镜缩略图批量（2026-11-01，配合分镜页「网格视图」）
+   * [shotDir, files] → [{ file, b64 }]
+   * 🔴 不能走 file:readBase64 —— 那是读**整个视频**（单条 2.7MB → base64 3.6MB），
+   *   网格一屏 21 格全加载就是 70MB+ 字符串。这里用 ffmpeg 抽 240px 首帧存
+   *   <shotDir>/.thumbs/，只回小 jpg（约 6KB）。
+   * 缓存判定：缩略图 mtime 早于源视频（或文件过小＝上次抽坏了）才重抽 ——
+   *   这一镜重新生成过就会自动刷新，不用手动清。
+   * 串行执行：每条 ~0.2s，首次 21 条约 4 秒；之后命中缓存只剩 statSync + 读 6KB。
+   *   不并发是因为主进程同时起 20 个 ffmpeg 会和正在跑的 ComfyUI 抢 CPU/磁盘。
+   */
+  ipcMain.handle('shot:thumbs', async (e, shotDir, files) => {
+    const dir = String(shotDir || '');
+    if (!dir || !Array.isArray(files) || !files.length) return [];
+    const thumbDir = path.join(dir, '.thumbs');
+    const out = [];
+    for (const it of files.slice(0, 300)) {
+      const file = typeof it === 'string' ? it : (it && it.file);
+      if (!file) continue;
+      const src = path.join(dir, file);
+      if (!fs.existsSync(src)) continue;
+      const dst = path.join(thumbDir, file.replace(/\.[^.]+$/, '') + '.jpg');
+      let need = true;
+      try {
+        const a = fs.statSync(src), b = fs.statSync(dst);
+        need = b.mtimeMs < a.mtimeMs || b.size < 200;
+      } catch (_) { need = true; }
+      if (need) {
+        const r = await inference.shotThumb(src, dst);
+        if (!r.ok) continue;
+      }
+      try { out.push({ file, b64: fs.readFileSync(dst).toString('base64') }); } catch (_) { /* 读不到就跳过 */ }
+    }
+    return out;
+  });
   // 文件签名（是否存在 / 大小 / mtime）：判断「首帧所依据的上一镜视频是否已被重新生成」
   // 上一镜出片后本镜首帧就过期了 —— 这个提示靠它，别指望用户自己记得。
   ipcMain.handle('file:stat', (e, abs) => {

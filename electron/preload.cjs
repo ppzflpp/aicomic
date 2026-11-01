@@ -180,6 +180,8 @@ contextBridge.exposeInMainWorld('studio', {
   exportVideo: (args) => ipcRenderer.invoke('export:video', args),
   findFfmpeg: () => ipcRenderer.invoke('ffmpeg:find'),
   videoLastFrame: (payload) => ipcRenderer.invoke('video:lastFrame', payload),
+  // 分镜缩略图（2026-11-01）：(shotDir, files[]) → [{ file, b64 }]，240px jpg，带 .thumbs 缓存
+  shotThumbs: (dir, files) => ipcRenderer.invoke('shot:thumbs', dir, files),
   fileStat: (abs) => ipcRenderer.invoke('file:stat', abs),
   listMedia: (dir, prefix) => ipcRenderer.invoke('media:list', dir, prefix),
   imgHistory: (ws) => ipcRenderer.invoke('imggen:history', ws),

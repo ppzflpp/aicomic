@@ -316,7 +316,124 @@ body{
 .adapt-ops #adapt-ms, .adapt-ops #adapt-ops{display:inline-flex; align-items:center;}
 @media (max-width:1200px){ .script-grid{grid-template-columns:1fr;} .script-col + .script-col{border-left:none; padding-left:0; border-top:1px solid var(--line-soft); padding-top:10px;} }
 /* 分镜列表行：左=分镜编辑 | 中=H3提示词 | 右=视频生成（各分区沿用原阶段锁定逻辑） */
-.shot-row{display:grid; grid-template-columns:minmax(250px,320px) minmax(0,1fr) minmax(230px,270px); gap:14px;
+/* ===== 分镜视图切换 + 网格视图（2026-11-01 · 方案 A）=====
+   列表（默认）= 改造前原样，一行一镜；网格 = 左缩略图墙 + 右当前镜，
+   一屏看全本集所有镜头，且**只渲染选中的那一行**。
+   左墙用 sticky + 独立滚动：不猜父容器高度，右侧页面怎么滚都不跑位。 */
+.shot-toolbar{display:flex; align-items:center; gap:10px; margin:0 0 10px;}
+.sv-seg{display:inline-flex; border:1px solid #2c3646; border-radius:8px; overflow:hidden; background:#0e141d;}
+.sv-seg button{padding:4px 14px; font-size:12px; color:#8b98ab; background:transparent; border:0; cursor:pointer; transition:color .12s,background .12s;}
+.sv-seg button:hover{color:#cbd5e1; background:rgba(255,255,255,.04);}
+.sv-seg button.on{color:#dbeafe; background:#233149;}
+.sv-info{font-size:12px; color:#7f8da3;}
+.sv-info b{color:#cbd5e1; font-weight:600;}
+.sv-follow{display:inline-flex; align-items:center; gap:5px; font-size:12px; color:#8b98ab; cursor:pointer;}
+.sv-follow input{accent-color:#38bdf8; cursor:pointer;}
+/* 标题栏里的图标切换（2026-11-01）：纯图标无文字，选中 = 蓝底 */
+.sv-icon-seg button{padding:4px 9px; line-height:0; display:inline-flex; align-items:center;}
+.sv-icon-seg button.on{color:#fff; background:#2f6fd6;}
+.sv-icon-seg button.on svg{color:#fff;}
+
+/* 网格视图 · 右侧行（2026-11-01 二改）：保持左中右三栏，中间提示词压缩让宽给视频区；
+   整行设最低高度（版本再多也不会被压扁），视频区内部自己滚 */
+.shot-body.is-grid .shot-row{
+  /* zone-1/zone-2 拉宽填满右区，视频列固定 --vidcol（与列表播放框同宽） */
+  grid-template-columns:minmax(320px,400px) minmax(0,1fr) var(--vidcol);
+  min-height:600px; align-items:stretch;   /* 🔴 左中右三栏恒等高：行高由 min-height 定死，视频区内部自滚 */
+  flex:1;   /* 网格视图：行撑满 .shot-list（flex 纵排）→ 行高 = 墙高（墙不够高时 = min-height） */
+}
+/* 网格视图：画面动作 / 对白等文本域加高（rows 固定值在宽栏里显得矮） */
+.shot-body.is-grid .zone-1 .f textarea{min-height:84px;}
+.shot-body.is-grid .zone-3{display:flex; flex-direction:column; min-height:0;}
+/* 视频历史区（列表 / 网格通用，2026-11-01）：**1 列**铺开全部版本，上下滚动
+   —— 列表视图不再固定 2 槽（更早的版本以前只能靠版本号切换看到，现在直接滚动可见） */
+/* 视频区高度 = 提示词区高度（2026-11-01 用户拍板）：视频区不再按「几个框」封顶，
+   而是撑满整行高度，多出的版本在区内上下滑动。
+   🔴 `contain:size` 是关键：让 zone-3 的**内容不参与行高计算** —— 否则视频越多行越高，
+   就永远滚不起来（行高只由 zone-1 / zone-2 决定，grid 视图再受 min-height:600px 兜底）。 */
+.shot-row .zone-3{position:relative; display:flex; flex-direction:column; min-height:0; contain:size;}
+.shot-row .zone-3 .vid-list{
+  position:relative; flex:1; min-height:0; overflow-y:auto;
+  /* 🔴 用 flex 纵排而不是 grid 自动行：播放框靠 aspect-ratio 定高，grid 的 auto 行在
+     滚动容器里可能低估行高 → 框会压到下一格（重叠）。flex 下框高由宽高比直接撑开，gap 稳定生效 */
+  display:flex; flex-direction:column; gap:12px;
+  padding-right:2px;
+}
+/* 网格视图：列宽与列表一致 → 播放框大小完全相同；靠右显示 */
+.shot-row .zone-3 .vid-list.is-grid{align-items:flex-end;}
+.shot-row .zone-3 .vid-list .video-box{width:100%; flex:0 0 auto; aspect-ratio:16/9; max-height:none; margin:0;}
+/* 生成中遮罩（2026-11-01）：定位容器在滚动区**外面** —— 早先把遮罩当 .vid-list 的第一个子元素，
+   列表一滚它就被带走了（绝对定位子元素在滚动容器里同样跟着内容滚）。 */
+.vid-wrap{position:relative; flex:1 1 auto; min-height:0; display:flex; flex-direction:column;}
+.vid-mask{
+  position:absolute; inset:0; z-index:6; border-radius:8px;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(6,9,14,.66);
+}
+.vid-mask .busy-txt{
+  font-size:12.5px; white-space:nowrap;
+  background:rgba(10,14,21,.9); border:1px solid var(--line);
+  border-radius:99px; padding:7px 14px;
+}
+.vid-mask .busy-txt .spin{width:14px; height:14px;}
+
+/* 「生成提示词」整区遮罩（2026-11-01）：盖住整个 zone-2（素材区 + 文本框 + 底部按钮行），
+   生成期间不能编辑、不能拖参考图（拖拽会话 + 行重渲染 = 整屏点不动的老事故）。
+   🔴 靠 .zone-2 的 position:relative 定位；它只盖本区，标题栏的「停止生成」仍在区外可点。 */
+.shot-row .zone-2 .zone-mask{
+  position:absolute; inset:0; z-index:6; border-radius:10px;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(6,9,14,.66);
+}
+.shot-row .zone-2 .zone-mask .busy-txt{
+  font-size:12.5px; white-space:nowrap;
+  background:rgba(10,14,21,.9); border:1px solid var(--line);
+  border-radius:99px; padding:8px 16px;
+}
+.shot-row .zone-2 .zone-mask .busy-txt .spin{width:14px; height:14px;}
+
+/* 「添加镜头」插入位置弹框（2026-11-01） */
+.add-shot-modal{width:min(440px,92vw);}
+.add-opt{border:1px solid #2c3646; border-radius:8px; padding:10px 12px; margin-bottom:8px; cursor:pointer; transition:border-color .12s,background .12s;}
+.add-opt:hover{border-color:#3a4a60;}
+.add-opt.on{border-color:#2f6fd6; background:rgba(47,111,214,.08);}
+.add-opt label{display:flex; align-items:center; gap:6px; font-size:13px; color:#dbe3ee; cursor:pointer;}
+.add-opt select{margin:0 4px; background:#0e141d; color:#dbe3ee; border:1px solid #2c3646; border-radius:5px; padding:2px 6px;}
+.add-opt .add-hint{margin-top:6px; padding-left:24px; font-size:11px; color:#6b7a90;}
+.add-shot-modal .modal-ops{display:flex; justify-content:flex-end; gap:10px; margin-top:14px;}
+
+/* 🔴 网格视图：墙与右侧编辑区**恒等高**（拉伸对齐）——行高 = max(墙内容高, min-height 600)；
+   墙内容超过视口时被 max-height 压到视口高，行跟着等高，视频区在行内自滚 */
+.shot-body.is-grid{display:grid; grid-template-columns:300px minmax(0,1fr); gap:12px; align-items:stretch;}
+.shot-body.is-grid .shot-list{min-width:0; display:flex; flex-direction:column;}
+.shot-wall{
+  width:300px; position:sticky; top:10px;
+  max-height:calc(100vh - 190px); overflow-y:auto; align-content:start;
+  display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px;
+  padding:8px; border:1px solid var(--line-soft); border-radius:var(--r-md);
+  background:#10161f;
+}
+.sw-card{border:1px solid #232d3b; border-radius:7px; overflow:hidden; cursor:pointer;
+  background:#161c28; transition:border-color .12s,box-shadow .12s;}
+.sw-card:hover{border-color:#3a4a60;}
+.sw-card.sel{border-color:rgba(56,189,248,.75); box-shadow:0 0 0 1px rgba(56,189,248,.3);}
+.sw-card.busy .sw-fig{box-shadow:inset 0 0 0 1px rgba(56,189,248,.5);}
+.sw-fig{position:relative; width:100%; aspect-ratio:16/9; background:#0b1017; overflow:hidden;}
+.sw-fig img{width:100%; height:100%; object-fit:cover; display:block;}
+.sw-ph{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  font-size:15px; font-weight:600; color:#3f4b5e;}
+.sw-flag{position:absolute; left:3px; top:3px; font-size:9.5px; line-height:1.5; padding:0 4px; border-radius:3px;}
+.sw-flag.gen{background:rgba(56,189,248,.92); color:#04121f;}
+.sw-flag.none{background:rgba(12,17,24,.82); color:#7f8da3; border:1px solid #2a3441;}
+.sw-meta{display:flex; align-items:center; gap:4px; padding:3px 5px; font-size:11px;}
+.sw-meta b{color:#9fb0c6; font-weight:600; min-width:14px;}
+.sw-dur{color:#61708a;}
+.sw-warn{margin-left:auto; font-size:9.5px; color:#f0a13a; background:rgba(240,161,58,.12);
+  border:1px solid rgba(240,161,58,.3); border-radius:3px; padding:0 3px;}
+.sw-empty{grid-column:1/-1; text-align:center; font-size:12px; color:#5a6678; padding:18px 0;}
+
+/* --vidcol：视频列宽（列表 / 网格共用同一口径，播放框大小与「可见个数」都按它算） */
+.shot-row{--vidcol:270px; display:grid; grid-template-columns:minmax(250px,320px) minmax(0,1fr) var(--vidcol); gap:14px;
   position:relative;
   border:1px solid var(--line-soft); border-radius:var(--r-md); padding:12px; margin-bottom:10px;
   background:linear-gradient(180deg,#161c28 0%,#131822 100%);}
@@ -331,7 +448,7 @@ body{
    左「分镜」/ 右「视频生成」都拉齐到同一高度，内容超出各自内部滚动，谁也不撑高整行。 */
 .shot-row .zone-1,.shot-row .zone-2,.shot-row .zone-3{min-width:0;}
 .shot-row .zone-1{display:flex; flex-direction:column; gap:7px; height:100%; min-height:0; overflow-y:auto;}
-.shot-row .zone-2{display:flex; flex-direction:column; gap:7px; height:100%; min-height:0;}
+.shot-row .zone-2{position:relative; display:flex; flex-direction:column; gap:7px; height:100%; min-height:0;}
 .shot-row .zone-2 .f{flex:0 0 auto;}
 /* H3 提示词框：高度自适应，占满本区剩余空间（整行高度仍由 grid 决定，内容超出在框内滚动） */
 .shot-row .zone-2 .f.ta-main{flex:1 1 auto; min-height:0; display:flex; flex-direction:column;}
@@ -1157,16 +1274,9 @@ input[type=search]:focus{
 /* 点画面 = 选中该版本；点底部原生控制条 = 播放/进度/音量。
    🔴 不再放防误播遮挡层：硬编码 42px 预留实测不够高（下缘切在播放键中间，上半截点不动），
    已改为 StageShots.boxClick 按点击纵坐标判断（底部 64px 内不拦截，交给原生控件） */
-/* 分镜行视频区：固定 2 个等高槽位（标题 / 文案 / 采用按钮之外的空间平分），
-   每槽一个 16:9 播放框（视频按 contain 完整显示）；只有 1 个视频时占第 1 槽、第 2 槽留空。 */
-.vid-stack{display:flex; flex-direction:column; gap:8px;}
-.shot-row .zone-3 .vid-stack{
-  position:relative; flex:1; min-height:0;
-  display:grid; grid-template-rows:minmax(0,1fr) minmax(0,1fr); gap:8px;
-}
-.shot-row .zone-3 .vslot{display:flex; align-items:center; justify-content:center; min-width:0; min-height:0;}
-/* 播放框按列宽撑满、高度由 16:9 反推（槽位比它高时上下留白居中）；
-   必须让宽度主导比例 —— 用 height:100% 反推宽度会被 max-width 夹断，比例失真（实测 1.61） */
+/* 分镜行视频区（2026-11-01 起列表/网格统一为 1 列滚动，见上方 .vid-list）：
+   播放框按列宽撑满、高度由 16:9 反推。🔴 必须让宽度主导比例 —— 用 height:100% 反推宽度会被
+   max-width 夹断，比例失真（实测 1.61） */
 .shot-row .zone-3 .video-box{width:100%; aspect-ratio:16/9; max-height:100%; margin:auto;}
 /* 「添加字幕」勾选框：与输出分辨率同排同风格 */
 .subs-lab input{accent-color:#38bdf8; margin-right:5px; cursor:pointer;}
@@ -1764,14 +1874,12 @@ input[type=search]:focus{
 .stale b{font-weight:600;}
 .stale:hover{background:rgba(251,191,36,.18);}
 .stale::before{content:"⚠"; font-size:12px;}
-/* 提示词区底部：路线提示强制单行截断、按钮不换行（否则底部变两行 → 行高不固定） */
+/* 提示词区底部（最后一行）：左＝生成提示词按钮 + 路线胶囊｜右＝分辨率 + 生成视频。
+   整行强制单行、按钮与胶囊不收缩；胶囊后的短文案超长单行截断（否则底部变两行 → 行高不固定）。 */
 .shot-row .zone-2 .zone-foot{flex-wrap:nowrap;}
-.shot-row .zone-2 .zone-foot .ref-mode{flex:1 1 auto; min-width:0; overflow:hidden;}
-.shot-row .zone-2 .zone-foot .ref-mode .hint{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;}
 .shot-row .zone-2 .zone-foot .btn{flex-shrink:0; white-space:nowrap;}
-/* 「生成提示词」按钮：在提示词框下方，靠左单独一行（不再挤在分镜区右上角） */
-.shot-row .zone-2 .gen-p-row{justify-content:flex-start; margin-top:2px;}
-.shot-row .zone-2 .gen-p-row .btn{flex-shrink:0; white-space:nowrap;}
+.shot-row .zone-2 .zone-foot .ref-mode{flex:0 1 auto; min-width:0; overflow:hidden;}
+.shot-row .zone-2 .zone-foot .ref-mode .hint{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;}
 /* 视频区文案块：高度异常时也不许把整行撑高（空间让给视频槽） */
 .shot-row .zone-3 .vmeta{flex:0 1 auto; min-height:0; overflow:hidden;}
 /* 同理：视频区的脏标签也强制单行，避免换行改变视频区自然高度（进而撬动整行高度） */

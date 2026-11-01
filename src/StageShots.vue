@@ -124,10 +124,49 @@
       </div>
     </div>
 
+    <!-- 视图切换（2026-11-01）：两种视图**共用同一套数据与事件**，只是排布不同。
+         列表 = 一行一镜（改造前原样：可并排比较、Ctrl+F 能搜到未选中镜的文字）；
+         网格 = 左缩略图墙 + 右当前镜（一屏看全 21 镜，一次只渲染 1 行）。
+         选择写 localStorage，切集/重启都记住；默认仍是列表，等于「不加也不变」。 -->
+    <!-- 视图切换已上移到模块标题栏（#shots-view 图标，2026-11-01）；这里只留统计与批量跟随 -->
+    <div class="shot-toolbar">
+      <span v-if="isGrid && shots.length" class="sv-info">
+        第 <b>{{ sel + 1 }}</b> / {{ shots.length }} 镜 · 有片 {{ withVideoCount }} · 待补 {{ shots.length - withVideoCount }}
+      </span>
+      <label v-if="isGrid && batchVRunning" class="sv-follow"
+             title="批量出片时自动切到正在生成的那一镜（取消后可以边跑边翻别的镜头）">
+        <input type="checkbox" v-model="followGen" /> 跟随生成
+      </label>
+      <span style="flex:1"></span>
+    </div>
+
     <!-- 列表视图：每行 = 该镜头的分镜编辑 | H3 提示词（含分辨率+生成视频） | 视频预览。
-         🔴 无锁定：所有分区随时可编辑；上游变化由 ⚠ 脏标记提示。 -->
-    <div class="shot-list">
-      <div v-for="(s, i) in shots" :key="i" class="shot-row" :class="{ sel: sel === i }" @click="sel = i">
+         🔴 无锁定：所有分区随时可编辑；上游变化由 ⚠ 脏标记提示。
+         🔴 网格视图下 .shot-body 变左右两栏：左 aside 缩略图墙 + 右 .shot-list（仅渲当前镜）。 -->
+    <div class="shot-body" :class="{ 'is-grid': isGrid }">
+      <aside v-if="isGrid" class="shot-wall">
+        <div v-for="(s, i) in shots" :key="'w' + i" class="sw-card"
+             :class="{ sel: sel === i, busy: vidBusy(i), empty: !hasVideo(i) }"
+             :title="'镜头 ' + (i + 1) + ' · ' + (s.dur || 0) + ' 秒' + (hasVideo(i) ? '' : ' · 还没有视频')"
+             @click="pickShot(i)">
+          <div class="sw-fig">
+            <img v-if="thumbs[i]" :src="thumbs[i]" alt="" draggable="false" />
+            <div v-else class="sw-ph">{{ i + 1 }}</div>
+            <span v-if="vidBusy(i)" class="sw-flag gen">生成中</span>
+            <span v-else-if="!hasVideo(i)" class="sw-flag none">待生成</span>
+          </div>
+          <div class="sw-meta">
+            <b>{{ i + 1 }}</b>
+            <span class="sw-dur">{{ s.dur || 0 }}s</span>
+            <span v-if="!promptHas(i)" class="sw-warn" title="这一镜还没有提示词">无词</span>
+          </div>
+        </div>
+        <div v-if="!shots.length" class="sw-empty">还没有镜头（点标题栏右侧「添加镜头」）</div>
+      </aside>
+
+      <div class="shot-list">
+      <template v-for="(s, i) in shots" :key="i">
+      <div v-if="!isGrid || sel === i" class="shot-row" :class="{ sel: sel === i }" @click="sel = i">
         <!-- 分区1：分镜（原阶段3 字段；只读展示入口，本区只保留删除；「生成提示词」已移到提示词区）
              🔴 无锁定：所有分区随时可编辑；上游变化由 ⚠ 脏标记提示。 -->
         <div class="zone-1">
@@ -186,8 +225,8 @@
 
         <!-- 分区2：H3 提示词。自上而下固定顺序：
              ① 标题行（H3 提示词 · 耗时 · 脏标） ② 提示行（角色 · 时长 · 动作摘要）
-             ③ 素材区（单行） ④ 提示词文本框 ⑤ 「生成提示词」按钮（靠左）
-             ⑥ 视频分辨率 ⑦ 路线提示靠左 + 「生成视频」靠右 -->
+             ③ 素材区（单行） ④ 提示词文本框 ⑤ 「生成提示词」按钮 + 路线胶囊（同一行）
+             ⑥ 视频分辨率 + 「生成视频」（靠右） -->
         <div class="zone-2">
           <div class="row-head">
             <span class="zone-tag">{{ promptZoneName() }}</span>
@@ -326,11 +365,13 @@
             </div>
           </div>
 
-          <!-- 「生成提示词」（次级功能：绿色）：在提示词框下方，靠左单独一行。
-               2026-10-19 Dragon：上游（分镜 / 参考素材）变过 → 这颗按钮直接变琥珀色（.stale-need），
-               点下去就把提示词重做一遍，按钮随即恢复绿色。 -->
-          <div class="cops gen-p-row">
-            <button class="btn sec sm"
+          <!-- 提示词区最后一行（2026-11-01 Dragon 合并）：左＝「生成提示词」+ 路线胶囊（T2VA / I2VA / Ref2VA …），
+               右＝视频分辨率 + 生成视频。
+               为什么合并：这两件事说的是同一个东西 ——「本镜提示词按哪套规范写」，原来按钮自己占一行、胶囊沉在底部，
+               白吃一行高度。合并后提示词框多出一行。胶囊后的短文案超长就省略（完整说明走 title）。
+               2026-10-19：上游（分镜 / 参考素材）变过 → 按钮变琥珀色（.stale-need），点下去就按当前素材重做本镜提示词。 -->
+          <div class="cops zone-foot">
+            <button class="btn sec sm gen-p-btn"
                     :class="{ 'stale-need': promptStale(i) }"
                     :disabled="pBusy || !prompts[i]"
                     :title="promptStale(i)
@@ -340,13 +381,9 @@
               <span v-if="prompts[i] && prompts[i]._gen" class="busy-txt"><i class="spin"></i>生成中…</span>
               <span v-else>生成提示词</span>
             </button>
-          </div>
-
-          <!-- 底部：生成路线提示靠左｜视频分辨率 + 生成视频按钮靠右 -->
-          <div class="cops zone-foot">
-            <span class="ref-mode">
-              <span v-if="prompts[i]" class="mode-tag" :class="modeOf(prompts[i], i).cls">{{ modeOf(prompts[i], i).tag }}</span>
-              <span v-if="prompts[i]" class="hint">{{ modeOf(prompts[i], i).text }}</span>
+            <span v-if="prompts[i]" class="ref-mode" :title="modeOf(prompts[i], i).text">
+              <span class="mode-tag" :class="modeOf(prompts[i], i).cls">{{ modeOf(prompts[i], i).tag }}</span>
+              <span class="hint">{{ modeOf(prompts[i], i).hint }}</span>
             </span>
             <span style="flex:1"></span>
             <!-- 视频分辨率（2026-10-21：跟随视频质量档位锁定 —— 值 = 档位推荐画布，不可手改。
@@ -373,10 +410,19 @@
               生成视频
             </button>
           </div>
+
+          <!-- 生成提示词 · 整区遮罩（2026-11-01）：以前只在按钮里塞「生成中…」，按钮在整区最底下，
+               生成时视线还停在提示词框/素材上，根本看不出这一镜在跑、更不知道哪些格子此刻不能点。
+               改成覆盖整个提示词区（含素材区与文本框），挡住这期间的编辑与拖拽 ——
+               🔴 生成中拖拽参考图会触发「行重渲染 + 拖拽会话」卡死（见 2026-11-01 手掌光标事故），
+               遮罩顺便把这条路封掉。遮罩**只盖 zone-2**：标题栏的「停止生成」不在区内，随时可停。 -->
+          <div v-if="prompts[i] && prompts[i]._gen" class="zone-mask">
+            <span class="busy-txt"><i class="spin"></i>正在生成提示词…</span>
+          </div>
         </div>
 
         <!-- 分区3：视频预览（生成按钮与分辨率都在左侧 H3 提示词区；已生成的视频任何状态都能播放）
-             同一镜头的多个版本上下摆放，最多显示最新 2 个（两者平分上方剩余区域）；
+             同一镜头的多个版本上下排开、区内上下滚动（列表 / 网格一致，2026-11-01）；
              点击哪个哪个变当前版本（蓝框）= 即选中（生成完成自动选中最新版，无「采用」按钮） -->
         <div class="zone-3">
           <div class="row-head">
@@ -386,28 +432,36 @@
               :title="s._lock ? '解锁此镜头' : '锁定此镜头（锁定后不可修改）'"
               @click.stop="toggleShotLock(i)">{{ s._lock ? '🔓' : '🔒' }}</button>
           </div>
-          <!-- 固定 2 个等高槽位（标题 / 文案之外的空间平分），每槽一个 16:9 播放框；
-               没有视频时两槽都显示占位符；只有 1 个视频时占第 1 槽、第 2 槽仍是占位符 → 行高与份高都不跳动。
-               点击哪个哪个变当前版本（蓝框） -->
-          <div class="vid-stack" :class="{ 'card-busy': vidBusy(i) }">
-            <span v-if="vidBusy(i)" class="busy-txt"><i class="spin"></i>生成中…</span>
-            <div v-for="(v, si) in slotList(i)" :key="'slot' + si" class="vslot">
-            <div v-if="v" class="video-box"
-                 :class="{ cur: v.k === curIdx(i), stalevid: videoStale(i) }"
-                 :title="'点击画面选为当前版本（第 ' + (v.k + 1) + ' 版）'" @click="boxClick($event, i, v.k)">
-              <video v-if="videoSrc(v.f)" :src="videoSrc(v.f)" controls></video>
-              <div v-else class="ph">镜头 {{ i + 1 }}<br>加载中…</div>
-              <span class="vid-ver">{{ v.k + 1 }}/{{ vstate[i].files.length }}</span>
-              <!-- 每一版各自的生成耗时（2026-10-10）：生成时按当次实测毫秒记进 videos.json 的
-                   fileMs[文件名]；老数据没有这条记录就不显示。悬浮在框右上角，与左上角版本号错开。
-                   🔴 文案在 vidList 里就格式化成 msText —— fmtMs 是 import 的纯函数，
-                   本组件是 Options API，模板里访问不到（探针实测 `t.fmtMs is not a function`）。 -->
-              <span v-if="v.msText" class="gen-ms vid-ms" :title="'这一版生成耗时 ' + v.msText">{{ v.msText }}</span>
-            </div>
-              <div v-else class="video-box">
+          <!-- 视频历史（列表 / 网格通用，2026-11-01）：**1 列**铺开**全部历史版本**，上下滚动；
+               点任意一版选为当前（同一套 boxClick/cur/stale 逻辑）。行高固定，版本多时区内自滚。
+               网格下靠右、列宽 270px（与列表播放框等大）；列表下占满 zone-3 列宽。
+               🔴 外层 .vid-wrap 只干一件事：给「生成中」遮罩当定位容器 ——
+                  遮罩必须留在滚动区**之外**，否则列表一滚，遮罩跟着滚走（2026-11-01 用户反馈）。 -->
+          <div class="vid-wrap">
+            <!-- 🔴 2026-11-01：@scroll 驱动「按需加载」—— 只把滚进可视区的那几版读进内存。
+                 src 一律从缓存里**只读**取（vidSrcAt），读盘动作全部发生在 scroll / nextTick 里，
+                 不在渲染路径上（渲染里改响应式数据会「渲染 → 改数据 → 再渲染」，曾整屏卡死）。 -->
+            <div class="vid-list" :class="{ 'is-grid': isGrid }" :data-si="i"
+                 @scroll.passive="onVidScroll(i, $event)">
+              <div v-for="v in vidListAll(i)" :key="'v' + v.f" class="video-box"
+                   :class="{ cur: v.k === curIdx(i), stalevid: videoStale(i) }"
+                   :title="'点击画面选为当前版本（第 ' + (v.k + 1) + ' 版）'" @click="boxClick($event, i, v.k)">
+                <video v-if="vidSrcAt(i, v.k)" :src="vidSrcAt(i, v.k)" controls></video>
+                <div v-else class="ph">第 {{ v.k + 1 }} 版<br><span v-if="vidWinHas(i, v.k)">加载中…</span><span v-else>滑到这里再加载</span></div>
+                <span class="vid-ver">{{ v.k + 1 }}/{{ vstate[i].files.length }}</span>
+                <!-- 每一版各自的生成耗时（2026-10-10）：悬浮在播放框右上角（版本号在左上角，二者错开）。
+                     🔴 文案在 vidList 里就格式化成 msText —— fmtMs 是 import 的纯函数，
+                     本组件是 Options API，模板里访问不到（探针实测 `t.fmtMs is not a function`）。 -->
+                <span v-if="v.msText" class="gen-ms vid-ms" :title="'这一版生成耗时 ' + v.msText">{{ v.msText }}</span>
+              </div>
+              <div v-if="!vidListAll(i).length" class="video-box">
                 <div class="ph">镜头 {{ i + 1 }}<br>待生成</div>
               </div>
             </div>
+            <!-- 生成中遮罩：绝对定位盖住整个视频区可视范围，列表怎么滚它都不动 -->
+            <span v-if="vidBusy(i)" class="vid-mask">
+              <span class="busy-txt"><i class="spin"></i>生成中…</span>
+            </span>
           </div>
           <!-- 2026-10-10（Dragon）：本区下方只留脏标记 ——
                「镜头 N · 角色 · 时长」摘要、生成耗时胶囊、本次参考素材三行文案全部移除；
@@ -428,11 +482,7 @@
           </div>
         </div>
       </div>
-
-      <!-- 手动加镜头：放在已生成镜头的最后一行（无镜头时就是唯一入口） -->
-      <div class="shot-row add-row" @click="addRow">
-        <span class="add-plus">＋</span>
-        <span class="add-txt">手动添加镜头</span>
+      </template>
       </div>
     </div>
 
@@ -532,6 +582,52 @@
               title="按内容重算所有镜头的时长，并把超过单镜 15s 上限的镜头按台词边界拆开（手改过的镜头不动）"
               @click="askTidy = true">整理镜头</button>
     </Teleport>
+
+    <!-- 视图切换（2026-11-01 上移标题栏）：纯图标无文字，选中 = 蓝底；悬停 title 给说明 -->
+    <Teleport v-if="tpReady" to="#shots-view">
+      <div class="sv-seg sv-icon-seg">
+        <button :class="{ on: !isGrid }" title="列表视图：一行一镜，可并排比较、页内查找能搜到所有镜头" @click="setShotView('list')">
+          <svg width="15" height="15" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><line x1="2.5" y1="4" x2="13.5" y2="4"/><line x1="2.5" y1="8" x2="13.5" y2="8"/><line x1="2.5" y1="12" x2="13.5" y2="12"/></g></svg>
+        </button>
+        <button :class="{ on: isGrid }" title="网格视图：左缩略图墙一屏看全本集，右侧只渲染当前镜" @click="setShotView('grid')">
+          <svg width="15" height="15" viewBox="0 0 16 16"><g fill="currentColor"><rect x="2.5" y="2.5" width="4.6" height="4.6" rx="1"/><rect x="8.9" y="2.5" width="4.6" height="4.6" rx="1"/><rect x="2.5" y="8.9" width="4.6" height="4.6" rx="1"/><rect x="8.9" y="8.9" width="4.6" height="4.6" rx="1"/></g></svg>
+        </button>
+      </div>
+    </Teleport>
+
+    <!-- 添加镜头（2026-11-01 上移标题栏最右）：点开插入位置弹框 -->
+    <Teleport v-if="tpReady" to="#shots-add">
+      <button class="btn sm" :disabled="batchP || batchV || busy"
+              title="添加一个新镜头：可选择插在最前面 / 第 N 镜之后 / 最末尾（提示词与视频状态会跟着镜头一起移位，不会错位）"
+              @click="openAddShot">＋ 添加镜头</button>
+    </Teleport>
+
+    <!-- 添加镜头 · 插入位置弹框（2026-11-01） -->
+    <div v-if="askAddShot" class="modal-mask" @click.self="askAddShot = false">
+      <div class="modal add-shot-modal">
+        <div class="modal-title">添加镜头 · 选择插入位置</div>
+        <div class="add-opt" :class="{ on: addPos === 'head' }" @click="addPos = 'head'">
+          <label><input type="radio" value="head" v-model="addPos" /> 最前面（成为第 1 镜，原镜头依次后移）</label>
+        </div>
+        <div class="add-opt" :class="{ on: addPos === 'after' }" @click="addPos = 'after'">
+          <label><input type="radio" value="after" v-model="addPos" />
+            第
+            <select v-model.number="addAt" @click.stop>
+              <option v-for="n in shots.length" :key="n" :value="n">{{ n }}</option>
+            </select>
+            镜之后插入
+          </label>
+          <div class="add-hint">默认 = 当前正在看的镜</div>
+        </div>
+        <div class="add-opt" :class="{ on: addPos === 'end' }" @click="addPos = 'end'">
+          <label><input type="radio" value="end" v-model="addPos" /> 最末尾（追加为第 {{ shots.length + 1 }} 镜）</label>
+        </div>
+        <div class="modal-ops">
+          <button class="btn" @click="askAddShot = false">取消</button>
+          <button class="btn pro" @click="confirmAddShot">添加</button>
+        </div>
+      </div>
+    </div>
 
     <!-- 批量范围选择弹窗（全部重新生成 / 只生成缺失的） -->
     <div v-if="askBatch" class="modal-mask" @click.self="askBatch = null">
@@ -725,10 +821,14 @@ import { run as runBatchVideoTask } from './batchVideo.js'
 
 const MAX_REF_IMG = 9
 const MAX_REF_VID = 3
-// 整段 mp4 的 base64 很占内存（字符串约是文件体积的 2.7 倍），多镜头累积会拖垮渲染进程，
-// 因此只保留最近这几个的缓存（在生成/换集等非渲染时机清理）。
-// 每行视频区最多同时显示 2 个版本 → 4 个镜头最多 8 个，留 8 个缓存避免来回重读。
-const B64_KEEP = 8
+// 整段 mp4 的 base64 很占内存（字符串约是文件体积的 2.7 倍），多镜头累积会拖垮渲染进程。
+// 🔴 2026-11-01（Dragon）：版本数**不再设上限**（想留多少版留多少版，都在磁盘上），
+//    改成「按需加载 + 只留住 10 个」：
+//    · 每镜视频区只有**滚进可视区**的那几版才读盘（最多每批 VID_BATCH 个）；
+//    · 整个进程内存里最多同时持有 B64_KEEP 个视频（超出按读入顺序丢最早的，DOM 随 v-if 一起卸载）。
+const B64_KEEP = 10     // 内存里最多几个视频（用户指定 10）
+const VID_BATCH = 5     // 一次（可视区变化）最多新读几个（用户指定 5）
+const VID_LOAD_DEBOUNCE = 120   // 滚动停 120ms 再读盘：平滑滚动到底时不会把中间每一屏都读一遍
 // 参考视频（第 5 块里选的素材）同样按 base64 预览，另用一份小缓存（生成/换集时一起清理）
 const REFV_KEEP = 6
 
@@ -748,7 +848,9 @@ export default {
       // H3 提示词（原 StagePrompts）
       prompts: [], pBusy: false, _autoEp: null, _ref64: {}, _refv: {},
       // 视频生成（原 StageVideos）
-      vstate: {}, vBusy: false, _b64: {},
+      // vidShown: { 镜头下标: {from,to} } —— 该镜视频区**当前可视**的版本区间（含下标），
+      // 只有落在区间里的版本才会去读盘（见 computeVidWin / loadVidWin）。
+      vstate: {}, vBusy: false, _b64: {}, vidShown: {},
       // 首帧接力（2026-10-09）：frameBusy = 正在取帧的镜头下标（-1 = 空闲）；
       // chainBusy = 「一键续接首帧」在跑；frameStale = { 镜头下标: 'changed' | 'gone' }
       //   —— 首帧取自上一镜末帧、而上一镜后来又重新出片 → 这个首帧就过期了，行上给黄标。
@@ -791,6 +893,19 @@ export default {
       _busyEpId: null,
       // 当前点选高亮的镜头行（点击行内任意空白处高亮，点其他行切换）
       sel: -1,
+      // 「添加镜头」弹框（2026-11-01）：askAddShot 显隐；addPos = head（最前）/ after（第 N 镜后）/ end（末尾）；
+      // addAt = 1 起的镜号（after 模式下拉选），默认跟随当前选中镜
+      askAddShot: false,
+      addPos: 'end',
+      addAt: 1,
+      // 分镜视图（2026-11-01）：'list' = 一行一镜（改造前原样）/ 'grid' = 左缩略图墙 + 右当前镜。
+      // 🔴 默认 list —— 等于「不加这个功能时一模一样」；选择存 localStorage，切集/重启都记住。
+      shotView: (() => { try { return localStorage.getItem('studio.shotView') === 'grid' ? 'grid' : 'list' } catch (_) { return 'list' } })(),
+      // 网格缩略图：{ 镜头下标: 'data:image/jpeg;base64,...' }。
+      // 由主进程 ffmpeg 抽 240px 首帧（约 6KB/张），**不是**读整段视频（2.7MB→base64 3.6MB）。
+      thumbs: {}, thumbBusy: false,
+      // 网格视图下批量出片时是否自动跟到正在生成的那一镜（想边跑边翻别的镜头就关掉）
+      followGen: true,
       // 🔴 素材文件指纹（2026-10-16）：{ 绝对路径: "大小:修改时间" }，主进程现算（见 electron/filesig.cjs）。
       //    脏标记靠它发现「参考图被换掉了」—— 没有它，用户手工换图（覆盖同名文件）时
       //    提示词/视频明明过期了却一个字都不提示。见 stale.js 的「素材签名 v2」。
@@ -1036,6 +1151,16 @@ export default {
     },
     /** 是否正在批量生成视频（组件自身 batchV 或任务中心里当前集有活跃视频任务） */
     batchVRunning() { return !!(this.batchV || this.taskVideoTask) },
+    /** 分镜视图是否为网格（左缩略图墙 + 右当前镜）。false = 列表，行为与改造前完全一致 */
+    isGrid() { return this.shotView === 'grid' },
+    /** 本集已有视频的镜头数（网格工具条汇总）。🔴 只读 vstate.files —— 不碰指纹/签名计算，
+     *  否则 21 个镜头每次重渲染都要跑一遍序列化比较（那正是「界面发沉」的老原因）。 */
+    withVideoCount() {
+      let n = 0
+      const len = this.shots.length
+      for (let i = 0; i < len; i++) if (this.hasVideo(i)) n++
+      return n
+    },
     /** 当前集任务正在生成的镜头下标（任务中心 report 带上来的 index），用于格子「生成中」状态。 */
     taskVideoIndex() {
       const t = this.taskVideoTask
@@ -1060,7 +1185,12 @@ export default {
      *  但「在跑」这件事要能被侧栏感知，切走后用户一眼就知道任务没停 */
     taskBusy(v) {
       taskState.shots.busy = !!v
-      if (!v) taskState.shots.text = ''
+      if (!v) {
+        taskState.shots.text = ''
+        // 网格视图：任务收尾后补一次缩略图（最后一镜跑完时 taskVideoIndex 不再变化，
+        // 那个「上一镜已刷新」的时机就漏掉了）。走 .thumbs 缓存，命中时几乎零成本。
+        if (this.isGrid) this.refreshThumb(this.sel)
+      }
     },
     /**
      * 🔴 2026-10-22（问题2）：批量视频迁任务中心后，任务中心独立循环不再碰组件的 vstate[i]._gen，
@@ -1077,6 +1207,15 @@ export default {
       if (idx >= 0 && this.vstate[idx]) {
         if (!this.vstate[idx]._gen) this.vstate[idx]._gen = true
         if (!this.vstate[idx]._genAt) this.vstate[idx]._genAt = Date.now()
+      }
+      // 2026-11-01（配网格视图）：批量出片时自动跟到正在生成的那一镜。
+      // 网格下只有选中的行在 DOM 里 —— 不跟随的话，跑到第 18 镜时你还盯着第 1 镜，
+      // 完全看不出进度（列表视图不存在这问题：21 行都在，各自显示「生成中…」）。
+      // followGen 可关：想边跑边翻别的镜头时，取消工具条上的「跟随生成」即可。
+      if (this.isGrid && this.followGen && idx >= 0 && idx !== this.sel) {
+        const prev = this.sel
+        this.sel = idx
+        if (prev >= 0) this.refreshThumb(prev)   // 上一镜刚跑完 → 补上它的新缩略图
       }
     },
     'st.current'(ep) {
@@ -1132,6 +1271,10 @@ export default {
     // 素材指纹：进页面取一次；窗口重新获得焦点时再取一次 —— 用户最常见的「手工换图」
     // 就是在资源管理器里把图覆盖掉、再切回软件，这一下正好把新指纹收进来（否则要等别处的同步事件）
     this.refreshAsig()
+    // 网格视图（2026-11-01）：mounted 时若已是网格（上次退出前选的），补一次缩略图
+    this.$nextTick(() => { if (this.isGrid) this.loadThumbs() })
+    // 视频按需加载：首屏把每个镜头可视区的版本读进来（列表视图一屏可能有好几镜）
+    this.refreshVidWins()
     this._onFocus = () => { this.refreshAsig() }
     window.addEventListener('focus', this._onFocus)
     // 🔴 2026-11-01：拖拽会话兜底清理。
@@ -1260,6 +1403,13 @@ export default {
       this.setDraftFrom(ep)
       this.targetSec = this.projTargetSec     // 单集目标时长（项目级，双轨配时的输入）
       this.loadLimits()
+      // 网格视图（2026-11-01）：换集后旧缩略图全部作废、选中镜头收敛到本集有效范围，
+      // 再重拉一遍（走 .thumbs 缓存，命中时只是 21 次 statSync + 读 6KB，几乎瞬时）。
+      if (this.isGrid) {
+        this.thumbs = {}
+        if (this.sel < 0 || this.sel >= this.shots.length) this.sel = this.shots.length ? 0 : -1
+        this.loadThumbs()
+      }
     },
     /** 读当前体裁声明的分镜自检参数（广告 = 段落数 × 1.5 / 时长 ±20%；剧集 = pacing 双轨配时）。
      *  风格包在 prompts.js 里按「项目|风格」缓存，所以这里每次切集调一次很便宜。 */
@@ -1334,6 +1484,39 @@ export default {
     },
     addRow() {
       this.shots.push({ scene: '', chars: '', action: '', dialogue: '', camera: '中景', dur: 8, continuity: '', change: '', _lock: false })
+    },
+    /** 打开「添加镜头」弹框（2026-11-01）：入口在模块标题栏最右，网格/列表通用 */
+    openAddShot() {
+      // 默认插在当前镜之后；没选中（或超界）就兜底到末尾
+      this.addPos = this.sel >= 0 && this.sel < this.shots.length ? 'after' : 'end'
+      this.addAt = Math.min(this.shots.length, Math.max(1, this.sel + 1))
+      this.askAddShot = true
+    },
+    /**
+     * 确认插入。🔴 往中间插不能只 splice shots —— 提示词、视频状态、缩略图都**按镜号对齐**，
+     * 三份（+thumbs）必须一起移位，否则插入点之后所有镜头的提示词/视频整体错一位：
+     *  - shots / prompts：数组 splice
+     *  - vstate / thumbs：对象按数字键，从后往前逐键后移，再给新镜建空槽
+     * 完成后选中新镜（同 pickShot：先 flush 落盘当前镜，防止卸载丢改动），并立即落库。
+     */
+    async confirmAddShot() {
+      const idx = this.addPos === 'head' ? 0
+        : this.addPos === 'after' ? Math.min(this.shots.length, Math.max(1, this.addAt))
+        : this.shots.length
+      await this.flushShotEdit()
+      this.shots.splice(idx, 0, { scene: '', chars: '', action: '', dialogue: '', camera: '中景', dur: 8, continuity: '', change: '', _lock: false })
+      this.prompts.splice(idx, 0, { text: '', refs: emptyRefs() })
+      const vs = this.vstate, th = this.thumbs
+      for (let k = this.shots.length - 1; k > idx; k--) {
+        if (vs[k - 1] !== undefined) vs[k] = vs[k - 1]
+        if (th[k - 1] !== undefined) th[k] = th[k - 1]
+      }
+      const ep = this.st.current
+      vs[idx] = { files: [], cur: -1, confirmed: false, res: (ep && ep.res && ep.res.vid) || '864x480' }
+      delete th[idx]
+      this.sel = idx
+      this.askAddShot = false
+      try { await this.saveShots(); await this.savePrompts() } catch (e) { /* 落盘失败不打断编辑，下次保存会再写 */ }
     },
     /** 锁定/解锁单个镜头（2026-10-27）：锁定后整行盖蒙版禁止修改，状态随 shots 工件落库 */
     async toggleShotLock(i) {
@@ -2322,40 +2505,38 @@ export default {
      * 本镜头当前选择的素材 → 将走哪条生成路线（始终显示）。
      * 🔴 2026-10-14：显示的是**实际生效**的素材 —— 传了 `i` 就按本镜 chars/scene 过滤（`effRefs`），
      *    免得界面写着「参考模式」而真正生成时一张图都没发。
+     * 🔴 2026-11-01：拆成两个字段 —— `hint` 是**贴在胶囊右边的短文案**（只讲素材构成，一行放得下，
+     *    不再出现「官方六段提示词 / 规范文件 xxx.md」这类内部实现说明，用户看着像噪音）；
+     *    `text` 只做 title 悬停全文（规范文件这种要知道时看一眼即可）。
      */
     modeOf(p, i) {
       const r = (typeof i === 'number') ? this.effRefs(i) : (p.refs || {})
       const nImg = (r.images || []).length
       const nVid = (r.videos || []).length
       const mode = this.h3ModeOf(r)
-      // 措辞跟着「当前方案声明的规范文件」走：H3 是字段化的三段/六段，LTX-2.5 是整段散文
       const spec = this.videoSpecFile(mode === 'Ref2VA')
-      const h3 = this.isH3Spec()
       if (mode === 'Ref2VA') {
         const parts = []
         if (nImg) parts.push('参考图×' + nImg)
         if (nVid) parts.push('参考视频×' + nVid)
-        return { cls: 'ref', tag: 'Ref2VA',
-          text: '已选 ' + parts.join(' + ') + ' → 参考模式 ref2va（官方六段提示词，规范文件 ' + spec + '）' }
+        const brief = parts.join(' + ')
+        return { cls: 'ref', tag: 'Ref2VA', hint: brief,
+          text: '参考模式 ref2va（' + brief + '）· 规范文件 ' + spec }
       }
       if (mode === 'FL2VA') {
-        return { cls: 'flf', tag: 'FL2VA', text: h3
-          ? '首帧 + 尾帧 → 官方首尾帧模式（三段提示词 · fl2va）'
-          : '首帧 + 尾帧 → 首尾帧过渡（整段散文提示词 · ' + spec + '）' }
+        return { cls: 'flf', tag: 'FL2VA', hint: '首帧 + 尾帧',
+          text: '首尾帧模式 fl2va（首帧 + 尾帧）· 规范文件 ' + spec }
       }
       if (mode === 'I2VA') {
-        return { cls: 'flf', tag: 'I2VA', text: h3
-          ? '仅首帧 → 官方首帧模式（三段提示词 · fl2va）'
-          : '仅首帧 → 图生视频（整段散文提示词 · ' + spec + '）' }
+        return { cls: 'flf', tag: 'I2VA', hint: '仅首帧',
+          text: '首帧模式 fl2va（仅首帧）· 规范文件 ' + spec }
       }
       if (mode === 'L2VA') {
-        return { cls: 'flf', tag: 'L2VA', text: h3
-          ? '仅尾帧 → 官方尾帧模式（三段提示词 · fl2va）'
-          : '仅尾帧 → 尾帧引导（整段散文提示词 · ' + spec + '）' }
+        return { cls: 'flf', tag: 'L2VA', hint: '仅尾帧',
+          text: '尾帧模式 fl2va（仅尾帧）· 规范文件 ' + spec }
       }
-      return { cls: 't2v', tag: 'T2VA', text: h3
-        ? '未选素材 → 纯文字生成（官方三段提示词 · fl2va）'
-        : '未选素材 → 纯文字生成（整段散文提示词 · ' + spec + '）' }
+      return { cls: 't2v', tag: 'T2VA', hint: '纯文字',
+        text: '纯文字生成（未选素材）· 规范文件 ' + spec }
     },
     refSrc(abs) {
       if (!abs) return ''
@@ -2963,6 +3144,22 @@ export default {
       this.vstate = s
       // 首帧接力：切集/重开时重算一次「首帧是否过期」（模板里只读结果，不在渲染路径改状态）
       this.refreshFrameStale()
+      // 2026-11-01（Dragon）：重开 / 切集后每个镜头也直接停在最新一版上 —— 列表从顶部开始的话，
+      // 用户看到的是第 1 版，最新那版得自己往下拖。🔴 只在「当前选中的就是最后一版」时才滚，
+      // 用户特意选过旧版的情形必须保持原样（否则一重开就把他选的版本顶掉了）。
+      this.$nextTick(() => {
+        const root = this.$el
+        if (!root || !root.querySelectorAll) return
+        root.querySelectorAll('.vid-list[data-si]').forEach(el => {
+          const s2 = this.vstate[Number(el.getAttribute('data-si'))]
+          const files = (s2 && s2.files) || []
+          if (!files.length) return
+          if ((typeof s2.cur === 'number' ? s2.cur : -1) !== files.length - 1) return
+          el.scrollTop = el.scrollHeight
+        })
+      })
+      // 视频按需加载：先算一遍可视区间，把每镜当前那几版读进来
+      this.refreshVidWins()
     },
     /**
      * 局部合并 videoState（2026-10-24 Dragon：生成视频后只刷新对应镜头，不全量刷新）。
@@ -2985,14 +3182,19 @@ export default {
       if (!this.vstate || typeof this.vstate !== 'object') this.vstate = {}
       const vs = this.vstate
       const strip = (v) => { if (!v) return v; const o = { ...v }; delete o._gen; delete o._genAt; return o }
+      const changed = []
       for (const k of keys) {
         const nv = newVs[k]
         if (nv == null) continue
         const old = vs[k]
         if (!old || JSON.stringify(strip(old)) !== JSON.stringify(strip(nv))) {
           vs[k] = JSON.parse(JSON.stringify(nv))
+          changed.push(k)
         }
       }
+      // 2026-11-01（Dragon）：批量的进度事件也走这条路回来 —— 变了的镜头让它的视频区自动滚到最新一版，
+      // 否则「批量跑到第 5 镜、界面上第 5 镜还停在第 1 版」，用户以为没出片。
+      changed.forEach(k => this.scrollVidEnd(k))
     },
     /** 该镜头当前生效的分辨率（2026-10-21 起锁定 = 档位推荐画布，不再取每镜头独立值） */
     resOf(i) {
@@ -3343,6 +3545,87 @@ export default {
     },
     /** 当前选中版本的下标（默认 = 最新一版） */
     curIdx(i) { return (this.vstate[i] || {}).cur ?? -1 },
+
+    /* ---- 分镜网格视图（2026-11-01，方案 A）-----------------------------------
+       列表与网格共用同一套数据与事件，本节只做「选谁」和「缩略图」两件小事。
+       🔴 功能等价性的三处补丁都在这里：切镜先落盘（v-if 卸载不派发 change）、
+         批量出片自动跟随（网格下只有选中那行在 DOM 里，不跟随就看不见进度）、
+         视图选择持久化（默认 list，等于不加这个功能时一模一样）。 */
+
+    /** 这一镜有没有成片（只读 files —— 不触发签名/指纹计算） */
+    hasVideo(i) {
+      const v = this.vstate[i]
+      return !!(v && v.files && v.files.length)
+    },
+    /** 这一镜有没有提示词（网格角标「无词」用；只判非空，不判过期） */
+    promptHas(i) {
+      const p = this.prompts[i]
+      return !!(p && p.text && p.text.trim())
+    },
+    /** 切视图：进网格时若还没选镜头，自动选第一个，否则右区一片空白 */
+    setShotView(v) {
+      this.shotView = v === 'grid' ? 'grid' : 'list'
+      try { localStorage.setItem('studio.shotView', this.shotView) } catch (_) { /* 隐私模式忽略 */ }
+      if (this.shotView === 'grid') {
+        if (this.sel < 0 && this.shots.length) this.sel = 0
+        this.loadThumbs()
+      }
+      // 视图切换 → 行被重建，可视区间要重算（否则新渲染的视频区不会加载）
+      this.refreshVidWins()
+    },
+    /**
+     * 网格里点卡片 = 切到那一镜。
+     * 🔴 必须先落盘再切：网格下未选中的行是 v-if 卸载的，而提示词框靠 `@change`（失焦）
+     *   写回 prompts.json —— 元素被直接移除时浏览器**不会**派发 change，
+     *   改动会留在内存里，切集或退出就丢（这是「纯 UI 改动」唯一会伤到数据的地方）。
+     */
+    async pickShot(i) {
+      if (this.sel === i) return
+      await this.flushShotEdit()
+      this.sel = i
+      // 网格里换了当前镜 → 新那一行是刚渲染的，按需加载要重算（否则视频区一直是占位）
+      this.refreshVidWins()
+    },
+    /** 把当前正在编辑的内容写回（全量 savePrompts，幂等）。列表视图下 change 已正常触发，这里等价空转 */
+    async flushShotEdit() {
+      if (!this.prompts || !this.prompts.length) return
+      try { await this.savePrompts() } catch (_) { /* 落盘失败不阻断切镜 */ }
+    },
+    /**
+     * 拉缩略图。indices 省略 = 全部镜头（进网格 / 换集）；
+     * 传数组 = 只刷新这几镜（某镜刚出片，避免每次都全量问一遍）。
+     * 大图一律不给：主进程抽 240px 首帧存 <shotDir>/.thumbs/，回的是约 6KB 的 jpg。
+     */
+    async loadThumbs(indices) {
+      const ep = this.st.current
+      const dir = ep && ep.shotDir
+      if (!dir || !window.studio || !window.studio.shotThumbs) return
+      const want = Array.isArray(indices) ? indices : this.shots.map((_s, i) => i)
+      const list = []
+      for (const i of want) {
+        const v = this.vstate[i]
+        if (!v || !v.files || !v.files.length) continue
+        const f = v.files[v.cur >= 0 ? v.cur : v.files.length - 1]
+        if (f) list.push({ i, file: f })
+      }
+      if (!list.length) return
+      this.thumbBusy = true
+      try {
+        const res = await window.studio.shotThumbs(dir, list.map(x => x.file))
+        const byFile = {}
+        for (const r of res || []) if (r && r.b64) byFile[r.file] = r.b64
+        for (const x of list) {
+          if (byFile[x.file]) this.thumbs[x.i] = 'data:image/jpeg;base64,' + byFile[x.file]
+        }
+      } catch (_) { /* 抽帧失败就保持占位，不影响主流程 */ }
+      finally { this.thumbBusy = false }
+    },
+    /** 某一镜重新出片后：先踢掉旧缓存再重拉，否则缩略图永远停在上一版画面 */
+    async refreshThumb(i) {
+      if (!this.isGrid || i < 0) return
+      delete this.thumbs[i]
+      await this.loadThumbs([i])
+    },
     /**
      * 🔴 2026-10-22：这一镜是否正在生成（控制「生成中」加载框 + 单镜停止按钮）。
      *  不能只看 vstate[i]._gen：批量迁任务中心后 _gen 靠 watch 维护，有两个死角——
@@ -3356,20 +3639,36 @@ export default {
     /** 视频区展示的版本列表：最多显示最新 2 个（带上在 files 里的真实下标 + 这一版自己的耗时文案）。
         🔴 耗时在这里就格式化成 msText —— fmtMs 是 import 的纯函数，Options API 的模板里访问不到
         （实测渲染层报 `t.fmtMs is not a function`，整块 zone-3 渲染失败）。 */
-    vidList(i) {
+    /** 全部历史版本（2026-11-01 网格视图用）：不裁剪，铺满 2 列滚动区 */
+    vidListAll(i) {
       const s = this.vstate[i]
       if (!s || !s.files.length) return []
       const fm = s.fileMs || {}
       return s.files.map((f, k) => {
         const ms = fm[f] || 0
         return { f, k, ms, msText: ms ? fmtMs(ms) : '' }
-      }).slice(-2)
+      })
     },
-    /** 视频区固定 2 个槽位（长度恒为 2）：无视频时第 1 槽 null → 显示「待生成」占位，
-        只有 1 个视频时第 2 槽 null → 留空（份高、行高都不跳动） */
-    slotList(i) {
-      const vs = this.vidList(i)
-      return [vs[0] || null, vs[1] || null]
+    /**
+     * 把某一镜的视频列表滚到最底部（= 最新一版，2026-11-01 Dragon）。
+     * 用途：出片完成后自动调用 —— 新的一版顶上来、旧版被顶出可视区，不用用户自己拖滚动条找最新。
+     * 为什么不直接改渲染顺序：版本号 / 「第 N 版」/ files 下标全都按升序语义，倒序会把整套语义搞乱。
+     * 🔴 用 data-si 定位而不是「第几个 .shot-row」：网格视图下只渲染当前那一镜，下标对不上。
+     */
+    scrollVidEnd(i) {
+      this.$nextTick(() => {
+        const root = this.$el
+        if (!root || !root.querySelector) return
+        const el = root.querySelector('.vid-list[data-si="' + i + '"]')
+        if (!el) return
+        try { el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }) }
+        catch { el.scrollTop = el.scrollHeight }
+        // 按需加载：滚到底后把这一屏的版本读进来（平滑滚动期间不读，等停稳再读）
+        this.computeVidWin(i, el)
+        if (!this._vidTimer) this._vidTimer = {}
+        clearTimeout(this._vidTimer[i])
+        this._vidTimer[i] = setTimeout(() => this.loadVidWin(i), VID_LOAD_DEBOUNCE + 220)
+      })
     },
     /** 点击某个视频 → 选为当前版本 = 采用（无独立采用/取消采用按钮，点谁选谁） */
     async setVideo(i, k) {
@@ -3412,20 +3711,101 @@ export default {
     refsTitle(ru) {
       return [...(ru.images || []), ...(ru.videos || []), ru.first, ru.last].filter(Boolean).join('\n')
     },
-    videoSrc(file) {
-      // key 用绝对路径（含项目/集数目录），不同集之间的 shot_1.mp4 不会互相串
-      const abs = joinPath(this.st.current ? this.st.current.shotDir : '', file)
-      if (this._b64[abs] !== undefined) return this._b64[abs]
-      this._b64[abs] = ''
+    /* ================= 视频按需加载（2026-11-01） =================
+       背景：版本数不再设上限（想留多少版留多少版），但整段 mp4 的 base64 很吃内存，
+       全量读进来几十版会把渲染进程拖垮。所以：
+       ① 每镜视频区只把「滚进可视区」的版本读进内存（一批最多 VID_BATCH=5 个）；
+       ② 整个进程同时最多持有 B64_KEEP=10 个视频，超出就丢最早读入的
+          （丢掉 → `_b64` 里没了 → <video> 随 v-if 卸载，内存真的还回去）；
+       ③ 模板只**读**缓存，绝不在这里触发读盘（渲染里改响应式数据 = 渲染/数据互相触发）。
+    */
+
+    /** 读盘取某一版的 base64 并放进缓存；超出 B64_KEEP 就丢最早读入的那些 */
+    loadVidB64(abs) {
+      if (!abs || this._b64[abs] !== undefined) return
+      this._b64[abs] = ''      // 先占位，避免同一帧内重复请求
+      // 对象 key 天然是插入顺序 → 直接当「读入顺序」用（不做访问序 LRU：视频区是往下滚着看，
+      // 读入序已经足够贴近使用序，实现代价小得多）
+      const keys = Object.keys(this._b64)
+      if (keys.length > B64_KEEP) {
+        keys.filter(k => k !== abs).slice(0, keys.length - B64_KEEP).forEach(k => { delete this._b64[k] })
+      }
       window.studio.readFileBase64(abs).then(b64 => {
+        // 读盘期间可能已被挤掉（key 不在了）→ 不要再把这个大对象塞回内存
+        if (this._b64[abs] === undefined) return
         this._b64[abs] = b64 ? 'data:video/mp4;base64,' + b64 : ''
       })
-      return ''
+    },
+    /** 计算某一镜视频区**当前可视**的版本区间（含端点）；只算区间，不读盘、不改 DOM */
+    computeVidWin(i, el) {
+      const boxes = el && el.querySelectorAll ? el.querySelectorAll('.video-box') : null
+      if (!boxes || !boxes.length) {
+        if (this.vidShown[i]) delete this.vidShown[i]
+        return
+      }
+      const top = el.scrollTop, bottom = top + el.clientHeight
+      let from = -1, to = -1
+      for (let x = 0; x < boxes.length; x++) {
+        const b = boxes[x]
+        const bt = b.offsetTop, bb = bt + b.offsetHeight
+        if (bb > top + 1 && bt < bottom - 1) { if (from < 0) from = x; to = x }
+      }
+      if (from < 0) { from = 0; to = 0 }               // 量不出来（元素还没布局）→ 至少给第一版
+      if (to - from + 1 > VID_BATCH) to = from + VID_BATCH - 1
+      const w = this.vidShown[i]
+      if (!w || w.from !== from || w.to !== to) this.vidShown[i] = { from, to }
+      return { from, to }
+    },
+    /** 把可视区间里的版本读进内存（滚动停稳后才调，避免平滑滚动一路读几十个） */
+    loadVidWin(i) {
+      const w = this.vidShown[i]
+      const s = this.vstate[i]
+      const files = (s && s.files) || []
+      if (!w || !files.length) return
+      const dir = (this.st.current && this.st.current.shotDir) || ''
+      let n = 0
+      for (let k = w.from; k <= w.to && k < files.length; k++) {
+        const abs = joinPath(dir, files[k])
+        if (this._b64[abs] !== undefined) continue
+        if (++n > VID_BATCH) break                        // 一次最多新读 5 个
+        this.loadVidB64(abs)
+      }
+    },
+    onVidScroll(i, e) {
+      this.computeVidWin(i, e.target)
+      if (!this._vidTimer) this._vidTimer = {}
+      clearTimeout(this._vidTimer[i])
+      this._vidTimer[i] = setTimeout(() => this.loadVidWin(i), VID_LOAD_DEBOUNCE)
+    },
+    /** 模板只读：缓存里有就显示，没有就显示占位（读盘由 computeVidWin/loadVidWin 负责） */
+    vidSrcAt(i, k) {
+      const s = this.vstate[i]
+      const files = (s && s.files) || []
+      if (k < 0 || k >= files.length) return ''
+      const abs = joinPath((this.st.current && this.st.current.shotDir) || '', files[k])
+      return this._b64[abs] || ''
+    },
+    /** 这一版是否落在可视区间内（决定占位文案写「加载中…」还是「滑到这里再加载」） */
+    vidWinHas(i, k) {
+      const w = this.vidShown[i]
+      return !!w && k >= w.from && k <= w.to
+    },
+    /** 重算所有已渲染视频区的可视区间 + 读盘（挂在渲染完成后 / 视图切换 / 出片后） */
+    refreshVidWins() {
+      this.$nextTick(() => {
+        const root = this.$el
+        if (!root || !root.querySelectorAll) return
+        root.querySelectorAll('.vid-list[data-si]').forEach(el => {
+          const i = Number(el.getAttribute('data-si'))
+          this.computeVidWin(i, el)
+          this.loadVidWin(i)
+        })
+      })
     },
     /**
      * 只保留最近 B64_KEEP 个视频缓存（其余释放掉，下次预览再读盘）+ 参考视频同理。
-     * 🔴 只能在「非渲染路径」调用（生成完成 / 换集）：`videoSrc` 是模板里的函数，
-     * 若在那里改动响应式数据会触发「渲染 → 改数据 → 再渲染」的死循环（曾表现为点击后整屏卡住）。
+     * 🔴 只能在「非渲染路径」调用（生成完成 / 换集）：模板里的取地址函数如果改响应式数据，
+     * 会触发「渲染 → 改数据 → 再渲染」的死循环（曾表现为点击后整屏卡住）。
      * 对象 key 天然保插入顺序，直接用 key 顺序当 LRU。
      */
     pruneB64() {
@@ -3582,14 +3962,11 @@ export default {
         // 🔴 真实画布（2026-10-27）：写回本镜实际生成的分辨率（二采档是放大后的第二遍画布），
         //   组装成片模块的镜头格用它显示，不能再停在档位预设旧值。
         if (r.width && r.height) this.vstate[i].res = r.width + 'x' + r.height
-        // 每一版各自记一份生成耗时（2026-10-10）：显示在该版播放框右上角；
-        // 超出 4 版上限被 shift 掉的旧版，连带清掉它的耗时记录（否则 fileMs 会无限增长）
+        // 每一版各自记一份生成耗时（2026-10-10）：显示在该版播放框右上角。
+        // 🔴 2026-11-01：版本数**不再设上限**（用户要求「不做任何上限」）——
+        //    磁盘上留多少版都行；内存由按需加载那套兜着（B64_KEEP=10，见文件上方常量说明）。
         const fm = this.vstate[i].fileMs || (this.vstate[i].fileMs = {})
         r.files.forEach(f => { fm[f] = ms })
-        while (this.vstate[i].files.length > 4) {
-          const gone = this.vstate[i].files.shift()
-          if (gone && fm[gone]) delete fm[gone]
-        }
         this.vstate[i].cur = this.vstate[i].files.length - 1
         this.vstate[i].confirmed = true   // 最新生成默认「采用」（点选其它版本即切换选中，无独立采用按钮）
         this.vstate[i].genMs = ms             // 整镜头「最近一次」的耗时（videos.json 持久化）
@@ -3602,6 +3979,9 @@ export default {
         delete this.vstate[i]._genAt
         this.pruneB64()                      // 只在非渲染时机清缓存（防渲染死循环）
         await this.saveVideos()
+        // 2026-11-01（Dragon）：新出的这一版自动顶上来 —— 版本列表向上滚到底，
+        // 旧版被顶出可视区、最新一版直接露出来（不再需要用户自己去拖滚动条找）。
+        this.scrollVidEnd(i)
         // 本镜重新出片 → 下一个镜头若续接过本镜末帧，那个首帧就过期了（只查下一个）
         if (i + 1 < this.shots.length) await this.refreshFrameStale(i + 1)
         this.pl.markGen(5, ms)

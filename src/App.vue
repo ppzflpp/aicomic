@@ -400,6 +400,11 @@
             <span id="shots-total" style="display:inline-flex;align-items:center"></span>
             <span style="flex:1"></span>
             <span class="head-sep"></span>
+            <!-- 视图切换落点（2026-11-01）：StageShots 把「列表/网格」图标切换 Teleport 到这里（图标无文字，悬停有说明） -->
+            <span id="shots-view" style="display:inline-flex;align-items:center"></span>
+            <!-- 「添加镜头」落点（2026-11-01）：放在「列表/网格切换」与「自动填充首帧」中间；
+                 点开插入位置弹框（shots/prompts/视频状态/缩略图四份同步移位） -->
+            <span id="shots-add" style="display:inline-flex;gap:8px;align-items:center"></span>
             <!-- 声音档位开关落点（2026-10-20，Dragon）：模块级唯一实例 —— 一个开关控制本集全部镜头的
                  BGM / 环境音。🔴 绝不能放进每行的 .row-head（那里每镜渲染一次 = N 个开关）。
                  紧挨批量按钮：切完档 → 批量按钮变琥珀（签名变了）→ 一键重做，动线一条直线。 -->

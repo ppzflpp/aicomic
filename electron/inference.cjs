@@ -607,6 +607,45 @@ function extractLastFrame(video, out, offsetSec) {
   });
 }
 
+/**
+ * 分镜缩略图（2026-11-01）：取视频第 0.4 秒一帧，缩到 240px 宽 jpg。
+ * 🔴 为什么非要有它：分镜页「网格视图」一屏要摆 9~21 个镜头。若每个格子挂 <video>，
+ *   或复用 file:readBase64 读整段视频（单条 2.7MB → base64 3.6MB），21 格就是
+ *   **70MB+ 字符串 + 21 个解码器**，正是「批量跑到后段界面发沉」的老毛病复发路径。
+ *   抽出来的 jpg 约 6KB，21 张合计 130KB，可以一次全加载。
+ * 缓存：由调用方（ipc 的 shot:thumbs）判断 mtime 决定是否重抽，这里只管抽。
+ * 视频过短（<0.4s）时 -ss 0.4 抽不出帧 → 退回从 0 秒抽，别让一张图失败拖垮整批。
+ */
+function shotThumb(video, out) {
+  return new Promise((resolve) => {
+    if (!video || !fs.existsSync(video)) return resolve({ ok: false, error: '源视频不存在' });
+    const ff = findFfmpeg({ forceSync: true });
+    if (!ff) return resolve({ ok: false, error: 'NOPATH' });
+    try { fs.mkdirSync(path.dirname(out), { recursive: true }); } catch (_) { /* 已存在 */ }
+    const attempt = (seek, cb) => {
+      const args = ['-y', '-hide_banner', '-loglevel', 'error',
+        '-ss', String(seek), '-i', video, '-frames:v', '1',
+        '-vf', 'scale=240:-2', '-q:v', '6', out];
+      try {
+        execFile(ff, args, { timeout: 30000, windowsHide: true, maxBuffer: 1 << 20 }, (err, _o, stderr) => {
+          if (err) {
+            try { fs.rmSync(out, { force: true }); } catch (_) { /* 忽略 */ }
+            return cb(false, String((stderr || '') || err.message || '').trim().slice(0, 200));
+          }
+          cb(fs.existsSync(out), '');
+        });
+      } catch (e) { cb(false, String((e && e.message) || e)); }
+    };
+    attempt(0.4, (ok, err1) => {
+      if (ok) return resolve({ ok: true, out });
+      attempt(0, (ok2, err2) => {
+        if (ok2) return resolve({ ok: true, out });
+        resolve({ ok: false, error: err2 || err1 || '抽帧失败' });
+      });
+    });
+  });
+}
+
 /* ---------------- ComfyUI 工作流执行 ---------------- */
 
 /** 生成入口 → 模型方案用途：生图（角色 / 场景）走 image，视频走 video，成片超分走 upscale */
@@ -3104,7 +3143,7 @@ module.exports = {
   init, health, llmChat, cancelLlm, isCancelRequested, consumeCancelRequested, extractJson, pickArray, endpoint, setEndpoint,
   comfyGenerate, cancelComfy, workflowPath, ensureDefaultTemplates, findFfmpeg, exportVideo,
   upscaleVideo, probeVideo,
-  extractLastFrame,
+  extractLastFrame, shotThumb,
   applyParams, findPlaceholders, h3Params, forgetWorkspace, listVideosWithMeta,
   // 模型方案驱动的部分（换模型只改配置，下面是代码侧入口）
   injectMedia, phTips, optionalPlaceholders,

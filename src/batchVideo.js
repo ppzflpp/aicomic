@@ -27,7 +27,12 @@ import { joinPath } from './resutil.js'
  * }
  */
 
-const MAX_FILES = 4   // 与 StageShots 一致：每镜最多保留 4 版
+/**
+ * 🔴 2026-11-01（Dragon）：每镜保留的版本数**不设上限** —— 旧版不再被 shift 掉，
+ * 想留多少版就留多少版（磁盘上的 mp4 全留在 分镜/ 目录里，右侧视频区可一直往下滚着看）。
+ * 内存风险不在这里管：StageShots 那侧改成按需加载（只看可视区那几版）+ 同时最多持有 10 个。
+ * 以前这里有个 MAX_FILES = 4 的循环会把最早的几版删掉，已移除（别再加回来）。
+ */
 
 /** 读某集的 videoState（纯数据，不依赖组件）。返回 {} 兜底。 */
 async function readVideoState(workspace, episodeId) {
@@ -55,10 +60,7 @@ async function persistVideo(snapshot, shot, files, ms, width, height) {
   // 每版耗时
   const fm = cur.fileMs || (cur.fileMs = {})
   files.forEach(f => { fm[f] = ms })
-  while (cur.files.length > MAX_FILES) {
-    const gone = cur.files.shift()
-    if (gone && fm[gone]) delete fm[gone]
-  }
+  // 版本不设上限：这里原本有 `while (files.length > MAX_FILES) shift()`，2026-11-01 已删除
   cur.cur = cur.files.length - 1
   cur.confirmed = true
   cur.genMs = ms
