@@ -441,7 +441,12 @@
             <!-- 🔴 2026-11-01：@scroll 驱动「按需加载」—— 只把滚进可视区的那几版读进内存。
                  src 一律从缓存里**只读**取（vidSrcAt），读盘动作全部发生在 scroll / nextTick 里，
                  不在渲染路径上（渲染里改响应式数据会「渲染 → 改数据 → 再渲染」，曾整屏卡死）。 -->
+            <!-- 🔴 2026-11-02：函数 ref 是「按需加载」的第三条驱动 ——
+                 scroll 只在用户滚的时候触发；元素刚挂载 / 行高刚定下来 / 窗口缩放时，
+                 这里拿到的 el 交给 IntersectionObserver + ResizeObserver 兜住（见 bindVidEl）。
+                 早先只靠 scroll + mounted 的一次 nextTick，布局没好时量到 0 高度 → 一直停在「加载中」。 -->
             <div class="vid-list" :class="{ 'is-grid': isGrid }" :data-si="i"
+                 :ref="setVidRef(i)"
                  @scroll.passive="onVidScroll(i, $event)">
               <div v-for="v in vidListAll(i)" :key="'v' + v.f" class="video-box"
                    :class="{ cur: v.k === curIdx(i), stalevid: videoStale(i) }"
@@ -1382,6 +1387,11 @@ export default {
   /** 卸载时立刻释放视频 base64，避免常驻内存（视频是重内存块） */
   beforeUnmount() {
     this._b64 = {}; this._refv = {}
+    // 视频按需加载的三个监听器（2026-11-02）：不拆会在换集重建时留着旧元素引用
+    if (this._vidObs) { this._vidObs.disconnect(); this._vidObs = null }
+    if (this._vidRO) { this._vidRO.disconnect(); this._vidRO = null }
+    if (this._vidEls) { this._vidEls.clear(); this._vidEls = null }
+    this._vidRaf = 0
     if (this._onFocus) { window.removeEventListener('focus', this._onFocus); this._onFocus = null }
     if (this._onDocDragEnd) {
       document.removeEventListener('dragend', this._onDocDragEnd, true)
@@ -3782,7 +3792,10 @@ export default {
       window.studio.readFileBase64(abs).then(b64 => {
         // 读盘期间可能已被挤掉（key 不在了）→ 不要再把这个大对象塞回内存
         if (this._b64[abs] === undefined) return
-        this._b64[abs] = b64 ? 'data:video/mp4;base64,' + b64 : ''
+        // 🔴 读失败要**清掉占位**，否则 '' 会一直占着这个 key，loadVidWin 见到
+        //    `!== undefined` 就跳过 → 该版本永远停在「加载中…」，只有滚出新 key 才恢复
+        if (!b64) { delete this._b64[abs]; return }
+        this._b64[abs] = 'data:video/mp4;base64,' + b64
       })
     },
     /** 计算某一镜视频区**当前可视**的版本区间（含端点）；只算区间，不读盘、不改 DOM */
@@ -3812,8 +3825,12 @@ export default {
       const files = (s && s.files) || []
       if (!w || !files.length) return
       const dir = (this.st.current && this.st.current.shotDir) || ''
+      // 🔴 目录没就绪就别读：早先这里会拿空 dir 拼出「纯文件名」，读盘必然失败，
+      //    还会把失败结果写成缓存占位，等目录好了也不会重读（表现为整片「加载中」）
+      if (!dir) return
       let n = 0
       for (let k = w.from; k <= w.to && k < files.length; k++) {
+        if (!files[k]) continue
         const abs = joinPath(dir, files[k])
         if (this._b64[abs] !== undefined) continue
         if (++n > VID_BATCH) break                        // 一次最多新读 5 个
@@ -3839,13 +3856,66 @@ export default {
       const w = this.vidShown[i]
       return !!w && k >= w.from && k <= w.to
     },
-    /** 重算所有已渲染视频区的可视区间 + 读盘（挂在渲染完成后 / 视图切换 / 出片后） */
+    /* ---------- 「按需加载」的三个驱动入口（2026-11-02 修「不滚动就一直加载中」）----------
+       早先只有 @scroll 会驱动 computeVidWin/loadVidWin，mounted/换集那次 nextTick 若赶上
+       行高还没定（.zone-3 有 contain:size，行高由 zone-1/zone-2 决定），量到的是 0 高 →
+       区间被兜成 {0,0} 或干脆算不出，之后没人再算 → 界面永远停在「第 N 版 加载中…」，
+       必须手动滚一下（scroll 一响才重算）。现在三条驱动互补：
+         · 函数 ref：元素一挂上就接进 _vidEls（不依赖 $el.querySelectorAll 的时机）
+         · IntersectionObserver：只给**浏览器视口内**的镜头加载 —— 否则屏幕外几十个镜头
+           一起抢 B64_KEEP=10 的额度，互相把对方的缓存挤掉，屏幕上就全是「加载中」
+         · ResizeObserver：行高/列宽定下来、窗口缩放时重算可视区间
+    */
+    /** 每个镜头一个**稳定**的 ref 函数（每次渲染返回同一实例）：
+     *  内联箭头函数每次 patch 都是新引用 → Vue 会先 ref(null) 再 ref(el)，
+     *  于是绑了拆、拆了绑，IO 跟着反复触发。缓存住就只在真正挂载/卸载时调一次。 */
+    setVidRef(i) {
+      if (!this._vidRefFns) this._vidRefFns = {}
+      if (!this._vidRefFns[i]) this._vidRefFns[i] = (el) => this.bindVidEl(i, el)
+      return this._vidRefFns[i]
+    },
+    bindVidEl(i, el) {
+      if (!this._vidEls) this._vidEls = new Map()
+      const prev = this._vidEls.get(i)
+      if (prev === el) return
+      if (prev) {
+        if (this._vidObs) this._vidObs.unobserve(prev)
+        if (this._vidRO) this._vidRO.unobserve(prev)
+        this._vidEls.delete(i)
+      }
+      if (!el || !el.getBoundingClientRect) return
+      this._vidEls.set(i, el)
+      this.ensureVidWatchers()
+      if (this._vidObs) this._vidObs.observe(el)
+      if (this._vidRO) this._vidRO.observe(el)
+      this.scheduleVidRefresh()
+    },
+    ensureVidWatchers() {
+      if (!this._vidObs && typeof IntersectionObserver !== 'undefined') {
+        this._vidObs = new IntersectionObserver(() => this.scheduleVidRefresh(), { root: null, rootMargin: '160px 0px' })
+      }
+      if (!this._vidRO && typeof ResizeObserver !== 'undefined') {
+        this._vidRO = new ResizeObserver(() => this.scheduleVidRefresh())
+      }
+    },
+    /** 多处回调（IO/RO/换集/出片）合并成一帧，避免同一轮里反复算 */
+    scheduleVidRefresh() {
+      if (this._vidRaf) return
+      const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (fn) => setTimeout(fn, 16)
+      this._vidRaf = raf(() => { this._vidRaf = 0; this.refreshVidWins() })
+    },
+    /** 重算已渲染视频区的可视区间 + 读盘（挂在挂载 / 布局变化 / 视图切换 / 出片后） */
     refreshVidWins() {
       this.$nextTick(() => {
-        const root = this.$el
-        if (!root || !root.querySelectorAll) return
-        root.querySelectorAll('.vid-list[data-si]').forEach(el => {
-          const i = Number(el.getAttribute('data-si'))
+        if (!this._vidEls || !this._vidEls.size) return
+        const vh = window.innerHeight || 800
+        this._vidEls.forEach((el, i) => {
+          if (!el || !el.isConnected || !el.getBoundingClientRect) return
+          const r = el.getBoundingClientRect()
+          // 还没布局出来（行高未定 / 父层 display:none）→ 不写区间，等 ResizeObserver 再叫
+          if (r.height < 8 || r.width < 8) return
+          // 在浏览器视口外：不算也不读（否则会挤掉可见镜头的 B64_KEEP 额度）
+          if (r.bottom < -160 || r.top > vh + 160) return
           this.computeVidWin(i, el)
           this.loadVidWin(i)
         })
