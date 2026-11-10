@@ -179,7 +179,12 @@ app.on('render-process-gone', (e, webContents, details) => {
 });
 app.on('child-process-gone', (e, details) => {
   try {
-    logger.error('子进程退出：type=' + details.type + ' reason=' + details.reason + ' exitCode=' + details.exitCode);
+    // 🔴 2026-11-09：GPU 进程崩了要单独喊一声 —— 它就是「显存撞顶 → NVIDIA 驱动复位」
+    //    的现场证据。原来的日志只写一行汇总，混在 Utility 里看不出来。
+    const isGpu = /gpu/i.test(String(details.type || ''));
+    logger.error('子进程退出：type=' + details.type + ' reason=' + details.reason + ' exitCode=' + details.exitCode +
+      (isGpu ? '　← GPU 进程崩溃：通常是显存耗尽导致 NVIDIA 驱动复位（nvlddmkm ID=153），'
+              + '软件会表现为闪退。请检查是否有程序占着显存（浏览器/其它 AI 工具/ComfyUI 其它任务）。' : ''));
   } catch (_) { /* 忽略 */ }
 });
 

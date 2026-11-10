@@ -1271,6 +1271,8 @@ input[type=search]:focus{
   overflow:hidden; display:flex; align-items:center; justify-content:center;
 }
 .video-box video{width:100%; height:100%; object-fit:contain; background:#070a10; cursor:pointer;}
+/* HEVC 解码兜底的首帧图：撑满 video-box（与 video 同规则），object-fit:contain 保持比例 */
+.video-box .vg-vid-poster{width:100%; height:100%; cursor:pointer;}
 /* 点画面 = 选中该版本；点底部原生控制条 = 播放/进度/音量。
    🔴 不再放防误播遮挡层：硬编码 42px 预留实测不够高（下缘切在播放键中间，上半截点不动），
    已改为 StageShots.boxClick 按点击纵坐标判断（底部 64px 内不拦截，交给原生控件） */
@@ -1729,6 +1731,10 @@ input[type=search]:focus{
   border:1px solid var(--line); background:#0f141d; flex-shrink:0;
 }
 .ref-thumb img{width:100%; height:100%; object-fit:contain; background:#0b0f16; border-radius:6px; display:block;}
+/* 🔴 视频首帧 poster（2026-11-09）：Electron 的 Chromium 不含 HEVC 解码器，
+   用户手机拍的视频解不出画面 → <video> 是黑框。改用 ffmpeg 抽的首帧图顶替。
+   放在全局：视频生成页 / 分镜页 / 导出页 / 预览弹窗四处都要用。 */
+.vg-vid-poster{width:100%; height:100%; object-fit:contain; background:#0b0f16; border-radius:6px; display:block;}
 /* 参考图拖动排序（2026-10-08）：起点半透明 + 抓手光标；当前悬停的目标位描边高亮 */
 .ref-thumb[draggable="true"]{cursor:grab;}
 .ref-thumb[draggable="true"]:active{cursor:grabbing;}

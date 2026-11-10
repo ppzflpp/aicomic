@@ -41,10 +41,20 @@ const PHASES = [
   { key: 'export', name: '阶段7 组装成片', engines: [] }
 ];
 
-/** llama 进 GPU 前需要约 10.6GB → 先等显存占用降到 7GB 以下 */
-const VRAM_FOR_LLM = 7000;
-/** 出图/出视频前等显存降到 9GB 以下 */
-const VRAM_FOR_COMFY = 9000;
+/**
+ * llama 进 GPU 前需要约 10.6GB → 先等显存占用降到 7GB 以下
+ * 🔴 2026-11-09 闪退根因：这两个阈值原来是写死的 7000/9000，在 16GB 卡上
+ *    「llama 9~10.6GB + ComfyUI 峰值」塞不下 → NVIDIA 驱动复位（nvlddmkm ID=153）
+ *    → GPU 进程崩溃 → 窗口瞬间消失、日志里什么都不剩。
+ *    现在改成**按卡实际容量动态算**（16GB 卡上 ComfyUI 门槛 = 13000 左右）。
+ *    拿不到卡容量时才回落到下面的兜底值。
+ */
+const VRAM_FOR_LLM = 7000;      // 兜底值（拿不到卡容量时用）
+const VRAM_FOR_COMFY = 9000;    // 兜底值
+/** 动态阈值：llama 用掉卡容量的 45%，ComfyUI 阶段留 80% */
+const VRAM_RATIO_LLM = 0.45;
+const VRAM_RATIO_COMFY = 0.80;
+
 
 /** 「已经就绪」的短期缓存，避免每个请求都做一遍健康检查/显存轮询 */
 const readyAt = { llm: 0, comfy: 0 };
@@ -105,11 +115,13 @@ async function _ensureLlm(label) {
   }
 
   logger.info('LLM 服务未运行 → 准备启动（需约 10.6GB 显存）');
+  // 🔴 阈值按卡实际容量算（2026-11-09 闪退修复）：16GB 卡上不能拿 7000 这种写死值
+  const thrLlm = await launcher.vramThreshold(VRAM_RATIO_LLM, VRAM_FOR_LLM);
   if (h.comfyui) {
     const u = await launcher.unloadComfyModels();
     logger[u.ok ? 'info' : 'warn'](u.message);
     if (u.ok) {
-      const w = await launcher.waitVramBelow(VRAM_FOR_LLM, 30000);
+      const w = await launcher.waitVramBelow(thrLlm, 30000);
       logger.info(w.ok ? '显存已回落到 ' + w.vram + ' MiB' : '显存当前 ' + w.vram + ' MiB（偏高，仍尝试启动）');
     }
   }
@@ -117,6 +129,13 @@ async function _ensureLlm(label) {
   const r = await launcher.startLlama();
   if (!r.ok) { logger.error('llama 启动失败：' + r.message); throw new Error(r.message); }
   if (!r.already) invalidate('llm');
+  // 🔴 2026-11-09 闪退修复：startLlama 内部已经做健康检查了（60s 内没就绪就判失败并收掉僵尸进程，
+  //    显存 OOM 会直接报「unable to allocate CUDA0 buffer」）。这里不再重复等，只记录显存水位。
+  if (!r.already) {
+    const used = await launcher.vramUsed();
+    const thr = await launcher.vramThreshold(VRAM_RATIO_LLM, VRAM_FOR_LLM);
+    logger.info('llama-server 就绪，当前显存占用 ' + used + ' MiB（安全水位 ' + thr + ' MiB）');
+  }
   readyAt.llm = Date.now();
   return { ok: true, message: r.message };
 }
@@ -144,11 +163,12 @@ async function _ensureVisionLlm(label) {
   }
 
   logger.info('提示词反推需要读图 → 准备以视觉模式启动 llama-server（多加载 mmproj，约 +0.9GB 显存）');
+  const thrLlmV = await launcher.vramThreshold(VRAM_RATIO_LLM, VRAM_FOR_LLM);
   if (h.comfyui) {
     const u = await launcher.unloadComfyModels();
     logger[u.ok ? 'info' : 'warn'](u.message);
     if (u.ok) {
-      const w = await launcher.waitVramBelow(VRAM_FOR_LLM, 30000);
+      const w = await launcher.waitVramBelow(thrLlmV, 30000);
       logger.info(w.ok ? '显存已回落到 ' + w.vram + ' MiB' : '显存当前 ' + w.vram + ' MiB（偏高，仍尝试启动）');
     }
   }
@@ -174,14 +194,44 @@ async function _ensureComfy(label) {
   const h0 = await inference.health();
   if (h0.llm || (await launcher.llamaRunning())) {
     logger.info('ComfyUI 阶段需要全部显存 → 停止 llama-server');
-    const res = await launcher.freeVramForComfy(tag, VRAM_FOR_COMFY);
+    // 🔴 2026-11-09 闪退修复：阈值按卡实际容量算。16GB 卡上原来的 9000 太松，
+    //    ComfyUI（尤其 H3 视频，dynamic VRAM loading 要 40GB 模型）进来就撞上限 → 驱动复位。
+    const thrComfy = await launcher.vramThreshold(VRAM_RATIO_COMFY, VRAM_FOR_COMFY);
+    const res = await launcher.freeVramForComfy(tag, thrComfy);
     for (const l of res.lines) logger.info(l);
     invalidate('llm');
+    // 🔴 显存没释放干净就别进重负载阶段：硬上只会把 GPU 驱动顶崩（软件直接闪退）。
+    //    这里如实报错，让用户先关掉占显存的东西，而不是让它崩一次。
+    if (!res.ok && res.vram >= 0) {
+      const total = await launcher.vramTotal();
+      throw new Error(
+        '显存没能释放到安全水位（当前 ' + res.vram + ' MiB' +
+        (total > 0 ? ' / 显卡总量 ' + total + ' MiB' : '') +
+        '，需要低于 ' + thrComfy + ' MiB）。'
+        + '请先关掉正在占用显存的程序（浏览器/其它 AI 工具/ComfyUI 的其它任务），再重试。'
+        + '继续硬跑会导致显卡驱动复位、软件闪退。'
+      );
+    }
   }
 
   const h = await inference.health();
   if (!h.comfyui) {
     logger.warn('检测到 ComfyUI 还没有启动 → 正在尝试自动拉起（第一次使用如果自动拉起失败，请手动打开 ComfyUI 后再重试）');
+    // 🔴 2026-11-09 闪退修复：冷启动 ComfyUI 之前也必须确认显存是干净的。
+    //    以前只在「llama 在跑」时才做显存编排 → llama 已经挂了但显存还被别的东西占着时，
+    //    ComfyUI 起来就撞顶 → 驱动复位 → 闪退。这里补一道无条件的水位检查。
+    const thrComfyCold = await launcher.vramThreshold(VRAM_RATIO_COMFY, VRAM_FOR_COMFY);
+    const usedCold = await launcher.vramUsed();
+    if (usedCold >= 0 && usedCold >= thrComfyCold) {
+      const totalCold = await launcher.vramTotal();
+      logger.error('显存水位过高（' + usedCold + ' MiB），不适合启动 ComfyUI');
+      throw new Error(
+        '显存占用过高（当前 ' + usedCold + ' MiB' +
+        (totalCold > 0 ? ' / 显卡总量 ' + totalCold + ' MiB' : '') +
+        '，需要低于 ' + thrComfyCold + ' MiB），启动 ComfyUI 会导致显卡驱动复位、软件闪退。'
+        + '请先关掉占用显存的程序（浏览器 / 其它 AI 工具），再重试。'
+      );
+    }
     const r = await launcher.startComfy();
     if (!r.ok) {
       logger.error('ComfyUI 启动失败：' + r.message);

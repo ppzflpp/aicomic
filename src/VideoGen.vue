@@ -6,9 +6,31 @@
 
         <div class="vg-sec">
           <div class="vg-lab">提示词</div>
+          <!-- 🔴 白膜视频开关（2026-11-09）：打开后自动填入内置白膜提示词模板，并禁用「提示词重写」
+               （白膜模板本身就是完整的六段式提示词，再重写会把模板结构改坏）。 -->
+          <div class="vg-whitebar">
+            <label class="vg-chk"
+                   title="白膜视频：把参考视频里的人/物转成 3D 哑光白模，配纯绿幕。打开后自动填入内置模板，并按参考视频长度自动切段生成。">
+              <span class="vg-sw" :class="{on: whiteOn}" @click="toggleWhite"></span>
+              <span class="vg-rw-t">白膜视频</span>
+            </label>
+            <span class="vg-rw-hint" v-if="!whiteOn">开启后自动填入内置白膜模板</span>
+            <span class="vg-rw-hint on" v-else>白模 + 纯绿幕 · 模板已填入</span>
+          </div>
           <textarea class="vg-ta" v-model="prompt" rows="5"
                     placeholder="描述你想生成的视频：画面、人物、动作、台词、环境音、配乐……"></textarea>
-          <div class="vg-rewrite">
+          <!-- 白膜专属选项：保留原始声音 -->
+          <div class="vg-white-opts" v-if="whiteOn">
+            <div class="vg-rewrite">
+              <label class="vg-chk"
+                     title="勾选：成片用原始视频的音轨（模型生成的声音整条丢掉）；不勾：成片用模型按提示词生成的音轨。">
+                <span class="vg-sw" :class="{on: keepAudio}" @click="keepAudio=!keepAudio"></span>
+                <span class="vg-rw-t">保留原始声音</span>
+              </label>
+              <span class="vg-rw-hint">{{ keepAudio ? '成片贴回原视频音轨' : '成片用模型生成的音轨' }}</span>
+            </div>
+          </div>
+          <div class="vg-rewrite" v-if="!whiteOn">
             <label class="vg-chk"
                    title="用 MiniMax H3 官方提示词规范重写你的描述：补全镜头、运镜、台词、环境音与配乐等结构，让模型理解更准确、成片更贴合预期。开启后生成时自动重写，原始描述与改写结果都会保留，可在结果区「查看提示词」对比。">
               <span class="vg-sw" :class="{on: rewriteOn}" @click="rewriteOn=!rewriteOn"></span>
@@ -37,8 +59,12 @@
             <button class="ref-add" title="从本地选参考图（可多选）" @click="pick('refImages')">＋参考图</button>
 
             <!-- 参考视频（编号 = <Video N>） -->
+            <!-- 🔴 2026-11-09：HEVC 视频（用户手机拍的绝大多数是）Chromium 解不出画面 → <video> 是黑框。
+                 确认解不开后（vidThumb.js 的探测）改显示 ffmpeg 抽的首帧图；能播的照旧能播。 -->
             <div v-for="(r,i) in refVideos" :key="'rv'+r.path" class="ref-thumb vid">
-              <video v-if="!missing(r.path)" :src="imgSrc(r.path)" muted preload="metadata"></video>
+              <img v-if="!missing(r.path) && _vtFallback(r.path)" class="vg-vid-poster" :src="_vtThumb(r.path)" :title="r.path">
+              <video v-else-if="!missing(r.path)" :src="imgSrc(r.path)" muted preload="metadata"
+                     @loadedmetadata="_vtMeta(r.path, $event.target)" @error="_vtErr(r.path)"></video>
               <span v-else class="vg-miss-thumb">已缺失</span>
               <span class="rtag vid">视频 {{ i+1 }}</span>
               <button class="img-x" title="移除" @click.stop="rmRef('refVideos', i)">✕</button>
@@ -97,18 +123,36 @@
           <div class="vg-dur-row">
             <span class="vg-lab" style="margin-bottom:0">时长</span>
             <div class="vg-dur-input">
-              <input class="vg-dur-num" type="number" min="4" max="15" step="1" v-model.number="seconds"
-                     @blur="clampSeconds">
+              <!-- 🔴 自动模式下时长框显示参考视频的真实长度（可能 >15 秒），所以上下限要放开；
+                   真正决定生成长度的是切段计划，不是这个框。 -->
+              <div class="vg-dur-field">
+                <input class="vg-dur-num" :class="{ auto: autoDur }" type="number" :min="autoDur ? 0 : 4" :max="autoDur ? 99999 : 15"
+                       :step="autoDur ? '0.1' : '1'" v-model.number="seconds"
+                       :disabled="autoDur" @blur="clampSeconds">
+                <!-- 🔴 「4-15秒」提示语放进输入框内部（灰字 hint 效果），不再挂在行尾 -->
+                <span class="vg-dur-hint" v-if="!autoDur">{{ durHint }}</span>
+              </div>
               <span class="vg-dur-unit">秒</span>
             </div>
-            <span class="vg-hint">4-15秒</span>
+            <!-- 🔴 「自动」= 输出时长跟参考视频一样长（模型单次上限 15 秒，所以自动切段再拼）。
+                 🔴 与「白膜视频」联动：只有勾了白膜，时长区才出现这个开关（白膜才有参考视频可切）。
+                 需要有参考视频才有意义，所以没参考视频时这个开关点不动。 -->
+            <label class="vg-chk" v-if="whiteOn" :class="{off: !canAutoDur}"
+                   :title="canAutoDur ? '输出时长 = 参考视频长度（自动切段生成后拼接）' : '需要先加一个参考视频，才能按它的长度自动分段'">
+              <span class="vg-sw" :class="{on: autoDur}" @click="toggleAutoDur"></span>
+              <span class="vg-rw-t">自动</span>
+            </label>
           </div>
+          <!-- 切段计划：告诉用户这条片会被拆成几段、每段多长 -->
+          <div class="vg-plan" v-if="autoDur && planText">{{ planText }}</div>
         </div>
 
       </div>
 
       <div class="vg-bottom">
-        <div class="vg-mode" v-if="modeHint">已自动判定：{{ modeHint }}</div>
+        <!-- 🔴 白膜模式下不显示这行路由提示（2026-11-09）：白膜开关旁已经写着「白模 + 纯绿幕 · 模板已填入」，
+             上面还有切段计划行，底部再重复一遍纯属多余。 -->
+        <div class="vg-mode" v-if="modeHint && !whiteOn">已自动判定：{{ modeHint }}</div>
         <button class="btn vg-genbtn" :disabled="!canGen" @click="generate">
           生成视频
         </button>
@@ -138,7 +182,10 @@
           </div>
           <div v-for="r in resultsDesc" :key="r.path" class="vg-tile">
             <div class="vg-ph" @click="preview(r)">
-              <video :src="imgSrc(r.path)" muted preload="metadata"></video>
+              <!-- 🔴 抽帧 poster 兜底：确认 HEVC 解不开后才切静帧（vidThumb.js） -->
+              <img v-if="_vtFallback(r.path)" class="vg-vid-poster" :src="_vtThumb(r.path)" :title="r.path">
+              <video v-else :src="imgSrc(r.path)" muted preload="metadata"
+                     @loadedmetadata="_vtMeta(r.path, $event.target)" @error="_vtErr(r.path)"></video>
               <span class="vg-tag">{{ tileMeta(r) }}</span>
               <span v-if="timeText(r)" class="vg-dur">{{ timeText(r) }}</span>
               <div class="vg-ov">
@@ -152,7 +199,9 @@
           </div>
           <div v-for="h in history" :key="h.path" class="vg-tile dim">
             <div class="vg-ph" @click="preview(h)">
-              <video :src="imgSrc(h.path)" muted preload="metadata"></video>
+              <img v-if="_vtFallback(h.path)" class="vg-vid-poster" :src="_vtThumb(h.path)" :title="h.path">
+              <video v-else :src="imgSrc(h.path)" muted preload="metadata"
+                     @loadedmetadata="_vtMeta(h.path, $event.target)" @error="_vtErr(h.path)"></video>
               <span class="vg-tag">{{ tileMeta(h) }}</span>
               <span v-if="timeText(h)" class="vg-dur">{{ timeText(h) }}</span>
               <div class="vg-ov">
@@ -229,8 +278,89 @@ import { useProject as useProjectStore } from './stores/project.js'
 import { vgState } from './vidgenState.js'
 import { subscribe, submit, cancel, activeCount, activeTasks } from './taskCenter.js'
 import { mediaUrl } from './mediaUrl.js'
+import { thumbOf as _vtThumb, loadThumbs as _vtLoad, noteVideoMeta as _vtMeta, noteVideoError as _vtErr, shouldFallback as _vtFallback } from './vidThumb.js'
 
 const TYPE = 'vidgen'
+
+/* 白膜视频（2026-11-09）——
+ * 内置模板里的占位符与「音频要求」段落。
+ * 🔴 音频段落必须按「保留原始声音」开关切换：模板原文写的是「完整保留参考视频的原始音频」，
+ *    不保留原声时若照抄这句，提示词与实际行为正好相反（模型会按原声写，实际音轨却是它自己生成的）。 */
+const WHITE_AUDIO_KEEP = '完整保留参考视频的原始音频（音乐、人声、动物叫声、音效、环境声），不替换、不重新生成，与画面严格同步，时长一致。'
+const WHITE_AUDIO_GEN = '不保留参考视频的原始音频。音频按本提示词其余部分由模型自行生成（配乐、环境音、动作音），与画面严格同步，时长一致。'
+
+/**
+ * 「自动时长」路径：参考视频切段 → 逐段生成 → 拼接 → 叠原音 → 按原时长裁尾。
+ *
+ * 🔴 写成**模块级函数**（不挂在组件上）：任务中心的执行函数不许依赖组件实例 ——
+ *    切菜单/切集会销毁组件，await 链一断任务就废了。所有需要的东西都从参数拿。
+ *
+ * 段数最少（上限 15 秒）+ 等分：尾巴段太短会让模型按 4 秒下限生成，
+ * 多出来的那截模型编出来的内容最后又被裁掉，白烧算力。
+ */
+async function runSplitGenerate({ report, dir, params, snapshot, width, height, t0, srcVideo, keepAudio, baseName }) {
+  // 中间产物目录放在 _white 子目录里：历史列表是按目录平铺扫 *.mp4 的，
+  // 放子目录里就不会把切片/归一段当成生成产物混进历史。
+  const workDir = dir + '\\_white\\' + baseName
+  const outFile = dir + '\\' + baseName + '.mp4'
+  report({ done: 0, total: 3, label: '正在切段…' })
+  const cut = await window.studio.vidCut({ file: srcVideo, workDir, maxSec: 15 })
+  if (!cut || !cut.ok) throw new Error((cut && cut.error) || '切段失败')
+  const segs = cut.segments || []
+  if (!segs.length) throw new Error('切段结果为空')
+  const total = segs.length + 2
+  const genFiles = []
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i]
+    report({ done: i + 1, total, label: '生成第 ' + (i + 1) + '/' + segs.length + ' 段…' })
+    // 每段单独跑一次 H3：参考视频换成「这一段的时间窗切片」，秒数取该段的时长（整秒，模型只吃整数秒）
+    const p = Object.assign({}, params, {
+      refVideos: [seg.file],
+      seconds: seg.seconds
+    })
+    const r = await window.studio.comfyGenerate({
+      templateKey: 'video',
+      dir: workDir,
+      baseName: baseName + '_s' + i,
+      params: p,
+      label: '第' + (i + 1) + '段'
+    })
+    const f = (r && r.files) && r.files[0]
+    if (!f) throw new Error('第 ' + (i + 1) + ' 段没有产出文件')
+    const abs = /^[a-zA-Z]:[\\/]/.test(f) ? f : workDir + '\\' + f
+    genFiles.push({ file: abs, durSec: seg.durSec })
+  }
+  report({ done: segs.length + 1, total, label: '拼接中…' })
+  const mg = await window.studio.vidMerge({
+    segments: genFiles,
+    outFile,
+    workDir,
+    totalSec: cut.totalSec,
+    audioFrom: srcVideo,
+    keepAudio
+  })
+  if (!mg || !mg.ok) throw new Error((mg && mg.error) || '拼接失败')
+  const ms = Date.now() - t0
+  // 成片的快照：秒数记成实际总长（= 原视频长度），不是用户手填的那个值
+  const outSnap = Object.assign({}, snapshot || {}, { seconds: cut.totalSec })
+  // 成片旁车（<名>.json）：写耗时 + 生成快照，历史列表靠它显示耗时、支持「回填配置」
+  try {
+    await window.studio.vidSidecar(outFile, { ms, mode: 'video', at: new Date().toISOString(), snapshot: outSnap })
+  } catch (_) { /* 旁车写不了不影响成片 */ }
+  // 中间产物清掉（失败时上面就抛了，不会走到这 → 失败现场留着能排查）
+  try { await window.studio.vidCleanupWork(workDir) } catch (_) {}
+  return {
+    videos: [{
+      path: outFile,
+      width: mg.width || width,
+      height: mg.height || height,
+      durationSec: cut.totalSec,
+      ms,
+      at: Date.now(),
+      snapshot: outSnap
+    }]
+  }
+}
 
 export default {
   name: 'VideoGen',
@@ -245,12 +375,19 @@ export default {
       aspect: '16:9',
       seconds: 5,
       rewriteOn: false,   // 「提示词重写」开关：开启后用 H3 官方规范重写 prompt 再提交
+      // —— 白膜视频（2026-11-09）——
+      whiteOn: false,        // 白膜开关：打开 → 填入内置白膜模板 + 禁用提示词重写
+      keepAudio: true,       // 保留原始声音：成片贴回原视频音轨（不勾 → 用模型生成的音轨）
+      autoDur: false,        // 「自动」时长：输出时长 = 参考视频长度（自动切段 → 逐段生成 → 拼接）；只在白膜模式下出现
+      _autoDurTouched: false, // 用户手动点过「自动」后就不再被「白膜默认开自动」覆盖
+      whiteTpl: '',          // 内置白膜提示词模板原文（主进程读 skills/prompts/vidgen-white.md）
+      refInfo: null,         // 参考视频探测结果 { durationSec, count, segDur, hasAudio, ok }
       results: [],        // 本次会话产物 [{path, width, height, durationSec, ms, at, snapshot}]
       history: [],        // <workspace>/视频生成/ 历史产物
       promptView: null,   // 查看提示词弹框数据 {raw, rewritten}
       delAsk: null,       // 删除确认框数据 {path, from}（from='results'|'history'）
       _submitting: false, // 🔴 提交锁：健康检查/重写是异步 await，期间防止用户连点重复提交任务
-      _missing: new Set() // 本次会话里探测过「文件不存在」的路径缓存（回填时打标记）
+      _missing: new Set(), // 本次会话里探测过「文件不存在」的路径缓存（回填时打标记）
     }
   },
   computed: {
@@ -287,6 +424,10 @@ export default {
     /** 智能路由判定（纯自动，只作提示语） */
     modeHint() {
       const hasRef = this.refImages.length > 0 || this.refVideos.length > 0
+      if (this.whiteOn) {
+        // 🔴 不带切段计划：计划已经在界面上单独一行显示了，塞进来会把任务标签撑得老长
+        return '白膜视频 · 3D 白模 + 纯绿幕'
+      }
       if (hasRef) {
         const bits = []
         if (this.refImages.length) bits.push('参考图×' + this.refImages.length)
@@ -298,10 +439,30 @@ export default {
       if (this.lastFrame) return '尾帧 L2VA'
       return '文生视频 T2VA'
     },
+    /**
+     * 「自动」时长需要参考视频：模型单次只出 15 秒，长片必须切段拼，没参考视频就无从切起。
+     * 🔴 同时要求白膜开关打开 —— 时长区的「自动」开关只在白膜模式下出现，两者是联动的。
+     */
+    canAutoDur() { return this.whiteOn && this.refVideos.length > 0 },
+    /** 时长框内嵌的提示语（自动态不显示：时长框里已经是参考视频的真实长度） */
+    durHint() {
+      return '4-15秒'
+    },
+    /** 切段计划文案：源视频会被拆成几段、每段多长 */
+    planText() {
+      const ri = this.refInfo
+      if (!ri || !ri.ok || !ri.durationSec) return ''
+      const n = ri.count || 1
+      const seg = ri.segDur || ri.durationSec
+      return '参考视频 ' + ri.durationSec.toFixed(1) + 's → 切 ' + n + ' 段（每段 ' + seg.toFixed(1) + 's）'
+    },
     canGen() {
       // 🔴 多任务排队（2026-10-23）：不再因为「有任务在跑」就禁用按钮。
       //    只要提示词非空、且当前这次点击还没提交完（_submitting 防连点）就可点。
-      return this.prompt.trim().length > 0 && !this._submitting
+      if (!(this.prompt.trim().length > 0) || this._submitting) return false
+      // 白膜必须有一个参考视频（模板里写着「以参考视频为唯一动作来源」）
+      if (this.whiteOn && !this.refVideos.length) return false
+      return true
     },
     /** 本次结果按生成时间倒序（最新在前） */
     resultsDesc() {
@@ -318,7 +479,17 @@ export default {
     }
   },
   watch: {
-    'st.workspace'() { this.reloadHistory() }
+    'st.workspace'() { this.reloadHistory() },
+    // 参考视频变了 → 重新探测时长，重算切段计划（自动时长要靠它）
+    // 同时预抽帧 poster：HEVC 视频 Chromium 解不出画面，缩略图会黑框。
+    // 提前抽好，等探测判定「解不开」时首帧图已经在手，切过去不用等。
+    refVideos: {
+      deep: true,
+      handler() {
+        this.probeRefVideo()
+        _vtLoad(this.refVideos.map(r => r.path))
+      }
+    }
   },
   async mounted() {
     // tierOptions 由 store 初始化时 loadResOptions() 填充；这里只在仍未加载时补一次
@@ -327,6 +498,8 @@ export default {
     }
     if (!this.tier) this.tier = (this.tierOptions.find(t => t.default) || this.tierOptions[0] || {}).key || ''
     this.reloadHistory()
+    // 内置白膜模板预读（切开关时直接填，不用等）
+    try { this.whiteTpl = (await window.studio.vidWhiteTemplate()) || ''; } catch (_) { this.whiteTpl = '' }
     // 订阅任务中心事件：本地正在跑的任务结束 → 刷新结果；进度 → 更新侧栏悬浮文案
     this._offDone = subscribe('done', t => { if (t && t.task && t.task.type === TYPE) this.onTaskDone(t.task) })
     this._offFail = subscribe('fail', t => { if (t && t.task && t.task.type === TYPE) this.onTaskDone(t.task) })
@@ -350,6 +523,98 @@ export default {
   },
   methods: {
     onShow() { this.reloadHistory() },
+    /* ---------------- 白膜视频 ---------------- */
+    /**
+     * 白膜开关。打开 → 填入内置模板 + 禁用提示词重写 + 自动时长（若已有参考视频）。
+     * 关掉 → 提示词若还是原封不动的模板就清空（免得下一条普通生成误用白膜提示词）。
+     */
+    async toggleWhite() {
+      this.whiteOn = !this.whiteOn
+      if (this.whiteOn) {
+        this.rewriteOn = false            // 白膜模板本身就是完整提示词，重写会改坏它的结构
+        if (!this.whiteTpl) {
+          try { this.whiteTpl = (await window.studio.vidWhiteTemplate()) || ''; } catch (_) { this.whiteTpl = '' }
+        }
+        if (this.whiteTpl) this.prompt = this.whiteTpl
+        // 白膜模式默认按参考视频长度切段（模型单次只出 15 秒，长片必须切段再拼）
+        if (this.refVideos.length) {
+          this.autoDur = true
+          this._autoDurTouched = false
+          // 🔴 立刻重探一次参考视频：探测结果可能是白膜打开之前算的，
+          //    不刷新的话「自动」开了但时长框还停在旧的手填值（比如 5 秒），和真实输出对不上。
+          this.probeRefVideo()
+        }
+      } else {
+        if (this.whiteTpl && this.prompt.trim() === this.whiteTpl.trim()) this.prompt = ''
+        // 🔴 关掉白膜 → 时长区的「自动」开关随之消失（两者联动），时长框里的参考视频长度要收回 4~15 区间
+        if (this.autoDur) { this.autoDur = false; this.clampSeconds() }
+        this._autoDurTouched = false
+      }
+    },
+    /** 「自动」时长开关；没有参考视频时点不动（无从切起） */
+    toggleAutoDur() {
+      if (!this.whiteOn) return          // 白膜没开时时长区根本不显示这个开关（联动）
+      if (!this.canAutoDur) {
+        this.toast('「自动」时长需要先加一个参考视频：模型单次只出 15 秒，长片要先切段再拼。')
+        return
+      }
+      this.autoDur = !this.autoDur
+      this._autoDurTouched = true
+      if (this.autoDur) {
+        this.probeRefVideo()
+        // 输入框显示参考视频的实际长度（禁用态），免得和真实输出对不上
+        const ri = this.refInfo
+        if (ri && ri.ok) this.seconds = Number(ri.durationSec.toFixed(1))
+      } else {
+        this.clampSeconds()
+      }
+    },
+    /**
+     * 探测参考视频（时长/段数），用于显示切段计划。
+     * 段数与主进程同一套算法（上限 15 秒、段数最少、等分）—— 这里只算给界面看，真切在主进程。
+     */
+    async probeRefVideo() {
+      const src = this.refVideos[0] && this.refVideos[0].path
+      if (!src) {
+        this.refInfo = null
+        // 🔴 参考视频被删空 → 「自动」必须跟着关掉：否则 autoDur 还挂着但没有切段依据，
+        //    会拿着上一次留下的 26.5 秒去走单段路径（模型上限 15 秒），状态对不上。
+        if (this.autoDur) { this.autoDur = false; this.clampSeconds() }
+        return
+      }
+      try {
+        const info = await window.studio.vidProbe(src)
+        if (!info || !info.ok) { this.refInfo = null; return }
+        const total = Number(info.durationSec) || 0
+        const max = 15
+        const count = total > 0 ? Math.max(1, Math.ceil(total / max)) : 0
+        this.refInfo = {
+          ok: true,
+          durationSec: total,
+          count,
+          segDur: count ? total / count : 0,
+          hasAudio: !!info.hasAudio
+        }
+        // 自动时长时，输入框显示参考视频的实际长度（禁用态）
+        if (this.autoDur) this.seconds = Number(total.toFixed(1))
+        // 🔴 白膜模式下新加参考视频 → 默认按它的长度切段（用户没手动点过「自动」时才接管）
+        if (this.whiteOn && !this.autoDur && !this._autoDurTouched) {
+          this.autoDur = true
+          this.seconds = Number(total.toFixed(1))
+        }
+        if (this.autoDur && count > 6) {
+          this.toast('参考视频 ' + total.toFixed(1) + ' 秒，按 15 秒一段要切 ' + count + ' 段，超过上限 6 段。请先把片子剪短。', 5200)
+        }
+      } catch (_) { this.refInfo = null }
+    },
+    /** 白膜最终提示词 = 模板原文（只按「保留原始声音」开关切换音频段落，其余一字不改） */
+    buildWhitePrompt(raw) {
+      let t = String(raw || '')
+      if (!this.keepAudio && t.indexOf(WHITE_AUDIO_KEEP) >= 0) {
+        t = t.split(WHITE_AUDIO_KEEP).join(WHITE_AUDIO_GEN)
+      }
+      return t
+    },
     imgSrc(abs) { return mediaUrl(abs) },
     /** 档位分组名：取该组 A/B 任一 label，去掉尾部 A/B 后缀（label 形如「速度优先A」） */
     tierGroupLabel(g) {
@@ -372,6 +637,15 @@ export default {
     async pickFirst() { const p = await window.studio.pickFiles('image'); if (p && p[0]) this.firstFrame = p[0] },
     async pickLast() { const p = await window.studio.pickFiles('image'); if (p && p[0]) this.lastFrame = p[0] },
     rmRef(kind, i) { this[kind].splice(i, 1) },
+    /* ---- HEVC 兜底（vidThumb.js）----
+     * 🔴 这些是**模块级 import**，Options API 的模板**访问不到**（只有 data/computed/methods
+     *    才会进模板上下文）。不挂进 methods 的话，模板里写 `_vtFallback(...)` 会报
+     *    "not a function" → 整个组件子树被 Vue 降级成注释节点 → 页面一片空白。
+     *    （模板里直接写模块变量，在 <script setup> 里可行，本项目全是 Options API，不行。） */
+    _vtThumb(p) { return _vtThumb(p) },
+    _vtFallback(p) { return _vtFallback(p) },
+    _vtMeta(p, el) { return _vtMeta(p, el) },
+    _vtErr(p) { return _vtErr(p) },
     /** 时长输入框失焦时夹取到 4~15（整数） */
     clampSeconds() {
       const v = Number(this.seconds)
@@ -470,6 +744,13 @@ export default {
       if (s.aspect) this.aspect = s.aspect
       if (s.seconds) this.seconds = s.seconds
       if (s.promptRewritten) this.rewriteOn = true
+      // 白膜 / 自动时长的状态一并还原（否则回填完开关状态对不上，行为会变）
+      if (typeof s.whiteOn === 'boolean') this.whiteOn = s.whiteOn
+      if (typeof s.keepAudio === 'boolean') this.keepAudio = s.keepAudio
+      // 🔴 「自动」只在白膜模式下存在：快照里白膜关着却存了 autoDur=true（老数据）→ 强制关掉
+      if (typeof s.autoDur === 'boolean') this.autoDur = this.whiteOn && s.autoDur
+      // 回填以快照为准，探测回调不要再把「自动」改回去
+      this._autoDurTouched = true
       this._missing = new Set()
       // 立即探测参考图/视频是否还存在，缺失的打标记
       for (const p of [...this.refImages.map(x => x.path), ...this.refVideos.map(x => x.path), this.firstFrame, this.lastFrame].filter(Boolean)) {
@@ -514,7 +795,11 @@ export default {
     },
     async generate() {
       if (!this.canGen) return
-      this.clampSeconds()   // 生成前夹取秒数到 4~15，防输入越界值直接点生成
+      // 🔴 「自动」必须有参考视频才成立（没有它就无从切段），且只在白膜模式下存在。
+      //    这里再兜一次：万一 autoDur 残留为 true 而参考视频已空，走单段路径会拿 26.5 秒去请求（模型上限 15 秒）。
+      if (this.autoDur && (!this.whiteOn || !this.refVideos.length)) { this.autoDur = false }
+      // 自动时长由切段计划决定秒数，这会儿夹取手填值没有意义（还会把输入框里的参考长度改掉）
+      if (!this.autoDur) this.clampSeconds()   // 生成前夹取秒数到 4~15，防输入越界值直接点生成
       // 🔴 提交锁（2026-10-23）：健康检查 + 提示词重写都是异步 await，期间用户可能再点一次「生成视频」。
       //    用独立的 _submitting 锁防重入；注意不要用 running（running 现在表示「有任务在跑/排队」，
       //    多任务场景下生成中也要允许继续点，所以按钮只依赖 canGen = prompt 非空 && !_submitting）。
@@ -538,10 +823,12 @@ export default {
         const [w, h] = String(canvas).split('x').map(n => Number(n) || 0)
         const width = w || 864, height = h || 480
         const rawPrompt = this.prompt.trim()
+        // —— 白膜：提示词原文送出，只按「保留原始声音」开关切换音频段落 ——
+        let finalPrompt = this.whiteOn ? this.buildWhitePrompt(rawPrompt) : rawPrompt
         // —— 提示词重写（H3 官方规范）：开启时先把用户原文重写成结构化提示词 ——
-        let finalPrompt = rawPrompt
+        // 🔴 白膜模式下不重写：模板本身就是完整提示词，重写会把它的结构改坏。
         let rewritten = ''
-        if (this.rewriteOn) {
+        if (this.rewriteOn && !this.whiteOn) {
           try {
             rewritten = await this.rewritePrompt(rawPrompt)
             if (rewritten) finalPrompt = rewritten
@@ -560,7 +847,11 @@ export default {
           lastFrame: this.lastFrame,
           tier: this.tier,
           aspect: this.aspect,
-          seconds: this.seconds
+          seconds: this.seconds,
+          // 白膜 / 自动时长的状态（回填时要一并还原）
+          whiteOn: this.whiteOn,
+          keepAudio: this.keepAudio,
+          autoDur: this.autoDur
         }
       // 转纯对象送 IPC（避免响应式 Proxy 无法结构化克隆）
       const params = JSON.parse(JSON.stringify({
@@ -588,15 +879,26 @@ export default {
         '    参考图：' + (params.refImages.length ? params.refImages.join('、') : '无'),
         '    参考视频：' + (params.refVideos.length ? params.refVideos.join('、') : '无'),
         '    首帧：' + (params.firstFrame || '无') + ' · 尾帧：' + (params.lastFrame || '无'),
+        (this.whiteOn ? '    白膜：开 · 保留原始声音=' + (this.keepAudio ? '是' : '否') : ''),
+        (this.autoDur ? '    自动时长：按参考视频长度切段生成后拼接（计划：' + (this.planText || '待探测') + '）' : ''),
         '========================================'
-      ].join('\n')
+      ].filter(s => s !== '').join('\n')
       console.log(dbgPrompt)
       try { window.studio.logUi('视频生成', dbgPrompt, 'info') } catch (_) {}
+      // —— 「自动时长」路径要用的东西，先取快照（run 内不许依赖组件实例）——
+      const useSplit = !!(this.autoDur && this.refVideos.length)
+      const srcVideo = this.refVideos[0] ? this.refVideos[0].path : ''
+      const keepAudio = !!this.keepAudio
+      const baseName = 'vidgen_' + Date.now()
       const id = submit({
         label: '视频生成 · ' + this.modeHint,
         type: TYPE,
         episodeId: null,   // 独立页，不绑集
         run: async (report) => {
+          // 🔴 自动时长 = 切段生成路径（白膜也走这条）
+          if (useSplit) {
+            return await runSplitGenerate({ report, dir, params, snapshot, width, height, t0, srcVideo, keepAudio, baseName })
+          }
           report({ done: 0, total: 1, label: '生成中…' })
           const r = await window.studio.comfyGenerate({
             templateKey: 'video',
@@ -621,7 +923,8 @@ export default {
       // 任务跑完由 onTaskDone 收尾；这里不直接 await（交给任务中心串行调度）
       // 🔴 提交成功后清空提示词与参考素材：让用户能立刻输入下一个任务（多任务排队）。
       //    （快照已存进 params.snapshot，结果区「回填配置」能找回这一次的输入）
-      this.prompt = ''
+      //    白膜模式保留模板（下次直接改主体就能再跑一条），其余照旧清空。
+      this.prompt = this.whiteOn ? this.whiteTpl : ''
       this.refImages = []
       this.refVideos = []
       this.firstFrame = ''
@@ -716,6 +1019,8 @@ export default {
 }
 .vg-miss-thumb{font-size:10px;color:var(--warn);display:flex;align-items:center;justify-content:center;width:100%;height:100%;text-align:center;line-height:1.3;padding:2px;}
 .ref-thumb video{width:100%;height:100%;object-fit:contain;background:#0b0f16;border-radius:6px;display:block;}
+/* 🔴 视频首帧 poster 的样式在全局 style.css（.vg-vid-poster）——
+   分镜页/导出页/预览弹窗也要用，不能只写在 VideoGen 的 scoped 样式里。 */
 /* 视频质量：三档 × A/B */
 .vg-tier-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;}
 .vg-tier{border:1px solid var(--line);border-radius:10px;padding:9px;}
@@ -737,8 +1042,16 @@ export default {
 /* 时长 */
 .vg-dur-row{display:flex;align-items:center;gap:12px;}
 .vg-dur-input{display:flex;align-items:center;gap:8px;}
-.vg-dur-num{width:120px;background:#0e1320;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:7px 10px;font-size:13px;}
+/* 🔴 时长输入框 + 内嵌 hint（「4-15秒」浮在框内右侧，不占行尾空间） */
+.vg-dur-field{position:relative;display:inline-flex;}
+.vg-dur-num{width:132px;background:#0e1320;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:7px 52px 7px 10px;font-size:13px;}
+/* 去掉数字框的上下箭头：会跟框内的 hint 叠在一起 */
+.vg-dur-num::-webkit-outer-spin-button,.vg-dur-num::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+.vg-dur-num[type=number]{-moz-appearance:textfield;appearance:textfield;}
+/* 自动态下框里没有 hint 了，把右侧留白收回来 */
+.vg-dur-num.auto{padding-right:10px;}
 .vg-dur-num:focus{outline:none;border-color:var(--blue);}
+.vg-dur-hint{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--sub-2);pointer-events:none;user-select:none;white-space:nowrap;}
 .vg-dur-unit{font-size:12px;color:var(--sub);}
 /* 底部 */
 .vg-bottom{margin:0 14px 6px;}
@@ -783,6 +1096,14 @@ export default {
 .vg-tile.empty{display:flex;align-items:center;justify-content:center;color:var(--sub-2);font-size:12px;text-align:center;line-height:1.8;border-style:dashed;min-height:240px;grid-column:1 / -1;}
 /* 提示词重写开关 */
 .vg-rewrite{display:flex;align-items:center;gap:10px;margin-top:8px;}
+.vg-whitebar{display:flex;align-items:center;gap:10px;margin:0 0 8px;}
+/* 白膜专属选项区 */
+.vg-white-opts{margin-top:9px;padding:9px 10px;border:1px solid rgba(96,165,250,.24);border-radius:9px;background:rgba(37,99,235,.07);}
+/* 切段计划提示 */
+.vg-plan{margin-top:8px;font-size:11.5px;color:var(--blue-hi);background:rgba(37,99,235,.10);border:1px solid rgba(96,165,250,.22);border-radius:8px;padding:6px 10px;line-height:1.6;}
+/* 不可用的开关（缺参考视频时的「自动」时长） */
+.vg-chk.off{opacity:.42;cursor:not-allowed;}
+.vg-dur-num:disabled{opacity:.55;cursor:not-allowed;background:#0b0f18;}
 .vg-chk{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--sub);cursor:pointer;}
 .vg-rw-t{font-size:12.5px;color:var(--sub);white-space:nowrap;}
 .vg-rw-hint{font-size:11px;color:var(--sub-2);}

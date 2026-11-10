@@ -441,6 +441,27 @@ async function startLlama(opts = {}) {
   if (!cudaOk) logger.warn('CUDA 未就绪 → llama 将用 CPU 推理：' + (info.cuda ? info.cuda.hint : ''), originTag);
 
   const cpuWarn = cudaOk ? '' : '  ⚠ 但检测到 CUDA 未就绪（' + (info.cuda ? info.cuda.hint : '') + '）→ 将用 CPU 推理，速度约慢 6 倍。';
+
+  // 🔴 2026-11-09 闪退修复：健康检查超时**不能再当成功**。
+  //    实测（今天 17:41:08）：显存不够时 llama-server 是「进程起来了但加载模型失败」——
+  //      unable to allocate CUDA0 buffer → exiting due to model loading error
+  //    以前这里只 warn 然后返回 ok:true，编排当成功继续走 → 显存一直占着不放
+  //    → 后面 ComfyUI 进来直接撞顶 → NVIDIA 驱动复位 → 软件闪退。
+  //    现在：起不来就如实报失败，并顺手把这个占显存的僵尸进程收掉。
+  if (w !== 'ok' && w !== 'aborted') {
+    const llmLog = tailFile(sp.logFile, 6);
+    const oom = /unable to allocate|CUDA0 buffer|failed to load model|out of memory/i.test(llmLog.join('\n'));
+    const msg = (oom
+      ? '本地大模型加载失败：显存不足，llama-server 无法分配显存（unable to allocate CUDA0 buffer）。'
+      : '本地大模型（llama-server）启动后 60 秒内没有就绪。')
+      + '请先关掉占显存的程序（浏览器 / 其它 AI 工具 / ComfyUI 的其它任务）再重试。'
+      + '继续硬跑会导致显卡驱动复位、软件闪退。';
+    logger.error(msg, originTag);
+    // 收掉这个没加载成功的僵尸进程，别让它占着显存不放
+    try { await stopLlama(); } catch (_) {}
+    return { ok: false, message: msg, log: sp.logFile, oom: !!oom };
+  }
+
   return {
     ok: true, pid: sp.pid, log: sp.logFile,
     cudaOk,
@@ -713,6 +734,39 @@ function runCmd(exe, args, timeoutMs = 15000) {
 let _vramCache = { at: 0, v: -1 };
 const VRAM_TTL = 1200;
 
+/**
+ * 显存「总量」的短缓存（30s）：总量不会频繁变，没必要每次都问 nvidia-smi。
+ * 🔴 2026-11-09：闪退根因是显存编排阈值写死（7000/9000），在 16GB 卡上
+ *    「llama 9GB + ComfyUI 需要的量」塞不下 → NVIDIA 驱动复位（nvlddmkm ID=153）
+ *    → GPU 进程崩溃 → 窗口瞬间消失。阈值必须按**实际卡容量**算，不能写死。
+ */
+let _vramTotalCache = { at: 0, v: -1 };
+const VRAM_TOTAL_TTL = 30000;
+
+/** GPU 显存总量（MiB），拿不到返回 -1 */
+async function vramTotal() {
+  if (Date.now() - _vramTotalCache.at < VRAM_TOTAL_TTL) return _vramTotalCache.v;
+  const r = await runCmd('nvidia-smi', ['--query-gpu=memory.total', '--format=csv,noheader,nounits'], 12000);
+  let v = -1;
+  if (r.ok) {
+    const n = Number(String(r.stdout || '').trim());
+    if (Number.isFinite(n) && n > 0) v = n;
+  }
+  _vramTotalCache = { at: Date.now(), v };
+  return v;
+}
+
+/**
+ * 按「卡实际容量」算显存门槛。
+ * @param {number} ratio 目标占用比例（占总量）
+ * @param {number} fallbackMiB 拿不到总量时的兜底值
+ */
+async function vramThreshold(ratio, fallbackMiB) {
+  const total = await vramTotal();
+  if (total <= 0) return fallbackMiB;
+  return Math.max(2000, Math.round(total * ratio));
+}
+
 /** 当前 GPU 显存占用（MiB），拿不到返回 -1。**异步**，绝不阻塞主进程 */
 async function vramUsed() {
   if (Date.now() - _vramCache.at < VRAM_TTL) return _vramCache.v;
@@ -818,7 +872,19 @@ async function freeVramForComfy(label, thresholdMiB = 9000) {
   const before = await vramUsed();
   const res = await stopLlama();
   const lines = [res.message + (res.already ? '（当前 ' + before + ' MiB）' : '（原 ' + before + ' MiB）')];
-  if (res.already) return { ok: true, freed: false, lines, vram: before };
+  // 🔴 2026-11-09 闪退修复：原来「llama 本来就没跑」就直接 return 了，
+  //    等于**完全没做显存检查** —— 而显存可能正被别的程序（浏览器/其它 AI 工具）占着。
+  //    那条路径下 ComfyUI 一进来就撞顶 → NVIDIA 驱动复位 → 软件闪退。
+  //    现在统一走下面的水位检查：不管 llama 在不在，显存不够都要报出来。
+  if (res.already) {
+    const w = await waitVramBelow(thresholdMiB, 8000);
+    if (w.ok) {
+      lines.push('显存已回落到 ' + w.vram + ' MiB，可以开始');
+      return { ok: true, freed: false, lines, vram: w.vram, below: true };
+    }
+    lines.push('显存当前 ' + w.vram + ' MiB（未达 ' + thresholdMiB + ' MiB）');
+    return { ok: false, freed: false, lines, vram: w.vram, below: false };
+  }
   if (!res.ok) return { ok: false, freed: false, lines: lines.concat(res.message), vram: before };
 
   const w = await waitVramBelow(thresholdMiB, 20_000);
@@ -826,8 +892,12 @@ async function freeVramForComfy(label, thresholdMiB = 9000) {
     lines.push('显存已回落到 ' + w.vram + ' MiB，可以开始');
     return { ok: true, freed: true, lines, vram: w.vram };
   }
-  lines.push('显存当前 ' + w.vram + ' MiB（未达 ' + thresholdMiB + ' MiB，仍继续）');
-  return { ok: true, freed: true, lines, vram: w.vram };
+  // 🔴 2026-11-09 闪退修复：这里原来只 warn 然后「仍继续」——
+  //    在 16GB 卡上，llama-server 9GB 没放干净就让 ComfyUI 进 H3 视频，
+  //    显存直接撞顶 → NVIDIA 驱动复位（nvlddmkm ID=153）→ GPU 进程崩溃 → 窗口消失。
+  //    现在改成**如实返回"没释放干净"**，由调用方决定拦还是放。
+  lines.push('显存当前 ' + w.vram + ' MiB（未达 ' + thresholdMiB + ' MiB）');
+  return { ok: false, freed: true, lines, vram: w.vram, below: false };
 }
 
 /** 后台服务的日志文件路径（设置页/排错用） */
@@ -845,7 +915,7 @@ function serviceLogs() {
 module.exports = {
   init, llamaDir, llamaInfo, comfyInfo, startLlama, startComfy, comfyStartElapsedMs, setDir,
   getLlamaArgs, setLlamaArgs, findFile, DEFAULT_LLAMA_ARGS,
-  vramUsed, waitVramBelow, stopLlama, stopLlamaSync, llamaRunning, unloadComfyModels, freeVramForComfy,
+  vramUsed, vramTotal, vramThreshold, waitVramBelow, stopLlama, stopLlamaSync, llamaRunning, unloadComfyModels, freeVramForComfy,
   visionMmprojPath, llamaVisionActive,
   waitHealth, llamaGen, spawnSilent, serviceLogPath, serviceLogs, tailFile, splitArgs, runCmd
 };

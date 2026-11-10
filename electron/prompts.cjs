@@ -52,7 +52,12 @@ const FILES = {
   'ltx.md': 'LTX-2.5 提示词规范',
   'split.md': '拆镜重写规范（拆分镜头后的画面补写）',
   'pad.md': '补画撑时规范（不足 4 秒镜头补画面，不加台词）',
-  'views.md': '视角规范（三视图 / 多视角派生）'
+  'views.md': '视角规范（三视图 / 多视角派生）',
+  // 封面文案（2026-11-04）：集级海报的主标题 / 副标题 / 画面主体候选。
+  // 🔴 只约束「写什么字」，不管「字怎么画进图里」—— 后者是 electron/coverPrompt.js 的硬编码模板，
+  //    改这份 md 不会影响出图，改模板也不会影响文案。两者刻意分开：文案会被反复改，
+  //    防错字约束不能跟着被改坏。
+  'cover.md': '封面文案规范（集级直出）'
 };
 
 function isKnown(name) { return Object.prototype.hasOwnProperty.call(FILES, name); }
@@ -106,6 +111,21 @@ function revOf(text) {
 /** 读取文件内容；失败返回 null（用于版本判定） */
 function readSafe(p) {
   try { return fs.readFileSync(p, 'utf-8'); } catch (_) { return null; }
+}
+
+/**
+ * 读一份**内置**规范文件（不进项目播种表、不进「提示词配置中心」）。
+ *
+ * 用于「全局内置模板」这类东西 —— 比如白膜视频的提示词模板：
+ * 它不属于任何项目的风格规范（视频生成页是独立页，不绑项目），
+ * 但又需要「跟着软件分发、能被读取」，所以放同一个内置目录、走同一个读取通道。
+ *
+ * 🔴 名字必须过一遍路径字符检查：这里拼的是磁盘路径，名字里带 / 或 \ 就能读到目录外的文件。
+ */
+function readBuiltin(name) {
+  const n = String(name || '');
+  if (!n || n.indexOf('/') >= 0 || n.indexOf('\\') >= 0 || n.indexOf('..') >= 0) return '';
+  return readSafe(path.join(BUILTIN_DIR, n)) || '';
 }
 
 /**
@@ -286,6 +306,6 @@ function clearFinal(rootDir, taskId) {
 
 module.exports = {
   BUILTIN_DIR, FILES, STRUCT_MARK, isNewStruct, isKnown, known, variantBase, titleOf,
-  seedAt, seedOne, listAt, readAt, saveAt, resetAt,
+  seedAt, seedOne, listAt, readAt, saveAt, resetAt, readBuiltin,
   FINAL_SUBDIR, finalDir, finalMeta, listFinal, readFinal, saveFinal, clearFinal
 };

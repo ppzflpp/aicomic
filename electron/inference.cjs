@@ -608,6 +608,40 @@ function extractLastFrame(video, out, offsetSec) {
 }
 
 /**
+ * 读一个视频的**视频编码名**（2026-11-09）。
+ *
+ * 🔴 为什么需要：渲染层要判断「Chromium 能不能解这个视频」。
+ *   Electron 自带的 Chromium **不含 HEVC(H.265) 解码器** →
+ *   用户的手机视频（绝大多数是 HEVC）解不出画面 → 界面上是黑框。
+ *
+ * 🔴 为什么不在渲染层靠 `<video>` 的 loadedmetadata 判：
+ *   那个信号**依赖加载时序** —— base64 data URL 加载慢时，
+ *   videoWidth 在判定那一刻可能还是 0 → 把**能播的 h264 也误判成解不开**
+ *   → 用户白白失去播放能力（实测：连跑两套 GUI 验收时必现）。
+ *   而 ffprobe 读出的 codec 是**文件的客观属性**，与时序无关 → 权威且稳定。
+ *
+ * 返回 { ok, codec }（codec 取 ffprobe 的 codec_name，如 'hevc' / 'h264'）。
+ */
+function probeVideoCodec(video) {
+  return new Promise((resolve) => {
+    if (!video || !fs.existsSync(video)) return resolve({ ok: false, error: '源视频不存在' });
+    const ff = findFfmpeg({ forceSync: true });
+    if (!ff) return resolve({ ok: false, error: 'NOPATH' });
+    const fp = path.join(path.dirname(ff), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+    if (!fs.existsSync(fp)) return resolve({ ok: false, error: 'NOPATH' });
+    const args = ['-v', 'error', '-select_streams', 'v:0',
+      '-show_entries', 'stream=codec_name', '-of', 'default=nw=1:nk=1', video];
+    try {
+      execFile(fp, args, { windowsHide: true, timeout: 20000, maxBuffer: 1 << 18 }, (err, stdout) => {
+        if (err) return resolve({ ok: false, error: String((err && err.message) || err).slice(0, 200) });
+        const codec = String(stdout || '').trim().split(/\r?\n/).filter(Boolean)[0] || '';
+        resolve(codec ? { ok: true, codec } : { ok: false, error: '没读到编码' });
+      });
+    } catch (e) { resolve({ ok: false, error: String((e && e.message) || e) }); }
+  });
+}
+
+/**
  * 分镜缩略图（2026-11-01）：取视频第 0.4 秒一帧，缩到 240px 宽 jpg。
  * 🔴 为什么非要有它：分镜页「网格视图」一屏要摆 9~21 个镜头。若每个格子挂 <video>，
  *   或复用 file:readBase64 读整段视频（单条 2.7MB → base64 3.6MB），21 格就是
@@ -2739,12 +2773,13 @@ function buildCues(lines, level, span) {
 }
 
 /** 全片字幕条：按实测时长逐镜定位边界；镜内用响度窗把台词放到人声最集中的区间 */
-function buildFilmCues(videos, durs, levels) {
+function buildFilmCues(videos, durs, levels, offset = 0) {
   const cues = [];
   let t = 0;
+  const base = Math.max(0, Number(offset) || 0);   // 封面片头占掉的时长：整条时间轴整体后移
   videos.forEach((v, i) => {
     const d = Number(durs[i]) || 0;
-    const S = t, E = t + d; t = E;
+    const S = t + base, E = t + d + base; t = E - base;
     const lines = String(v.dialogue || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
     if (!lines.length) return;
     const local = buildCues(lines, (levels || [])[i] || [], { t0: 0, t1: d });
@@ -2877,6 +2912,19 @@ function runFfmpeg(ffmpeg, args, cwd) {
 }
 
 /**
+ * 从 ffmpeg 的 stderr 里挑出「真正说明原因」的几行。
+ * 🔴 2026-11-04：直接 slice(-500) 取尾巴时，经常整段都是 x264 的 `i16 v,h,dc` 统计与 `kb/s:`
+ *    这类正常输出，真正的 `Input link parameters ... do not match` 早就被挤出去了 —— 等于没有错误信息。
+ */
+function ffErrTail(err, n = 600) {
+  const all = String(err || '');
+  const hit = all.split(/\r?\n/).filter(l =>
+    /error|failed|invalid|not match|do not match|no such|could not|non-monoton|unable to/i.test(l));
+  const s = hit.length ? hit.slice(-6).join('\n') : all;
+  return s.slice(-n) || '（ffmpeg 没有输出错误信息）';
+}
+
+/**
  * 真实拼接导出：concat + 统一输出分辨率 + 可选逐镜响度归一 + 可选字幕烧录。
  * videos: [{file, dialogue, dur}]（绝对路径）
  * opts.width/height：输出分辨率（剧集「输出分辨率」配置），默认 1920x1080。
@@ -2884,7 +2932,60 @@ function runFfmpeg(ffmpeg, args, cwd) {
  * opts.normalize：**逐镜响度归一（方案 D）** —— concat 之前把每一镜的音频归到同一目标响度，
  *   治「镜间 BGM 音量忽大忽小」（《真人剧4》第 4 集实测差 19.6 dB）；关掉则与改造前逐字一致。
  */
-async function exportVideo(outDir, outName, videos, { subtitles = true, width = 1920, height = 1080, autoRes = false, scope = '', normalize = true } = {}) {
+/**
+ * 封面片头：把一张静态图转成一段可拼进成片的视频（2026-11-04）。
+ *
+ * 三件必须做对的事：
+ *  1. **补静音音轨**：concat 要求所有段流结构一致，封面段没有音轨会让整片音画错位（已有先例）。
+ *  2. **模糊背景铺满 + 前景完整居中**：竖版封面塞进横版成片时不能裁（裁了就切掉字），
+ *     所以背景用同图 scale+crop+gblur 填满，前景按原比例缩小整张盖在中间。
+ *     横版封面配横版成片时前景正好铺满，背景完全被盖住，没有任何额外观感。
+ *  3. **规格必须与「拼接时其它段」一致**，否则 concat 直接失败。这里有两种完全不同的口径：
+ *      - 开了响度归一：其它段被 normalizeShot 转成 **mkv + h264 copy + pcm_s16le 48k 2ch**
+ *      - 没开响度归一：其它段还是原始 mp4（aac，采样率/声道随源）
+ *     2026-11-04 实测踩过：封面段按原始镜头的 aac 32k 生成，但归一后的镜头是 pcm 48k，
+ *     两者混拼报「ffmpeg 拼接母片失败」，而且错误尾巴全被 x264 统计行占满，非常难查。
+ *
+ * 同一路输入被背景和前景各用一次，必须先 split —— 同一 stream label 消费两次 ffmpeg 会直接报错。
+ *
+ * @param {boolean} pcm true = 按归一后的口径输出（pcm_s16le 48k / mkv），false = 跟随源（aac / mp4）
+ * @returns {Promise<{code:number, err:string}>}
+ */
+function buildCoverSegment(ffmpeg, img, dst, { W, H, fps, sr, ch, sec, tmp, pcm }) {
+  const dur = Math.max(0.2, Number(sec) || 1);
+  const chl = (pcm || Number(ch) !== 1) ? 'stereo' : 'mono';
+  const aRate = pcm ? 48000 : (Number(sr) || 48000);
+  const aCh = pcm ? 2 : (Number(ch) || 2);
+  const fc = [
+    '[0:v]split=2[b0][f0]',
+    '[b0]scale=' + W + ':' + H + ':force_original_aspect_ratio=increase'
+      + ',crop=' + W + ':' + H + ',gblur=sigma=28,eq=brightness=-0.06[bg]',
+    '[f0]scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease[fg]',
+    // 🔴 这里**不能加 fade=in**：封面只有 1 秒，0.35s 的淡入等于前三分之一全是黑的
+    //    （实测 t=0 平均亮度 0，0.32s 才到 104）。片头卡要第一帧就完整可见。
+    '[bg][fg]overlay=(W-w)/2:(H-h)/2:format=auto,format=yuv420p[v]'
+  ].join(';');
+  const args = [
+    '-y',
+    '-loop', '1', '-t', String(dur), '-i', img,
+    '-f', 'lavfi', '-t', String(dur), '-i', 'anullsrc=r=' + aRate + ':cl=' + chl,
+    '-filter_complex', fc,
+    '-map', '[v]', '-map', '1:a',
+    '-c:v', 'libx264', '-preset', 'medium', '-crf', '17', '-pix_fmt', 'yuv420p',
+    '-r', String(fps || '25/1')
+  ];
+  if (pcm) {
+    // 与 normalizeShot 的输出对齐：PCM 48k 立体声 + matroska
+    args.push('-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '2', '-f', 'matroska');
+  } else {
+    args.push('-c:a', 'aac', '-b:a', '192k', '-ar', String(aRate), '-ac', String(aCh),
+      '-movflags', '+faststart');
+  }
+  args.push('-t', String(dur), dst);
+  return runFfmpeg(ffmpeg, args, tmp);
+}
+
+async function exportVideo(outDir, outName, videos, { subtitles = true, width = 1920, height = 1080, autoRes = false, scope = '', normalize = true, cover = null } = {}) {
   // 导出是一次性长任务：这里同步确认一次 ffmpeg（避免「预热没跑完」被误判成没装）
   const ffmpeg = findFfmpeg({ forceSync: true });
   if (!ffmpeg) throw new Error('未找到 ffmpeg。软件自带的 tools/ffmpeg/bin/ffmpeg.exe 不见了，'
@@ -2893,26 +2994,58 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
   if (!videos.length) throw new Error('没有可拼接的视频片段');
   let W = Math.max(16, Math.round(Number(width) || 1920));
   let H = Math.max(16, Math.round(Number(height) || 1080));
+  // 第一个镜头的真实规格：既用来算「自动」画布，也用来给封面片头对齐 fps / 采样率 / 声道
+  const firstInfo = videos.length ? await probeStreamInfo(ffmpeg, videos[0].file) : null;
   // 🔴 成片分辨率「自动」（2026-10-19）：取**第一个镜头文件的真实画布**（不是生成时选的档位字符串）。
   //    目的：导出不再对每个镜头做一次 bicubic 放大/补边 —— 生成多大，成片就多大。
   if (autoRes) {
-    const first = await probeStreamInfo(ffmpeg, videos[0].file);
-    if (first && first.w && first.h) {
+    if (firstInfo && firstInfo.w && firstInfo.h) {
       // yuv420p / libx264 要求偶数边长，奇数向下取偶
-      W = Math.max(16, first.w - (first.w % 2));
-      H = Math.max(16, first.h - (first.h % 2));
+      W = Math.max(16, firstInfo.w - (firstInfo.w % 2));
+      H = Math.max(16, firstInfo.h - (firstInfo.h % 2));
     } else {
       logger.warn('成片分辨率=自动，但第一个镜头的分辨率探测失败 → 回退 ' + W + 'x' + H);
     }
   }
+  // 封面片头（2026-11-04）：只有图片真实存在才算数 —— 用户可能手动删了封面图，
+  // 而 covers.json 里还留着 pick，那种情况必须当作「没有封面」，不能导出时炸掉。
+  const coverFile = (cover && cover.file && fs.existsSync(cover.file)) ? String(cover.file) : '';
+  const coverSec = coverFile ? Math.max(0.2, Math.min(5, Number(cover.sec) || 1)) : 0;
+  if (cover && cover.file && !coverFile) {
+    logger.warn('选了封面但文件不存在，本次导出不带封面片头：' + cover.file);
+  }
   const tExport = Date.now();
   logger.info('ffmpeg 组装成片：' + videos.length + ' 个镜头，输出 ' + W + 'x' + H + (autoRes ? '（自动：跟第一个镜头）' : '')
-    + (normalize ? ' + 响度归一' : '') + (subtitles ? ' + 字幕烧录' : ''));
+    + (normalize ? ' + 响度归一' : '') + (subtitles ? ' + 字幕烧录' : '')
+    + (coverFile ? ' + ' + coverSec.toFixed(1) + 's 封面片头' : ''));
 
   const tmp = path.join(outDir, '_tmp_' + Date.now());
   fs.mkdirSync(tmp, { recursive: true });
   try {
     const vfBase = 'scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2';
+
+    // ---- 封面片头段（2026-11-04）：先生成，后面直接拼在 concat 列表最前面 ----
+    let coverSeg = '';
+    if (coverFile) {
+      // 容器跟归一化走：归一后的段是 mkv（pcm_s16le 48k），没归一的是原始 mp4（aac）
+      const p = path.join(tmp, normalize ? 'cover.mkv' : 'cover.mp4');
+      const cr = await buildCoverSegment(ffmpeg, coverFile, p, {
+        W, H,
+        fps: (firstInfo && firstInfo.fps) || '25/1',
+        sr: (firstInfo && firstInfo.sr) || '48000',
+        ch: (firstInfo && firstInfo.ch) || '2',
+        sec: coverSec, tmp,
+        pcm: !!normalize
+      });
+      if (cr && cr.code === 0 && fs.existsSync(p)) {
+        coverSeg = p;
+        logger.info('封面片头已生成：' + path.basename(coverFile) + ' → ' + coverSec.toFixed(1) + 's');
+      } else {
+        // 封面做不出来就照常导出，绝不因为一张封面把整条成片卡死
+        logger.warn('封面片头生成失败，本次导出不带封面：' + ffErrTail(cr && cr.err));
+      }
+    }
+    const headSec = coverSeg ? coverSec : 0;
 
     // ---- 逐镜分析（实测时长 / 镜内响度曲线 / 响度摘要）----
     // 归一化要用摘要算增益，字幕要用曲线定人声窗 —— 一次解码同时喂两处。
@@ -2938,8 +3071,10 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
     }
 
     // concat 列表（先统一转码为相同规格，避免拼接黑屏）
+    // 封面段永远排第一：成片 = [1s 封面] + 全部镜头
+    const allSegs = coverSeg ? [coverSeg].concat(segs) : segs;
     const listFile = path.join(tmp, 'list.txt');
-    fs.writeFileSync(listFile, segs.map(p => 'file \'' + p.replace(/\\/g, '/').replace(/'/g, "'\\''") + '\'').join('\n'), 'utf-8');
+    fs.writeFileSync(listFile, allSegs.map(p => 'file \'' + p.replace(/\\/g, '/').replace(/'/g, "'\\''") + '\'').join('\n'), 'utf-8');
 
     const outBase = sanitize(outName);
     // 走 assetStore 永不覆盖
@@ -2955,7 +3090,10 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
     // 条件：所有段规格**完全一致**、且就等于目标分辨率 —— 此时 scale/pad 是空操作，
     // 直接 `-c:v copy` 拼接 ⇒ 视频流一次都不重编（省一代有损 + 快几倍）。
     // 只要有一项不一致（换了档位 → 某镜是 864x480、某镜 1344x768），就必须走重编码。
-    const segInfo = await mapLimit(segs, 4, p => probeStreamInfo(ffmpeg, p));
+    const segInfo = await mapLimit(allSegs, 4, p => probeStreamInfo(ffmpeg, p));
+    // s0 = 封面段（有封面时）或第一个镜头 —— 只要全部段规格一致就能零转码拼接。
+    // 封面段的 profile/level 由我们自己编码决定，与生成镜头未必逐位相同；concat copy 真失败时
+    // 下面的重编码兜底会接住（不花屏、不中断）。
     const s0 = segInfo[0] || null;
     const copyable = !!(s0 && s0.hasAudio && segInfo.every(i => i
       && i.w === W && i.h === H && i.fps === s0.fps && i.vcodec === s0.vcodec && i.pixfmt === s0.pixfmt
@@ -2986,19 +3124,21 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
       const mutePath = path.join(tmp, 'mute.mp4');
       const r1 = await runFfmpeg(ffmpeg, [...concatArgs, '-vf', vfBase, '-c:v', 'libx264', '-preset', 'veryfast',
         '-crf', '12', '-c:a', 'aac', '-b:a', '192k', mutePath], tmp);
-      if (r1.code !== 0 || !fs.existsSync(mutePath)) throw new Error('ffmpeg 拼接母片失败：' + r1.err.slice(-500));
+      if (r1.code !== 0 || !fs.existsSync(mutePath)) throw new Error('ffmpeg 拼接母片失败：' + ffErrTail(r1.err));
 
       // ---- A + B：逐镜实测时长（A）+ 镜内响度窗定位人声（B）----
       // ⚠️ 分析结果在函数开头就取好了（响度归一要用同一份摘要）—— 这里直接复用，不要再跑一遍。
       const dursRaw = shots.map((s, i) => s.dur || Number(videos[i].dur) || 5);
-      const sumRaw = dursRaw.reduce((a, b) => a + b, 0) || 1;
+      // 母片总时长里含封面段，所以分母也要带上 headSec，否则校正系数 k 会系统性偏大
+      const sumRaw = (dursRaw.reduce((a, b) => a + b, 0) + headSec) || 1;
       // 母片真实总时长 ÷ 按镜累加 → 校正系数（concat 帧对齐会有毫秒级出入）
       const realTotal = await probeDuration(ffmpeg, mutePath);
       const k = realTotal > 0 ? realTotal / sumRaw : 1;
       const durs = dursRaw.map(d => d * k);
       // 响度曲线是「镜内坐标」，时间轴同样按 k 缩放后交给 buildFilmCues
       const levels = shots.map(s => (s.level || []).map(p => ({ t: p.t * k, db: p.db })));
-      const cues = buildFilmCues(videos, durs, levels);
+      // 🔴 有封面片头时整条字幕轴要往后挪 headSec —— buildFilmCues 默认从 0 开始累加镜头
+      const cues = buildFilmCues(videos, durs, levels, headSec);
       const srt = cuesToSrt(cues);
 
       if (srt) {
@@ -3012,7 +3152,7 @@ async function exportVideo(outDir, outName, videos, { subtitles = true, width = 
           `subtitles=subs.srt:force_style='FontSize=${SUBTITLE_FONT_SIZE}'`,
           '-c:v', 'libx264', '-preset', 'medium', '-crf', '17', '-c:a', 'copy',
           '-movflags', '+faststart', finalPath], tmp);
-        if (r2.code !== 0 || !fs.existsSync(finalPath)) throw new Error('ffmpeg 烧录字幕失败：' + r2.err.slice(-500));
+        if (r2.code !== 0 || !fs.existsSync(finalPath)) throw new Error('ffmpeg 烧录字幕失败：' + ffErrTail(r2.err));
         logger.info('字幕 ' + cues.length + ' 条 / ' + videos.length + ' 镜（实测时长 + 响度窗定位）');
       } else {
         // 没有台词 → 母片就是成品，直接搬，省一遍转码
@@ -3150,6 +3290,8 @@ module.exports = {
   // 字幕时间轴纯函数（离线自测用，不需要显卡/ffmpeg/Electron）
   srtTime, parseDurationLine, parseLevelCurve, bestSpeechSpan, trimSpeechSpan, cueText, cueWeight, spreadByWeight, buildCues, buildFilmCues, cuesToSrt,
   analyzeShot, probeDuration,
+  // 视频编码探测（2026-11-09：渲染层判断 Chromium 能否解码用）
+  probeVideoCodec,
   // 响度归一化（方案 D · 离线自测用）
   parseLoudnessSummary, normGain, normalizeShot,
   // 导出仅为离线自测（test/h3-inject-check.cjs 直接验证连线，不需要显卡/ComfyUI）

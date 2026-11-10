@@ -771,6 +771,9 @@ function getEpisodeFull(db, workspace, episodeId) {
     setting: readJson(dir, pre + '.setting.json', null),
     prompts: readJson(dir, pre + '.prompts.json', []),
     videoState: readJson(dir, pre + '.videos.json', {}),
+    // 封面状态（2026-11-04）：{title, subtitle, style, ratio, refs, pick}。
+    // 老项目没有这个文件 → 回 {}，渲染层按「还没生成过封面」处理。
+    covers: readJson(dir, pre + '.covers.json', {}),
     videoFiles,
     // 成片文件名 = <集名>_<13 位时间戳>.mp4 → sort 后取最后一个 = 最新一版
     // （2026-10-09 起多次导出各自留档，目录里会有多版；这里只回答「最近一次导出的那个」）
@@ -798,6 +801,10 @@ function saveArtifact(db, workspace, episodeId, kind, data) {
   else if (kind === 'setting') write('setting.json');
   else if (kind === 'prompts') write('prompts.json');
   else if (kind === 'videoState') write('videos.json');
+  // 封面状态（2026-11-04）：locked 文案 / 风格 / 比例 / 参考图 / 当前选中版本。
+  // 只存「界面要回填的东西」，每张图的 seed 与耗时在图片旁的旁车里（生成时写入），
+  // 不在这里冗余一份 —— 否则删了图、状态里还挂着一条幽灵版本。
+  else if (kind === 'covers') write('covers.json');
   else if (kind === 'revs') write('revs.json');
   db.raw.prepare('UPDATE episodes SET updated_at=datetime(\'now\',\'localtime\') WHERE id=?').run(episodeId);
   return true;

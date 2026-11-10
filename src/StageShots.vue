@@ -276,7 +276,11 @@
 
               <div v-for="(f, k) in prompts[i].refs.videos" :key="'rv' + k" class="ref-thumb vid"
                    :class="{ unused: refUnused(i, 'videos', k) }" :title="refTitle(i, 'videos', k, f)">
-                <video v-if="refVidSrc(f)" :src="refVidSrc(f)" controls preload="metadata"></video>
+                <!-- 🔴 2026-11-09：HEVC 视频 Chromium 解不出画面 → <video> 是黑框。
+                     确认解不开后改显示 ffmpeg 抽的首帧图（vidThumb.js 统一兜底）。 -->
+                <img v-if="_vtFallback(f)" class="vg-vid-poster" :src="_vtThumb(f)" :title="f">
+                <video v-else-if="refVidSrc(f)" :src="refVidSrc(f)" controls preload="metadata"
+                       @loadedmetadata="_vtMeta(f, $event.target)" @error="_vtErr(f)"></video>
                 <div v-else class="ph-mini"><i class="spin"></i>加载中…</div>
                 <span class="rtag vid">视频</span>
                 <button class="img-x" title="移除" @click.stop="delRef(i, 'videos', k)">✕</button>
@@ -451,7 +455,11 @@
               <div v-for="v in vidListAll(i)" :key="'v' + v.f" class="video-box"
                    :class="{ cur: v.k === curIdx(i), stalevid: videoStale(i) }"
                    :title="'点击画面选为当前版本（第 ' + (v.k + 1) + ' 版）'" @click="boxClick($event, i, v.k)">
-                <video v-if="vidSrcAt(i, v.k)" :src="vidSrcAt(i, v.k)" controls></video>
+                <video v-if="vidSrcAt(i, v.k)" :src="vidSrcAt(i, v.k)" controls
+                        @loadedmetadata="_vtMeta(vidAbsAt(i, v.k), $event.target)" @error="_vtErr(vidAbsAt(i, v.k))"></video>
+                <!-- 🔴 HEVC 解码兜底（vidThumb.js）：确认解不开时改显示首帧图 -->
+                <img v-else-if="_vtFallback(vidAbsAt(i, v.k))" class="vg-vid-poster"
+                     :src="_vtThumb(vidAbsAt(i, v.k))" :title="vidAbsAt(i, v.k)">
                 <div v-else class="ph">第 {{ v.k + 1 }} 版<br><span v-if="vidWinHas(i, v.k)">加载中…</span><span v-else>滑到这里再加载</span></div>
                 <span class="vid-ver">{{ v.k + 1 }}/{{ vstate[i].files.length }}</span>
                 <!-- 每一版各自的生成耗时（2026-10-10）：悬浮在播放框右上角（版本号在左上角，二者错开）。
@@ -816,6 +824,7 @@ import { overrideOf } from './llmSource.js'
 import { taskState } from './taskState.js'
 import { submit as submitTask, subscribe as subscribeTask, hasActive as taskActive, cancel as cancelTask, state as taskCenterState } from './taskCenter.js'
 import { run as runBatchVideoTask } from './batchVideo.js'
+import { thumbOf as _vtThumb, loadThumbs as _vtLoad, noteVideoMeta as _vtMeta, noteVideoError as _vtErr, shouldFallback as _vtFallback } from './vidThumb.js'
 
 // 🔴 提示词全部来自项目 prompts/ 下的规范 md：shots.md 承载任务身份与 JSON 输出契约，
 //    profile.md / chars.md / scenes.md 承载档案与提示词写法；代码不再硬编码任何提示词片段
@@ -1407,6 +1416,13 @@ export default {
   methods: {
     clampDur,   // 模板里 @change 夹取用
     resLabel,
+    /* ---- HEVC 兜底（vidThumb.js）----
+     * 🔴 必须注册进 methods：模板看不到模块作用域的导入（漏注册 → 模板调用报
+     *    "not a function" → 整个组件子树被 Vue 降级成注释节点 → 页面一片空白）。 */
+    _vtThumb(p) { return _vtThumb(p) },
+    _vtFallback(p) { return _vtFallback(p) },
+    _vtMeta(p, el) { return _vtMeta(p, el) },
+    _vtErr(p) { return _vtErr(p) },
     /* ================= 初始化 ================= */
     initAll(ep) {
       this.initShots(ep)
@@ -2098,6 +2114,17 @@ export default {
         if (p._gen || p._genAt) { delete p._gen; delete p._genAt; changed = true }
       })
       if (changed) this.savePrompts()
+      // 🔴 预抽帧：参考视频可能是 HEVC（Chromium 解不出画面 → 缩略图黑框）。
+      //    提前抽好首帧，等探测判定「解不开」时图已在手，切过去不闪。
+      this.prefetchRefThumbs()
+    },
+    /** 把所有镜头的参考视频抽一遍首帧（已抽过的跳过） */
+    prefetchRefThumbs() {
+      const list = []
+      for (const p of this.prompts || []) {
+        for (const f of ((p.refs && p.refs.videos) || [])) if (f) list.push(f)
+      }
+      if (list.length) _vtLoad(list)
     },
     /** 卡片上的耗时文案：生成中实时计时 / 完成后显示本次耗时 */
     genTextP(i) {
@@ -2671,6 +2698,8 @@ export default {
         if (r[kind].length >= max) break
         r[kind].push(f); added++
       }
+      // 🔴 新加的参考视频可能是 HEVC → 预抽首帧，缩略图别黑框
+      if (kind === 'videos') _vtLoad(r[kind])
       await this.savePrompts()
       if (added < files.length) this.$root.toast('已达上限，本次只加入 ' + added + ' 个')
     },
@@ -3783,6 +3812,8 @@ export default {
     loadVidB64(abs) {
       if (!abs || this._b64[abs] !== undefined) return
       this._b64[abs] = ''      // 先占位，避免同一帧内重复请求
+      // 🔴 预抽首帧：HEVC 解不开时直接顶上（判定失败时图已在手，切过去不闪）
+      _vtLoad([abs])
       // 对象 key 天然是插入顺序 → 直接当「读入顺序」用（不做访问序 LRU：视频区是往下滚着看，
       // 读入序已经足够贴近使用序，实现代价小得多）
       const keys = Object.keys(this._b64)
@@ -3850,6 +3881,13 @@ export default {
       if (k < 0 || k >= files.length) return ''
       const abs = joinPath((this.st.current && this.st.current.shotDir) || '', files[k])
       return this._b64[abs] || ''
+    },
+    /** 这一版视频的绝对路径（抽帧 poster / 解码探测要用，vidSrcAt 只给 base64） */
+    vidAbsAt(i, k) {
+      const s = this.vstate[i]
+      const files = (s && s.files) || []
+      if (k < 0 || k >= files.length) return ''
+      return joinPath((this.st.current && this.st.current.shotDir) || '', files[k])
     },
     /** 这一版是否落在可视区间内（决定占位文案写「加载中…」还是「滑到这里再加载」） */
     vidWinHas(i, k) {

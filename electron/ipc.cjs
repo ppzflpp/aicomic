@@ -1,7 +1,8 @@
 'use strict';
-const { ipcMain, dialog, safeStorage } = require('electron');
+const { ipcMain, dialog, safeStorage, app } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const projects = require('./projects.cjs');
 const assetStore = require('./assetStore.cjs');
 const models = require('./models.cjs');
@@ -21,8 +22,41 @@ const library = require('./library.cjs');
 const outfits = require('./outfits.cjs');
 const filesig = require('./filesig.cjs');
 const videoTiers = require('./videoTiers.cjs');
+const vidseg = require('./vidseg.cjs');
 const llmProvider = require('./llmProvider.cjs');
 const { writeUnique } = require('./assetStore.cjs');
+
+/**
+ * 读图片文件的宽高（只读文件头，不解码、不依赖 ffprobe）。
+ * 支持 PNG / JPEG。读不出来返回 {w:0,h:0} —— 宽高只用于展示，绝不能因为读不到就挡掉列表。
+ */
+function imageSize(abs) {
+  let fd = null;
+  try {
+    fd = fs.openSync(abs, 'r');
+    const head = Buffer.alloc(32);
+    const n = fs.readSync(fd, head, 0, 32, 0);
+    if (n >= 24 && head.readUInt32BE(0) === 0x89504e47) {           // PNG: IHDR 紧跟在签名后
+      return { w: head.readUInt32BE(16), h: head.readUInt32BE(20) };
+    }
+    if (n >= 4 && head[0] === 0xff && head[1] === 0xd8) {            // JPEG: 扫 SOF 段
+      const buf = fs.readFileSync(abs);
+      let i = 2;
+      while (i + 9 < buf.length) {
+        if (buf[i] !== 0xff) { i++; continue; }
+        const mk = buf[i + 1];
+        const len = buf.readUInt16BE(i + 2);
+        // SOF0..SOF15（排除 DHT=C4 / JPG=C8 / DAC=CC 这几个非 SOF 标记）
+        if (mk >= 0xc0 && mk <= 0xcf && mk !== 0xc4 && mk !== 0xc8 && mk !== 0xcc) {
+          return { w: buf.readUInt16BE(i + 7), h: buf.readUInt16BE(i + 5) };
+        }
+        i += 2 + (len > 0 ? len : 2);
+      }
+    }
+    return { w: 0, h: 0 };
+  } catch (_) { return { w: 0, h: 0 }; }
+  finally { if (fd !== null) { try { fs.closeSync(fd); } catch (_) {} } }
+}
 
 /** safeStorage 加解密包装（系统不支持时返回 null，llmProvider 会退化成 base64 存储） */
 function safeStorageCrypto() {
@@ -746,12 +780,13 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     }
     return inference.upscaleVideo({ file, outDir, scale });
   });
-  ipcMain.handle('export:video', async (e, { outDir, outName, videos, subtitles, width, height, autoRes, scope, normalize }) => {
+  ipcMain.handle('export:video', async (e, { outDir, outName, videos, subtitles, width, height, autoRes, scope, normalize, cover }) => {
     logger.setTag('阶段7 组装成片');
     await orchestrator.ensure(6);
     // normalize：方案 D 逐镜响度归一（缺省按 true，老渲染层不传也走新行为）
     // autoRes：成片分辨率「自动」= 跟随第一个镜头的实际分辨率（缺省 false 保持老调用方行为）
-    return inference.exportVideo(outDir, outName, videos, { subtitles, width, height, autoRes, scope, normalize });
+    // cover：封面片头 { file, sec }（缺省 null = 不插片头，完全走原流程）
+    return inference.exportVideo(outDir, outName, videos, { subtitles, width, height, autoRes, scope, normalize, cover });
   });
   ipcMain.handle('ffmpeg:find', () => inference.findFfmpeg());
   // 取「上一镜末帧」→ 图片（首帧接力，2026-10-09）：
@@ -764,6 +799,67 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     else if (r.error !== 'NOPATH') logger.warn('取末帧失败：' + r.error);
     return r;
   });
+  /**
+   * 视频缩略图（2026-11-09）：任意视频 → 一张 jpg（base64）。
+   *
+   * 🔴 为什么不能用 <video> 直接当缩略图：Electron 自带的 Chromium **不含 HEVC 解码器**
+   *   （canPlayType('video/mp4; codecs="hvc1"') 返回空串），而用户手机拍的视频
+   *   绝大多数是 HEVC/H.265。于是 <video> 能读出时长（容器元数据在 moov 里），
+   *   却解不出画面（videoWidth=0）→ 界面上就是一个**黑框**。
+   *   再加上本项目启动时带 COMIC_STUDIO_NO_GPU=1 禁用硬件加速，HEVC 连硬解也没了。
+   *   ffmpeg 自带 HEVC 解码器，所以让 ffmpeg 抽一帧出来，问题就绕开了。
+   *
+   * 缓存：<userData>/thumbs/ 下按「源路径 + mtime」命名，源文件换了就自动重抽。
+   *   返回 base64 而不是路径，是为了渲染层能直接塞进 <img src>，
+   *   不用再走一次 studio-media 协议（一张 240px jpg 约 6KB，base64 也才 8KB）。
+   */
+  /**
+   * 视频编码探测（2026-11-09）：告诉渲染层「这个视频 Chromium 能不能解」。
+   *
+   * 🔴 为什么要单独一条：Electron 的 Chromium **不含 HEVC 解码器** →
+   *   用户手机拍的视频（绝大多数是 HEVC）解不出画面 → 界面上是黑框。
+   * 🔴 为什么不在渲染层靠 <video> 的 loadedmetadata 判：那个信号**依赖加载时序**，
+   *   base64 data URL 加载慢时 videoWidth 在判定那一刻可能还是 0 →
+   *   把**能播的 h264 也误判成解不开**（实测连跑两套 GUI 验收时必现）。
+   *   ffprobe 读出的 codec 是文件的客观属性，与时序无关 → 权威、稳定。
+   *
+   * 返回 { ok, codec }，codec 取 ffprobe 的 codec_name（'hevc' / 'h264' / …）。
+   */
+  ipcMain.handle('video:codec', async (e, file) => {
+    const abs = String(file || '');
+    if (!abs || !fs.existsSync(abs)) return { ok: false, error: '文件不存在' };
+    try {
+      return await inference.probeVideoCodec(abs);
+    } catch (err) {
+      return { ok: false, error: String((err && err.message) || err) };
+    }
+  });
+
+  ipcMain.handle('video:thumb', async (e, file) => {
+    const abs = String(file || '');
+    if (!abs || !fs.existsSync(abs)) return { ok: false, error: '文件不存在' };
+    try {
+      const st = fs.statSync(abs);
+      const key = crypto.createHash('md5').update(abs + '|' + st.mtimeMs + '|' + st.size).digest('hex').slice(0, 20);
+      const dir = path.join(app.getPath('userData'), 'thumbs');
+      const dst = path.join(dir, key + '.jpg');
+      // 命中缓存就直接回（比对 mtime，避免同尺寸不同内容的文件串味）
+      let need = true;
+      try {
+        const t = fs.statSync(dst);
+        need = t.mtimeMs < st.mtimeMs || t.size < 200;
+      } catch (_) { need = true; }
+      if (need) {
+        const r = await inference.shotThumb(abs, dst);
+        if (!r.ok) return { ok: false, error: r.error || '抽帧失败' };
+      }
+      const b64 = fs.readFileSync(dst).toString('base64');
+      return { ok: true, b64, mime: 'image/jpeg' };
+    } catch (err) {
+      return { ok: false, error: String((err && err.message) || err) };
+    }
+  });
+
   /**
    * 分镜缩略图批量（2026-11-01，配合分镜页「网格视图」）
    * [shotDir, files] → [{ file, b64 }]
@@ -817,8 +913,106 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     const pre = String(prefix) + '_';
     return (Array.isArray(all) ? all : []).filter(f => f.file.startsWith(pre));
   });
-  /* 图片生成页：历史 = <workspace>/图片生成/<日期>/ 下的图片，按时间倒序，上限 120 张 */
-  ipcMain.handle('imggen:history', (e, ws) => {
+  /**
+   * 图片目录列举（2026-11-04，封面功能）：读 PNG/JPG 头部拿宽高，带上旁车元数据。
+   *
+   * 为什么不复用 media:list：那条走 listVideosWithMeta，只认 mp4/webm/mov，而且会给每个文件
+   * 抽一帧做 poster（对图片目录纯属浪费）。这里只需要「文件名 + 宽高 + 生成耗时 + 快照」。
+   * 用途有两个，共一条通道：① 封面版本列表；② 角色 / 场景卡目录里挑参考图。
+   * 🔴 目录不存在返回空数组（封面目录是首次生成时才建的），不要抛 —— 调用方按「还没有」处理。
+   */
+  ipcMain.handle('images:list', async (e, dir) => {
+    const d = String(dir || '');
+    if (!d || !fs.existsSync(d)) return [];
+    let names = [];
+    try { names = fs.readdirSync(d); } catch (_) { return []; }
+    const out = [];
+    for (const f of names) {
+      if (!/\.(png|jpe?g|webp)$/i.test(f)) continue;
+      const abs = path.join(d, f);
+      let st = null;
+      try { st = fs.statSync(abs); } catch (_) { continue; }
+      if (!st.isFile()) continue;
+      let width = 0, height = 0;
+      try { const z = imageSize(abs); width = z.w; height = z.h; } catch (_) { /* 读不到就当未知 */ }
+      // 旁车 <图片名>.json：生成时写的耗时 + 快照（文案/风格/seed/参考图）
+      let ms = 0, snapshot = null;
+      try {
+        const side = JSON.parse(fs.readFileSync(abs + '.json', 'utf-8'));
+        ms = Number(side && side.ms) || 0;
+        snapshot = (side && side.snapshot) || null;
+      } catch (_) { /* 没有旁车是正常情况（导入的图 / 老图） */ }
+      out.push({ file: f, path: abs, width, height, mtimeMs: st.mtimeMs, size: st.size, ms, snapshot });
+    }
+    return out.sort((a, b) => b.mtimeMs - a.mtimeMs);   // 最新在前
+  });
+  /**
+   * 封面：从本地导入一张现成图片（2026-11-04）
+   *
+   * 为什么复制进来而不是直接引用源路径：封面是集级资产，源图通常在桌面 / 下载目录，
+   * 被挪走或删掉之后这一集的封面就「假性消失」了。复制一份进 <项目>/assets/covers/<集名>/
+   * 才能保证这一集永远有封面可发。
+   *
+   * 命名沿用生成的版本号序列（cover_vN_import.ext）：导入图也参与 v1/v2/v3 计数，
+   * 既不会跟已生成的撞名，渲染层的 nextVer() 也能接着往后排。
+   *
+   * @returns {{ok:boolean, canceled?:boolean, error?:string, file?:string, path?:string, width?:number, height?:number}}
+   */
+  ipcMain.handle('covers:import', async (e, { dir, name } = {}) => {
+    const win = getWin ? getWin() : null;
+    if (!win) return { ok: false, error: '窗口未就绪' };
+    const d = String(dir || '');
+    if (!d) return { ok: false, error: '缺少封面目录' };
+    let picked = String(name || '');
+    if (!picked) {
+      const r = await dialog.showOpenDialog(win, {
+        title: '选择一张图片作为封面',
+        properties: ['openFile'],
+        filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }]
+      });
+      if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+      picked = r.filePaths[0];
+    }
+    if (!fs.existsSync(picked)) return { ok: false, error: '文件不存在：' + picked };
+    // 已经在这个目录里了（重复导入同一张）就没必要再复制一份
+    if (path.dirname(picked) === path.resolve(d)) {
+      const z0 = imageSize(picked);
+      const s0 = fs.statSync(picked);
+      return { ok: true, file: path.basename(picked), path: picked, width: z0.w, height: z0.h,
+        mtimeMs: s0.mtimeMs, size: s0.size, ms: 0, snapshot: null, already: true };
+    }
+    const ext = (path.extname(picked) || '.png').toLowerCase();
+    fs.mkdirSync(d, { recursive: true });
+    let maxN = 0;
+    try {
+      for (const f of fs.readdirSync(d)) {
+        const m = /^cover_v(\d+)_/i.exec(f);
+        if (m) maxN = Math.max(maxN, Number(m[1]) || 0);
+      }
+    } catch (_) { /* 目录读不出来就按 1 开始，反正下面还会检查撞名 */ }
+    let dst = path.join(d, 'cover_v' + (maxN + 1) + '_import' + ext);
+    if (fs.existsSync(dst)) dst = path.join(d, 'cover_v' + (maxN + 1) + '_import_' + Date.now() + ext);
+    try {
+      fs.copyFileSync(picked, dst);
+    } catch (err) {
+      return { ok: false, error: '复制失败：' + (err && err.message ? err.message : err) };
+    }
+    // 旁车 .json：让 listImages 也能认出「这是导入的，不是生成的」（没有 seed / 文案快照）
+    try {
+      fs.writeFileSync(dst + '.json', JSON.stringify({
+        ms: 0,
+        snapshot: { imported: true, from: path.basename(picked), at: new Date().toISOString() }
+      }, null, 2), 'utf-8');
+    } catch (_) { /* 旁车写不进去不影响封面本身可用 */ }
+    const z = imageSize(dst);
+    const st = fs.statSync(dst);
+    logger.info('封面：从本地导入 ' + path.basename(picked) + ' → ' + path.basename(dst)
+      + (z.w ? '（' + z.w + '×' + z.h + '）' : ''));
+    return { ok: true, file: path.basename(dst), path: dst, width: z.w, height: z.h,
+      mtimeMs: st.mtimeMs, size: st.size, ms: 0,
+      snapshot: { imported: true, from: path.basename(picked) } };
+  });
+  /* 图片生成页：历史 = <workspace>/图片生成/<日期>/ 下的图片，按时间倒序，上限 120 张 */  ipcMain.handle('imggen:history', (e, ws) => {
     const root = path.join(String(ws || ''), '图片生成');
     const out = [];
     let days = [];
@@ -877,6 +1071,51 @@ function registerIpc(db, getWin, fallbackWorkspace) {
     }
     return out.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 120);
   });
+
+  /* ---- 白膜视频（2026-11-09）----
+   * 白膜 = 把参考视频里的人/物转成 3D 白模，配纯绿幕。
+   * 流程：读内置提示词模板 → 参考视频切段 → 每段各跑一次 H3 → 拼接 → 叠原音 → 按原时长裁尾。
+   * 这里只暴露「搬运类」能力（模板 / 探测 / 切段 / 拼接），
+   * 真正的生成编排放在渲染层（VideoGen.vue），好让任务中心能逐段报进度。 */
+  // 内置白膜提示词模板（原文取自一份真实成品的 snapshot.prompt，逐字拷贝）
+  ipcMain.handle('vidgen:whiteTemplate', async () => promptFiles.readBuiltin('vidgen-white.md'));
+  // 探测参考视频：时长 / 分辨率 / 帧率 / 有没有音轨（界面据此显示切段计划）
+  ipcMain.handle('vidgen:probe', async (e, file) => vidseg.probe(file));
+  // 切段：按上限切 + 等分，返回 { totalSec, count, segDur, segments:[{file,startSec,durSec,seconds}] }
+  ipcMain.handle('vidgen:cut', async (e, { file, workDir, maxSec }) => {
+    const info = await vidseg.probe(file);
+    if (!info.ok) return info;
+    const plan = vidseg.planSegments(info.durationSec, maxSec);
+    if (!plan.ok) return plan;
+    const cut = await vidseg.cutSegments(file, workDir, plan);
+    if (!cut.ok) return cut;
+    return {
+      ok: true,
+      totalSec: plan.totalSec,
+      count: plan.count,
+      segDur: plan.segDur,
+      segments: cut.segments,
+      hasAudio: info.hasAudio,
+      width: info.width,
+      height: info.height
+    };
+  });
+  // 拼接 + 叠原音 + 按原时长裁尾 → 成片
+  ipcMain.handle('vidgen:merge', async (e, { segments, outFile, workDir, totalSec, audioFrom, keepAudio }) =>
+    vidseg.mergeSegments({ segments, outFile, workDir, totalSec, audioFrom, keepAudio }));
+  // 清理白膜中间产物（成功出片后调用；失败时保留以便排查）
+  ipcMain.handle('vidgen:cleanupWork', async (e, workDir) => vidseg.cleanupWork(workDir));
+  // 给成片写旁车（<名>.json）：耗时 + 生成快照。
+  // 白膜成片是 ffmpeg 拼出来的（不经过 comfyGenerate），所以没有自动旁车，得手动补一份，
+  // 否则历史列表里这条只有分辨率、没有耗时，「回填配置」也回不来。
+  ipcMain.handle('vidgen:sidecar', async (e, { file, meta }) => {
+    try {
+      if (!file) return false;
+      fs.writeFileSync(file + '.json', JSON.stringify(meta || {}, null, 2), 'utf-8');
+      return true;
+    } catch (_) { return false; }
+  });
+
   /* ---- 提示词反推（图片 → 正向提示词）----
    * 默认走本地 Qwen3.5-9B + mmproj（视觉模式 llama-server）。
    * 🔴 独立通道：要读图片文件、且必须先确保 llama 带着视觉投影器启动，

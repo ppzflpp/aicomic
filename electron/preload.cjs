@@ -182,11 +182,30 @@ contextBridge.exposeInMainWorld('studio', {
   videoLastFrame: (payload) => ipcRenderer.invoke('video:lastFrame', payload),
   // 分镜缩略图（2026-11-01）：(shotDir, files[]) → [{ file, b64 }]，240px jpg，带 .thumbs 缓存
   shotThumbs: (dir, files) => ipcRenderer.invoke('shot:thumbs', dir, files),
+  // 视频缩略图（2026-11-09）：任意视频 → { ok, b64 }（240px jpg）
+  // 🔴 Electron 的 Chromium 不带 HEVC 解码器，用户手机拍的 HEVC 视频用 <video> 当缩略图会是黑框，
+  //    只能靠 ffmpeg 抽帧绕开（详见 electron/ipc.cjs 的 video:thumb 注释）。
+  videoThumb: (file) => ipcRenderer.invoke('video:thumb', file),
+  // 视频编码探测（2026-11-09）：→ { ok, codec }（'hevc' / 'h264' / …）
+  // 用于判断 Chromium 能否解码该视频（不含 HEVC 解码器 → 用户手机视频会黑框）。
+  videoCodec: (file) => ipcRenderer.invoke('video:codec', file),
   fileStat: (abs) => ipcRenderer.invoke('file:stat', abs),
   listMedia: (dir, prefix) => ipcRenderer.invoke('media:list', dir, prefix),
+  // 图片目录列举（2026-11-04）：[{file,path,width,height,mtimeMs,size,ms,snapshot}]
+  // 两处共用：封面版本列表 / 角色·场景卡目录里挑参考图
+  listImages: (dir) => ipcRenderer.invoke('images:list', dir),
+  // 封面：从本地导入一张现成图片（弹系统文件框 → 复制进本集封面目录）
+  importCover: (o) => ipcRenderer.invoke('covers:import', o),
   imgHistory: (ws) => ipcRenderer.invoke('imggen:history', ws),
   imgReverse: (file, opts) => ipcRenderer.invoke('imggen:reverse', file, opts),
   vidHistory: (ws) => ipcRenderer.invoke('vidgen:history', ws),
+  // 白膜视频（2026-11-09）：内置模板 / 探测 / 切段 / 拼接叠音 / 清理中间产物
+  vidWhiteTemplate: () => ipcRenderer.invoke('vidgen:whiteTemplate'),
+  vidProbe: (file) => ipcRenderer.invoke('vidgen:probe', file),
+  vidCut: (args) => ipcRenderer.invoke('vidgen:cut', args),
+  vidMerge: (args) => ipcRenderer.invoke('vidgen:merge', args),
+  vidCleanupWork: (dir) => ipcRenderer.invoke('vidgen:cleanupWork', dir),
+  vidSidecar: (file, meta) => ipcRenderer.invoke('vidgen:sidecar', { file, meta }),
   readFileBase64: (abs) => ipcRenderer.invoke('file:readBase64', abs),
   deleteFile: (abs) => ipcRenderer.invoke('file:delete', abs),
   pickFiles: (kind) => ipcRenderer.invoke('file:pick', kind),

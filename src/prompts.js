@@ -37,7 +37,11 @@ export const TASKS = [
   { id: 'video-base', label: '视频提示词 · 基础', desc: '分镜 → 视频提示词（文字 / 首尾帧）', kind: 'video', specs: ['h3.md'], mustHave: ['## 输出格式'], dyn: 'video.base' },
   { id: 'video-ref', label: '视频提示词 · 参考', desc: '分镜 → 视频提示词（参考图 / 参考视频）', kind: 'video', specs: ['h3ref.md'], mustHave: ['## 输出格式'], dyn: 'video.ref' },
   { id: 'split', label: '拆镜重写', desc: '拆分后的镜头 → 画面补写', kind: '', specs: ['split.md'], mustHave: ['"shots"'] },
-  { id: 'pad', label: '补画撑时', desc: '不足 4 秒的镜头 → 补画面撑满 4 秒（不加台词）', kind: '', specs: ['pad.md'], mustHave: ['"action"', '"camera"'] }
+  { id: 'pad', label: '补画撑时', desc: '不足 4 秒的镜头 → 补画面撑满 4 秒（不加台词）', kind: '', specs: ['pad.md'], mustHave: ['"action"', '"camera"'] },
+  // 封面文案（2026-11-04，集级直出）：与上面八个任务并列，出现在「提示词配置中心」里可改。
+  // 🔴 kind 刻意留空（同 adapt）：封面是**写作任务**，不需要挂生图模型专属规范
+  //    （那些写的是 cfg / 负向词 / 禁器材词，对「写四个字」是纯噪音）。
+  { id: 'cover', label: '封面文案', desc: '整集内容 → 海报主标题 / 副标题 / 画面主体（5 条候选）', kind: '', specs: ['cover.md'], mustHave: ['"options"'] }
 ]
 
 export function taskById(id) { return TASKS.find(t => t.id === id) || null }

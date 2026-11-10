@@ -32,6 +32,13 @@
           <span class="ex-tip">统一各镜音量到同一响度（-16 LUFS），治镜头之间 BGM 忽大忽小</span>
         </label>
 
+        <!-- 片头封面（2026-11-04）：只陈述事实，不在这里引导去选封面 ——
+             导出参数已经定稿，这一屏再喊「去选一张」只会让人以为弹出的是封面框。 -->
+        <div class="ex-cover" :class="{ on: hasCover }">
+          <b>{{ hasCover ? '会加 1 秒封面片头' : '不加封面片头' }}</b>
+          <span>{{ hasCover ? '成片总时长 = 镜头总时长 + 1 秒' : '成片总时长 = 镜头总时长' }}</span>
+        </div>
+
         <div class="modal-ops">
           <span style="flex:1"></span>
           <button class="btn sec" :disabled="busy" @click="closeExport">取消</button>
@@ -114,7 +121,10 @@
                 :title="'已超分：' + resText(c.srcRes) + ' → ' + resText(c.res) + '（点「超分视频」可换倍率重做）'">
             超分视频
           </span>
-          <video v-if="c.path && srcMap[c.path]" :src="srcMap[c.path]" controls></video>
+          <video v-if="c.path && srcMap[c.path]" :src="srcMap[c.path]" controls
+                 @loadedmetadata="_vtMeta(c.path, $event.target)" @error="_vtErr(c.path)"></video>
+          <!-- 🔴 HEVC 解码兜底：Chromium 解不出画面时改显示首帧图（vidThumb.js） -->
+          <img v-else-if="c.path && _vtFallback(c.path)" class="vg-vid-poster" :src="_vtThumb(c.path)" :title="c.path">
           <div v-else class="ph">
             <span v-if="c.path && loadingSrc[c.path]" class="busy-txt"><i class="spin"></i>加载中…</span>
             <template v-else>镜头 {{ c.i + 1 }}<br>{{ c.confirmed ? '加载中…' : '待生成' }}</template>
@@ -137,7 +147,9 @@
 
       <div class="vcard film-card" :class="{ confirmed: !!latest }">
         <div class="video-box">
-          <video v-if="latest && srcMap[latest.path]" :src="srcMap[latest.path]" controls></video>
+          <video v-if="latest && srcMap[latest.path]" :src="srcMap[latest.path]" controls
+                 @loadedmetadata="_vtMeta(latest.path, $event.target)" @error="_vtErr(latest.path)"></video>
+          <img v-else-if="latest && _vtFallback(latest.path)" class="vg-vid-poster" :src="_vtThumb(latest.path)" :title="latest.path">
           <div v-else class="ph">
             <span v-if="latest && loadingSrc[latest.path]" class="busy-txt"><i class="spin"></i>加载中…</span>
             <template v-else>成片<br>{{ busy ? '组装中…' : (exportable ? '点「导出成片」开始组装' : '待选齐全部镜头') }}</template>
@@ -172,6 +184,14 @@
       </span>
     </Teleport>
     <Teleport v-if="tpReady" to="#export-ops">
+      <!-- 封面（2026-11-04）：入口在标题栏，不再占网格一格。
+           没确认过 = 灰描边「选封面」；确认过 = 亮蓝「片头封面 · 1s」（导出时正片前插 1 秒）。
+           想取消就再点进来 → 弹窗里「不用封面」。 -->
+      <button class="btn sec cv-btn" :class="{ on: hasCover }" :disabled="!ep || busy"
+              @click="openCover"
+              :title="hasCover ? '本集已有封面（点开可以换一张，或去掉不用）' : '给这一集做一张封面，导出时作为 1 秒片头'">
+        {{ hasCover ? '片头封面 · 1s' : '选封面' }}
+      </button>
       <!-- 视频超分（SeedVR2）：紧挨着「导出成片」（2026-10-20，Dragon），小号淡蓝胶囊。
            点它 = 弹窗选镜头；跑起来后变红 = 「停止超分」，并显示已完成 / 总数。 -->
       <button class="btn sec up-btn" :class="{ stop: up.busy }"
@@ -195,21 +215,32 @@
       <span style="flex:1"></span>
       <button class="btn sec" v-if="films.length" @click="reveal">打开所在文件夹</button>
     </div>
+
+    <!-- 封面工作台（2026-11-04）：只在打开时创建 —— 它一挂载就要扫本集角色/场景目录找参考图，
+         常驻挂载会让每次切集都白扫一遍。 -->
+    <CoverStudio v-if="coverOpen" @close="closeCover" @changed="loadCovers" />
   </div>
 </template>
 
 <script>
 import { useProject as useProjectStore } from './stores/project.js'
 import { usePipeline, fmtMs } from './stores/pipeline.js'
+import CoverStudio from './CoverStudio.vue'
+import { coverDirOf } from './coverPrompt.js'
+import { noteVideoMeta as _vtMeta, noteVideoError as _vtErr, shouldFallback as _vtFallback, thumbOf as _vtThumb, loadThumbs as _vtLoad } from './vidThumb.js'
 
 /** '宽x高' → [w, h] */
 function parseRes(v) { const m = /^(\d+)x(\d+)$/i.exec(String(v || '')); return m ? [+m[1], +m[2]] : [1920, 1080] }
 
 export default {
   name: 'StageExport',
+  components: { CoverStudio },
   data() {
     return {
       busy: false, exportFile: null, films: [], srcMap: {}, loadingSrc: {},
+      // 封面（2026-11-04）：coverOpen = 工作台弹窗；covers = 本集已有封面版本（最新在前）；
+      // coverPick = covers.json 里**已确认**的那一版文件名（空 = 这一集不用封面片头）
+      coverOpen: false, covers: [], coverPick: '',
       // 🔴 分镜目录实测分辨率映射（文件名 → {width,height}）。由主进程 listVideosWithMeta 探测，
       //    用于镜头格显示「当前选中那版视频」的真实画布（不再依赖 v.res 档位预设，二采档才不显示旧值）。
       shotMeta: {},
@@ -274,6 +305,20 @@ export default {
     },
     /** 成片格显示最新一版成片（listMedia 按生成时间倒序） */
     latest() { return this.films.length ? this.films[0] : null },
+    /** 封面目录：<项目>/assets/covers/<集名>（与成片目录分开：成片按 .mp4 扫描，混 png 会乱） */
+    coverDir() { return coverDirOf(this.ep) },
+    /**
+     * 已确认封面的绝对路径。
+     * 🔴 找不到对应文件（用户手动删了图）= 空串 → 整条链路按「没有封面」处理：
+     *    标题栏回到「选封面」、导出不插片头。这里**绝不能回退到「最新一版」** ——
+     *    那等于用户没点过「确认」也凭空多出 1 秒片头。
+     */
+    coverPath() {
+      if (!this.coverPick) return ''
+      const v = this.covers.find(c => c.file === this.coverPick)
+      return v ? v.path : ''
+    },
+    hasCover() { return !!this.coverPath },
     /** 「已选中镜头」的路径串（只用于 watch：变了就补读 base64） */
     cellPaths() { return this.cells.map(c => c.path || '').join('|') },
     exportable() {
@@ -346,7 +391,9 @@ export default {
       this.exportFile = ep.exportFile || null
       this.outRes = (ep.res && ep.res.out) || 'auto'
       this.srcMap = {}; this.loadingSrc = {}   // 换集：清掉上一集的视频缓存
+      this.coverOpen = false
       this.loadList()   // 换集/重启恢复后都要重扫本集成片
+      this.loadCovers()
       this.syncCells()
     },
     // 进块 → 补齐镜头格 base64 预览（组装已改手动：不再自动开始导出）
@@ -365,11 +412,13 @@ export default {
       this.films = []
       this.srcMap = {}; this.loadingSrc = {}
       this.loadList()
+      this.loadCovers()
       this.syncCells()
     }
   },
   created() {
     if (this.ep) { this.exportFile = this.ep.exportFile || null; this.outRes = (this.ep.res && this.ep.res.out) || 'auto'; this.loadList() }
+    this.loadCovers()
     this.syncCells()
   },
   /** 🔴 标题栏 Teleport 延迟挂载：mounted 后 DOM 才真正插入文档，#export-ops 此时才可被 querySelector 命中 */
@@ -379,6 +428,33 @@ export default {
   methods: {
     fmtMs,   // 🔴 必须注册进 methods：模板看不到模块作用域的导入（曾因漏注册 → 成片格一渲染就抛
              //     "fmtMs is not a function" → 整个组件卸载 → 组装成片模块全空白，重启也无法恢复）
+    /* ---- HEVC 兜底（vidThumb.js）—— 同样的道理，必须注册进 methods ---- */
+    _vtThumb(p) { return _vtThumb(p) },
+    _vtFallback(p) { return _vtFallback(p) },
+    _vtMeta(p, el) { return _vtMeta(p, el) },
+    _vtErr(p) { return _vtErr(p) },
+    /* ---------------- 封面（2026-11-04） ---------------- */
+    /** 扫本集封面目录 + 读回已确认的那一版（covers.json 的 pick） */
+    async loadCovers() {
+      const dir = this.coverDir
+      if (!dir) { this.covers = []; this.coverPick = ''; return }
+      try {
+        const list = await window.studio.listImages(dir)
+        // 异步期间可能已切集 —— 目录变了就丢弃这次结果
+        if (this.coverDir !== dir) return
+        this.covers = Array.isArray(list) ? list : []
+        const st = (this.ep && this.ep.covers) || {}
+        this.coverPick = st.pick || ''
+      } catch (e) { this.covers = []; this.coverPick = '' }
+    },
+    openCover() {
+      if (!this.ep) return
+      this.coverOpen = true
+    },
+    closeCover() {
+      this.coverOpen = false
+      this.loadCovers()   // 工作台里可能刚确认 / 取消了封面
+    },
     /** 切换输出分辨率：只影响本集后续导出 */
     onRes() { this.st.setEpisodeRes('out', this.outRes) },
     /** 切换「添加字幕」：落库到 videos.json 的 opts（StageShots 的 saveVideos 会原样带过这个键） */
@@ -547,6 +623,8 @@ export default {
     async loadVideo(it) {
       if (this.srcMap[it.path] || this.loadingSrc[it.path]) return
       this.loadingSrc[it.path] = true
+      // 🔴 预抽首帧：HEVC 解不开时直接顶上，不用等判定完再抽
+      _vtLoad([it.path])
       try {
         const b64 = await window.studio.readFileBase64(it.path)
         if (b64) this.srcMap[it.path] = 'data:video/mp4;base64,' + b64
@@ -569,6 +647,9 @@ export default {
       return mb >= 1 ? mb.toFixed(1) + ' MB' : (bytes / 1024).toFixed(0) + ' KB'
     },
     async exportFilm() {
+      // 导出参数在这一刻定稿（cover / 分辨率 / 字幕都随这一次调用走），
+      // 所以先把封面工作台关掉 —— 开着只会让人以为导出中途还能换封面。
+      this.coverOpen = false
       this.busy = true
       const t0 = Date.now()
       this.pl.beginGen(6)
@@ -586,11 +667,15 @@ export default {
         // 「自动」= 不在渲染层猜分辨率：主进程探测**第一个镜头的真实画布**并据此拼装
         const auto = this.outRes === 'auto'
         const [rw, rh] = auto ? [0, 0] : parseRes(this.outRes)
+        // 封面片头（2026-11-04）：确认过封面才传，没确认就是 null → 主进程完全走原流程。
+        // 传绝对路径而不是文件名：主进程要直接喂给 ffmpeg，少一层路径拼装。
+        const cover = this.hasCover ? { file: this.coverPath, sec: 1 } : null
         const out = await window.studio.exportVideo({
           outDir, outName, videos,
           subtitles: this.subsEnabled, width: rw, height: rh, autoRes: auto,
           // 方案 D：逐镜响度归一（勾选框控制；关掉 = 各镜原始音量）
           normalize: this.normEnabled,
+          cover,
           // 🔴 必须带 scope：导出时主进程会删「本集之外的旧成片」，缺了就会删掉别的集的成片
           scope: this.ep.prefix || this.ep.name
         })
@@ -656,10 +741,29 @@ export default {
 .up-chip.fail{background:rgba(239,68,68,.95); color:#2a0b0b;}
 .up-chip .spin{width:12px; height:12px; border-width:2px; border-color:rgba(6,34,49,.3); border-top-color:#062231;}
 
+/* 标题栏「选封面」：未确认 = 灰描边；已确认 = 亮蓝「片头封面 · 1s」。
+   与超分按钮同一套描边胶囊尺寸，三者并排不打架。 */
+.btn.sec.cv-btn{ display:inline-flex; align-items:center; gap:5px; }
+.btn.sec.cv-btn.on{
+  border-color:#38bdf8; color:#dbeafe; background:rgba(56,189,248,.14);
+}
+.btn.sec.cv-btn.on:hover{ border-color:#7dd3fc; background:rgba(56,189,248,.22); }
+
 /* 导出设置弹窗：分辨率 / 字幕 / 响度归一 三行，确认后才开始拼 */
 .ex-modal{width:min(500px,92vw);}
 .ex-note{font-size:12px; color:var(--sub); line-height:1.7; margin-bottom:6px;}
 .ex-note b{color:#9fd8f5;}
+/* 片头封面提示行：不加 = 灰字；加 = 亮蓝底，让「这次会多 1 秒」一眼可见 */
+.ex-cover{
+  display:flex; flex-direction:column; gap:2px;
+  padding:8px 10px; margin:8px 0 2px; border-radius:6px;
+  border:1px solid var(--line-soft); background:#0d121a;
+  font-size:11.5px; color:var(--sub); line-height:1.6;
+}
+.ex-cover b{ font-size:12px; color:#9fb0c8; }
+.ex-cover.on{ border-color:rgba(56,189,248,.35); background:rgba(56,189,248,.08); }
+.ex-cover.on b{ color:#7dd3fc; }
+
 .ex-row{
   display:flex; align-items:center; gap:10px;
   padding:10px 0; border-top:1px solid var(--line-soft);

@@ -675,7 +675,15 @@
         <template v-else>
           <div v-if="!preview.src" class="md-loading"><i class="spin"></i> 加载中…</div>
           <img v-else-if="preview.kind === 'image'" :src="preview.src" @load="onPreviewLoad" />
-          <video v-else :src="preview.src" controls autoplay loop></video>
+          <!-- 🔴 HEVC 解码兜底（2026-11-09）：Chromium 不含 HEVC 解码器 → 预览会是一片黑。
+               确认解不开后改显示 ffmpeg 抽的首帧图。 -->
+          <video v-else-if="!_vtFallback(preview.path)" :src="preview.src" controls autoplay loop
+                 @loadedmetadata="_vtMeta(preview.path, $event.target)" @error="_vtErr(preview.path)"></video>
+          <div v-else class="md-loading" style="flex-direction:column;gap:10px">
+            <img :src="_vtThumb(preview.path)" :title="preview.path"
+                 style="max-width:100%;max-height:70vh;object-fit:contain;border-radius:8px">
+            <span>该视频是 HEVC/H.265 编码，当前环境无法解码播放，这里显示首帧画面</span>
+          </div>
         </template>
       </div>
     </div>
@@ -716,6 +724,7 @@ import { taskState } from './taskState.js'
 import { state as taskCenterState } from './taskCenter.js'
 import { mediaUrl } from './mediaUrl.js'
 import { moduleStale, ackModule, MODULE_STALE_KINDS } from './stale.js'
+import { noteVideoMeta as _vtMeta, noteVideoError as _vtErr, shouldFallback as _vtFallback, thumbOf as _vtThumb } from './vidThumb.js'
 
 export default {
   components: { FolderNode, SettingsPanel, StageAdapt, StageShots, StageChars, StageLibrary, StageExport, AppNavRail, PromptsView, ImageGen, VideoGen, LogPanel },
@@ -961,6 +970,11 @@ export default {
   },
   methods: {
     fmtMs,
+    /* ---- HEVC 兜底（vidThumb.js）—— 模板看不到模块作用域的导入，必须注册进 methods ---- */
+    _vtThumb(p) { return _vtThumb(p) },
+    _vtFallback(p) { return _vtFallback(p) },
+    _vtMeta(p, el) { return _vtMeta(p, el) },
+    _vtErr(p) { return _vtErr(p) },
     /** 某一集是否有活跃视频任务（模板用；读上面的响应式聚合，避免漏渲染）。
      *  🔴 带参数 → 必须是 method，不能放 computed（computed 是无参 getter，放错会「not a function」报错导致整树卸载）。 */
     episodeHasVideoTask(episodeId) {
@@ -1366,6 +1380,11 @@ export default {
         // —— 那条链要「同步读 + 33% 膨胀 + 跨进程拷贝 + 主线程拼串 + 整图解码」全走一遍，点开明显一顿。
         // 现在由 Chromium 自己流式读、缓存、异步解码，弹窗不再出现「加载中」空档。
         if (kind === 'image') { p.src = mediaUrl(it.path); return }
+        // 🔴 视频：**不预抽首帧**（2026-11-09 改）。原来在这里无条件 _vtLoad，
+        //    等于每次点开预览都 spawn 一个 ffprobe + 一个 ffmpeg 去解码 ——
+        //    而本项目生成的视频全是 h264（根本不需要兜底）→ 白烧一次解码，
+        //    和正在播放的 <video> 抢 CPU/磁盘，用户感受就是「点开卡、播放也卡」。
+        //    现在兜底完全按需：<video> 量不到画面（HEVC）→ noteVideoMeta 复核编码后才抽帧。
         const b64 = await window.studio.readFileBase64(it.path)
         // 期间可能已关掉/点了别的文件：比对当前弹窗指向，过期结果直接丢弃
         if (!this.preview || this.preview.file !== it.file || this.preview.path !== it.path) return
