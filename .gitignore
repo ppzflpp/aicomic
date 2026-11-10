@@ -10,3 +10,10 @@ release-new/
 # 调试临时产物
 test/_cdp-*
 test/_live-*.json
+
+# 本机验收/截图脚本（硬编码本机素材路径与工作区路径，只在本机跑，不随仓库走）
+# 🔴 2026-11-10：曾误把这些脚本跟随功能提交一起推上远端，已回退并在此显式忽略。
+#    注意 `test/*-check.cjs` 不匹配 `test/_packcheck.cjs`（那个是早就入库的打包自检）。
+test/*-check.cjs
+test/*-e2e.cjs
+test/app-shot.cjs
