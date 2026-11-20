@@ -91,6 +91,39 @@
           </div>
         </div>
 
+        <!-- ── 动作 / 交互 LoRA（2026-11-17）：只在「视频生成」页有，图片生成页走另一套 ──
+             目录即清单：主进程扫 loras\h3-action\ 给出，界面不做任何文件判断。 -->
+        <div class="vg-sec vg-act" :class="{ on: !!curAction }">
+          <div class="vg-lab">动作 LoRA
+            <span class="vg-hint">可选 · 放进 {{ actionSlot.dirLabel || 'loras\\h3-action' }} 即可</span>
+          </div>
+          <div class="vg-row">
+            <select class="vg-sel" v-model="actionId" :disabled="!actionSlot.items.length">
+              <option value="">{{ actionSlot.items.length ? '不使用' : '目录里还没有 LoRA' }}</option>
+              <option v-for="it in actionSlot.items" :key="it.id" :value="it.id" :disabled="it.mismatch">
+                {{ it.label }}{{ it.mismatch ? '（架构不符）' : '' }}
+              </option>
+            </select>
+            <template v-if="curAction">
+              <span class="vg-wl">强度</span>
+              <input class="vg-num" type="number" :min="curAction.weightMin" :max="curAction.weightMax" step="0.05"
+                     v-model.number="actionWeight" @change="clampActionW">
+            </template>
+          </div>
+
+          <!-- 触发词：这类 LoRA 靠固定短语激活，打错一个字母就静默没反应 →
+               做成单选，下面一行显示真正写进提示词的英文原句 -->
+          <div class="vg-trig-row" v-if="curAction && curAction.triggers.length > 1">
+            <button v-for="(t,i) in curAction.triggers" :key="t" type="button" class="vg-trig"
+                    :class="{ on: actionTrigger === t }" @click="actionTrigger = t">
+              {{ triggerLabel(t, i) }}
+            </button>
+          </div>
+          <div class="vg-trig-en" v-if="curAction && actionTrigger">实际写入：{{ actionTrigger }}</div>
+
+          <div class="vg-note warn" v-if="curAction && actionWarn">{{ actionWarn }}</div>
+        </div>
+
         <div class="vg-sec">
           <div class="vg-lab">视频质量</div>
           <div class="vg-tier-list">
@@ -98,7 +131,7 @@
               <div class="vg-tier-head">{{ tierGroupLabel(g) }}</div>
               <div class="vg-ab-row">
                 <button type="button" v-if="g.a" class="vg-ab" :class="{on: tier===g.a.key}" @click="tier=g.a.key">
-                  <b>剪枝版</b>
+                  <b v-if="!g.single">剪枝版</b>
                   <span class="vg-ab-desc">{{ g.a.desc }}</span>
                 </button>
                 <button type="button" v-if="g.b" class="vg-ab" :class="{on: tier===g.b.key}" @click="tier=g.b.key">
@@ -388,6 +421,12 @@ export default {
       delAsk: null,       // 删除确认框数据 {path, from}（from='results'|'history'）
       _submitting: false, // 🔴 提交锁：健康检查/重写是异步 await，期间防止用户连点重复提交任务
       _missing: new Set(), // 本次会话里探测过「文件不存在」的路径缓存（回填时打标记）
+      // —— 动作 / 交互 LoRA（2026-11-17，只在视频生成页）——
+      // actionSlot 整份由主进程扫目录给出（含中文名 / 触发词 / 推荐权重 / 架构判定）
+      actionSlot: { items: [], dirLabel: '', weight: { default: 0.65, min: 0, max: 1.2 } },
+      actionId: '',
+      actionWeight: 0.65,
+      actionTrigger: '',
     }
   },
   computed: {
@@ -407,7 +446,9 @@ export default {
       for (const t of opts) {
         if (seen.has(t.key)) continue
         const m = /^(.*?)([ab])$/.exec(t.key)
-        if (!m) { groups.push({ base: t.key, a: { key: t.key, label: t.label, desc: t.desc }, b: null }); continue }
+        // 单档位（没有 A/B 之分，如「原生 20 步」）：a 放它自己、b 留空，
+        // 标记 single 让按钮不硬套「剪枝版」这个标签
+        if (!m) { groups.push({ base: t.key, single: true, a: { key: t.key, label: t.label, desc: t.desc }, b: null }); continue }
         const base = m[1]
         const other = opts.find(x => x.key === base + (m[2] === 'a' ? 'b' : 'a'))
         const a = m[2] === 'a' ? t : other
@@ -462,7 +503,30 @@ export default {
       if (!(this.prompt.trim().length > 0) || this._submitting) return false
       // 白膜必须有一个参考视频（模板里写着「以参考视频为唯一动作来源」）
       if (this.whiteOn && !this.refVideos.length) return false
+      // 动作 LoRA：架构不符 / 缺必需的参考素材 → 直接拦住。
+      // 🔴 这两条都是「不拦就会白跑十几分钟然后发现没效果」的情况：
+      //    架构不符的 LoRA 加载 0 个 key 也不报错；ref2v 训练的 LoRA 没参考图等于没用。
+      if (this.curAction && this.curAction.mismatch) return false
+      if (this.curAction && this.curAction.branch === 'ref2v' && !this.refImages.length && !this.refVideos.length) return false
       return true
+    },
+    /** 当前选中的动作 LoRA（目录里那条） */
+    curAction() {
+      return this.actionSlot.items.find(x => x.id === this.actionId) || null
+    },
+    /** 它要求的采样参数（由 LoRA 旁边的 json 或方案默认值给出） */
+    /** 选中后要提醒的事（不拦，但必须让用户看到） */
+    actionWarn() {
+      const a = this.curAction
+      if (!a) return ''
+      if (a.branch === 'ref2v' && !this.refImages.length && !this.refVideos.length) {
+        return '这个 LoRA 是在「参考图生视频」上训练的：先传 1~2 张参考图，否则它不会起作用。'
+      }
+      if (a.branch === 'fl2v' && (this.refImages.length || this.refVideos.length)) {
+        return '这个 LoRA 是「文字 / 首尾帧」支路训练的，当前有参考素材会走参考支路，效果可能不理想。'
+      }
+      if (a.needFix) return '这个 LoRA 是 PEFT 格式（权重名带 .default），视频侧暂不做自动转换，可能加载不全。'
+      return ''
     },
     /** 本次结果按生成时间倒序（最新在前） */
     resultsDesc() {
@@ -480,6 +544,13 @@ export default {
   },
   watch: {
     'st.workspace'() { this.reloadHistory() },
+    // 换动作 LoRA → 强度与触发词跟着它自己的推荐值走（写在 LoRA 旁边的 json 里）
+    actionId(v) {
+      const a = this.actionSlot.items.find(x => x.id === v)
+      if (!a) return
+      this.actionWeight = Number(a.weight) || (this.actionSlot.weight || {}).default || 0.65
+      this.actionTrigger = a.trigger || (a.triggers && a.triggers[0]) || ''
+    },
     // 参考视频变了 → 重新探测时长，重算切段计划（自动时长要靠它）
     // 同时预抽帧 poster：HEVC 视频 Chromium 解不出画面，缩略图会黑框。
     // 提前抽好，等探测判定「解不开」时首帧图已经在手，切过去不用等。
@@ -498,6 +569,7 @@ export default {
     }
     if (!this.tier) this.tier = (this.tierOptions.find(t => t.default) || this.tierOptions[0] || {}).key || ''
     this.reloadHistory()
+    this.loadActionLoras()
     // 内置白膜模板预读（切开关时直接填，不用等）
     try { this.whiteTpl = (await window.studio.vidWhiteTemplate()) || ''; } catch (_) { this.whiteTpl = '' }
     // 订阅任务中心事件：本地正在跑的任务结束 → 刷新结果；进度 → 更新侧栏悬浮文案
@@ -522,7 +594,37 @@ export default {
     this._offChange && this._offChange()
   },
   methods: {
-    onShow() { this.reloadHistory() },
+    onShow() { this.reloadHistory(); this.loadActionLoras() },
+    /* ---------------- 动作 / 交互 LoRA ---------------- */
+    /**
+     * 读「动作 LoRA」清单（主进程扫 loras\h3-action\ + 读旁边的 json）。
+     * 🔴 每次切回本页都读一次：用户拷完文件不用重启软件就能看到（这是分发给普通用户时
+     *    最容易误解成「功能坏了」的一步）。读失败保留旧清单，不把界面清空。
+     */
+    async loadActionLoras() {
+      try {
+        const s = await window.studio.videoLoraSlots('action')
+        if (!s) return
+        this.actionSlot = s
+        if (this.actionId && !(s.items || []).some(i => i.id === this.actionId)) this.actionId = ''
+      } catch (_) { /* 主进程还没起来 / IPC 异常：保留上一次的清单 */ }
+    },
+    /** 强度夹取：空串/NaN 回默认值（Number('')===0 是有限数，必须单独判空） */
+    clampActionW() {
+      const a = this.curAction
+      const def = a ? a.weight : (this.actionSlot.weight || {}).default || 0.65
+      const min = a ? a.weightMin : 0
+      const max = a ? a.weightMax : 1.2
+      let v = Number(this.actionWeight)
+      if (this.actionWeight === '' || this.actionWeight === null || !Number.isFinite(v)) v = def
+      v = Math.min(max, Math.max(min, v))
+      this.actionWeight = Math.round(v * 100) / 100
+    },
+    /** 触发词的中文标签（json 里给了 triggerLabels 就用，没给就显示英文原句） */
+    triggerLabel(t, i) {
+      const ls = (this.curAction && this.curAction.triggerLabels) || []
+      return ls[i] || t
+    },
     /* ---------------- 白膜视频 ---------------- */
     /**
      * 白膜开关。打开 → 填入内置模板 + 禁用提示词重写 + 自动时长（若已有参考视频）。
@@ -622,6 +724,7 @@ export default {
       return String(lbl).replace(/[AB]$/, '')
     },
     aspectResLabel(aspectId) {
+      // 分辨率只跟「视频质量」档位走（2026-11-17 用户定：选了动作 LoRA 也不锁档位）
       const t = this.tierOptions.find(x => x.key === this.tier)
       const c = (t && t.canvas) || {}
       return c[aspectId] || ''
@@ -749,6 +852,12 @@ export default {
       if (typeof s.keepAudio === 'boolean') this.keepAudio = s.keepAudio
       // 🔴 「自动」只在白膜模式下存在：快照里白膜关着却存了 autoDur=true（老数据）→ 强制关掉
       if (typeof s.autoDur === 'boolean') this.autoDur = this.whiteOn && s.autoDur
+      // 动作 LoRA：文件还在才回填（删了/改名了就保持不选，免得指向一个不存在的条目）
+      if (s.actionLora && this.actionSlot.items.some(i => i.id === s.actionLora)) {
+        this.actionId = s.actionLora
+        if (Number(s.actionWeight) > 0) this.actionWeight = Number(s.actionWeight)
+        if (s.actionTrigger) this.actionTrigger = s.actionTrigger
+      }
       // 回填以快照为准，探测回调不要再把「自动」改回去
       this._autoDurTouched = true
       this._missing = new Set()
@@ -817,7 +926,8 @@ export default {
           // 健康探测本身失败（IPC 异常等）不阻断生成，交给提交阶段的报错兜底
         }
         const dir = this.st.workspace + '\\视频生成\\' + this.today
-        // 解析档位推荐画布（宽高）；取不到回退 864×480
+        // 解析档位推荐画布（宽高）：分辨率完全由「视频质量」档位决定，
+        // 动作 LoRA 不再覆盖（2026-11-17 用户定：选了 LoRA 也按用户选的档位生成）
         const t = this.tierOptions.find(x => x.key === this.tier)
         const canvas = (t && t.canvas && t.canvas[this.aspect]) || '864x480'
         const [w, h] = String(canvas).split('x').map(n => Number(n) || 0)
@@ -851,7 +961,11 @@ export default {
           // 白膜 / 自动时长的状态（回填时要一并还原）
           whiteOn: this.whiteOn,
           keepAudio: this.keepAudio,
-          autoDur: this.autoDur
+          autoDur: this.autoDur,
+          // 动作 LoRA（回填时还原选中项、强度与触发词）
+          actionLora: this.curAction ? this.curAction.id : '',
+          actionWeight: this.curAction ? Number(this.actionWeight) : null,
+          actionTrigger: this.curAction ? (this.actionTrigger || this.curAction.trigger || '') : ''
         }
       // 转纯对象送 IPC（避免响应式 Proxy 无法结构化克隆）
       const params = JSON.parse(JSON.stringify({
@@ -864,6 +978,11 @@ export default {
         seconds: this.seconds,
         tier: this.tier,
         aspect: this.aspect,
+        // 动作 LoRA：id 由主进程再解析成文件路径（渲染层不拼路径）；
+        // 强度 / 触发词显式传，主进程缺省时回落到 json 里的推荐值
+        styleLoraId: this.curAction ? this.curAction.id : '',
+        styleLoraWeight: this.curAction ? Number(this.actionWeight) : null,
+        styleLoraTrigger: this.curAction ? (this.actionTrigger || this.curAction.trigger || '') : '',
         snapshot
       }))
       const t0 = Date.now()
@@ -881,6 +1000,8 @@ export default {
         '    首帧：' + (params.firstFrame || '无') + ' · 尾帧：' + (params.lastFrame || '无'),
         (this.whiteOn ? '    白膜：开 · 保留原始声音=' + (this.keepAudio ? '是' : '否') : ''),
         (this.autoDur ? '    自动时长：按参考视频长度切段生成后拼接（计划：' + (this.planText || '待探测') + '）' : ''),
+        (this.curAction ? '    动作 LoRA：' + this.curAction.label + ' @ ' + this.actionWeight
+          + '（触发词 ' + (this.actionTrigger || '无') + ' · 步数/采样/分辨率按所选档位）' : ''),
         '========================================'
       ].filter(s => s !== '').join('\n')
       console.log(dbgPrompt)
@@ -1021,8 +1142,29 @@ export default {
 .ref-thumb video{width:100%;height:100%;object-fit:contain;background:#0b0f16;border-radius:6px;display:block;}
 /* 🔴 视频首帧 poster 的样式在全局 style.css（.vg-vid-poster）——
    分镜页/导出页/预览弹窗也要用，不能只写在 VideoGen 的 scoped 样式里。 */
-/* 视频质量：三档 × A/B */
-.vg-tier-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;}
+/* 动作 / 交互 LoRA（2026-11-17）：下拉 + 强度输入框 + 触发词单选 + 锁定提示 */
+.vg-row{display:flex;align-items:center;gap:8px;}
+.vg-sel{width:100%;background:#0e1320;border:1px solid var(--line);border-radius:10px;color:var(--text);padding:9px 11px;font:12.5px/1.6 inherit;}
+.vg-sel:focus{outline:none;border-color:var(--blue);}
+.vg-sel:disabled{background:#0b1018;border-color:#232c3d;color:#6b7a8f;cursor:not-allowed;opacity:1;}
+/* 行内下拉：让出宽度给右侧强度框（否则 width:100% 会把它挤出面板） */
+.vg-row>.vg-sel{flex:1;min-width:0;width:auto;}
+.vg-wl{flex:none;font-size:11px;color:var(--sub-2);letter-spacing:.04em;}
+.vg-num{width:62px;flex:none;padding:8px 6px;text-align:center;font-variant-numeric:tabular-nums;
+  background:#0e1320;border:1px solid var(--line);border-radius:10px;color:var(--text);font:12.5px/1.2 inherit;}
+.vg-num:focus{outline:none;border-color:var(--blue);}
+.vg-trig-row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}
+.vg-trig{background:#161d2a;border:1px solid #2c3646;border-radius:8px;padding:5px 10px;color:#c7d6ea;
+  font-size:11.5px;cursor:pointer;transition:border-color .15s,background .15s;}
+.vg-trig:hover{border-color:var(--blue);}
+.vg-trig.on{border-color:var(--blue);background:rgba(37,99,235,.16);color:#fff;}
+/* 实际写入提示词的英文原句：等宽字体，方便用户核对有没有打错 */
+.vg-trig-en{margin-top:6px;font-size:10.5px;color:var(--sub-2);line-height:1.5;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-word;}
+.vg-note{font-size:11px;color:var(--sub-2);margin-top:6px;line-height:1.6;}
+.vg-note.warn{color:#e8bd82;}
+/* 视频质量：三档 × A/B + 单档位（原生 20 步）→ auto-fit 让第 4 组自动换行不挤 */
+.vg-tier-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:9px;}
 .vg-tier{border:1px solid var(--line);border-radius:10px;padding:9px;}
 .vg-tier-head{font-size:12.5px;font-weight:600;color:#dbe5f5;margin-bottom:6px;}
 .vg-ab-row{display:flex;flex-direction:column;gap:6px;}

@@ -1303,6 +1303,76 @@ input[type=search]:focus{
 /* 占满可用宽度：最大化时内容随之变宽，行结构不变（不换行/不错位） */
 .settings{width:100%; margin:0;}
 .settings h2{font-size:19px; font-weight:700; margin-bottom:16px; letter-spacing:.01em; color:#eef3fb;}
+
+/* ---- 快速上手（帮助页 v0.4.2）：给拿到 exe 的非技术用户看的一页纸 ----
+   风格跟设置页同源（复用 .set-card），只是内文更松、行距更大，方便当说明书读 */
+.help{width:100%; max-width:980px; margin:0;}
+.help h2{font-size:19px; font-weight:700; margin-bottom:10px; letter-spacing:.01em; color:#eef3fb;}
+.help-lead{font-size:13px; line-height:1.9; color:#93a2b8; margin:0 0 18px;}
+.help-lead b{color:#f0c07a; font-weight:600;}
+.help code{
+  font-family:Consolas,"Cascadia Mono",monospace; font-size:11.5px;
+  padding:1px 5px; border-radius:4px;
+  background:rgba(255,255,255,.06); color:#a9c4e4; word-break:break-all;
+}
+/* 本机状态行 */
+.help-row{display:flex; align-items:center; gap:10px; padding:5px 0;}
+.help-k{width:92px; flex-shrink:0; font-size:12.5px; color:#8b9ab0;}
+.help-path{
+  flex:1; min-width:0; font-family:Consolas,"Cascadia Mono",monospace; font-size:11.5px;
+  padding:4px 9px; border-radius:5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  background:rgba(255,255,255,.04); border:1px solid var(--line); color:#c6d4e8;
+}
+.help-path.bad{color:#f0a8a8; border-color:rgba(226,75,74,.42);}
+.help-val{font-size:12.5px; color:#8ed9b6;}
+.help-val.bad{color:#e8b06a;}
+.help-warn{
+  margin:8px 0 2px; padding:8px 11px; border-radius:6px; font-size:12px; line-height:1.85;
+  background:rgba(226,75,74,.1); border:1px solid rgba(226,75,74,.32); color:#f0b4b4;
+}
+/* 槽位自检清单：✓ 绿 / ✗ 红，右侧带文件名或「缺什么」说明 */
+.help-list{margin-top:10px; border-top:1px solid var(--line-soft);}
+.help-item{display:flex; align-items:center; gap:9px; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;}
+.help-tick{width:15px; flex-shrink:0; text-align:center; font-weight:700; color:#e07b7b;}
+.help-item.ok .help-tick{color:var(--ok);}
+.help-item-name{flex:0 0 auto; color:#c3cddd; display:flex; align-items:center;}
+.help-opt{
+  margin-left:7px; font-style:normal; font-size:10px; padding:1px 5px; border-radius:4px;
+  background:rgba(255,255,255,.06); color:#8b9ab0; letter-spacing:.02em;
+}
+.help-item-need{
+  flex:1; min-width:0; text-align:right; font-size:11.5px; color:#7c8a9f;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.help-item.ok .help-item-need{color:#6e8e80;}
+/* 三步走 */
+.help-steps{margin:0; padding-left:19px; font-size:13px; line-height:2.05; color:#b3c0d2;}
+.help-steps li{margin-bottom:9px;}
+.help-steps li:last-child{margin-bottom:0;}
+.help-steps b{color:#e6ecf6;}
+.help-steps .btn{margin-left:9px; vertical-align:1px;}
+/* 模型落点表 */
+.help-table{width:100%; border-collapse:collapse; font-size:12.5px;}
+.help-table th{
+  text-align:left; font-weight:600; font-size:11px; letter-spacing:.04em; text-transform:uppercase;
+  color:#7f8da3; padding:0 10px 7px; border-bottom:1px solid var(--line); white-space:nowrap;
+}
+.help-table td{padding:9px 10px; border-bottom:1px solid var(--line-soft); color:#b3c0d2; line-height:1.75; vertical-align:top;}
+.help-table td:first-child{white-space:nowrap;}
+.help-table tr:last-child td{border-bottom:none;}
+.help-foot{margin:11px 0 0; font-size:12px; line-height:1.85; color:#7c8a9f;}
+/* 提示条 + 问答 */
+.help-tip{
+  padding:9px 12px; border-radius:6px; font-size:12.5px; line-height:1.9;
+  background:rgba(59,130,246,.08); border:1px solid rgba(59,130,246,.24); color:#b3c0d2;
+}
+.help-tip b{color:#dde7f5;}
+.help-faq{margin-top:4px;}
+.help-qa{padding:9px 0; border-top:1px solid var(--line-soft);}
+.help-qa:first-child{border-top:none; padding-top:8px;}
+.help-qa .q{font-size:12.5px; font-weight:600; color:#dae4f1; margin-bottom:3px;}
+.help-qa .a{font-size:12px; line-height:1.9; color:#8d9bb1;}
+.help-qa .a b{color:#c8d5e7;}
 .set-card{
   background:linear-gradient(180deg,#151b27 0%,#121721 100%);
   border:1px solid var(--line); border-radius:var(--r-lg);
@@ -2119,6 +2189,12 @@ input[type=search]:focus{
   border-color:rgba(96,165,250,.8); color:#dbeaff;
   background:rgba(59,130,246,.16);
 }
+/* 帮助入口：跟设置并排，视觉上弱一档（设置是常去的地方，帮助只在第一次看） */
+.btn-new.help-btn{
+  border-color:rgba(120,140,170,.28); color:#93a4bc; font-size:12px; padding:7px;
+}
+.btn-new.help-btn:hover{border-color:rgba(150,175,205,.6); color:#d2ddec; background:rgba(255,255,255,.05);}
+.btn-new.help-btn.on{border-color:rgba(120,160,210,.7); color:#cfe0f5; background:rgba(90,130,190,.14);}
 
 /* ================= 卡片级分辨率（角色图 / 镜头视频逐条设置） ================= */
 .card-res{

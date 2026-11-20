@@ -11,6 +11,8 @@ const modelImport = require('./modelImport.cjs');
 const comfyProbe = require('./comfyProbe.cjs');
 const comfySetup = require('./comfySetup.cjs');
 const inference = require('./inference.cjs');
+const imgRecipe = require('./imgRecipe.cjs');
+const loraSlots = require('./loraSlots.cjs');
 const launcher = require('./launcher.cjs');
 const logger = require('./logger.cjs');
 const metrics = require('./metrics.cjs');
@@ -437,6 +439,12 @@ function registerIpc(db, getWin, fallbackWorkspace) {
 
   /* ---- 分辨率 / 视频档位配置（项目级 = 新建剧集的初始模板；剧集级 = 本集生效值）---- */
   ipcMain.handle('res:options', () => models.resOptions());
+  // 图片生成页的三个下拉：基础模型 / 加速 LoRA / 风格 LoRA（安装状态由主进程扫目录给出）
+  ipcMain.handle('img:models', () => imgRecipe.list(profiles.active('image')));
+  // 视频「动作 / 交互 LoRA」清单：目录即清单（loras/h3-action/），主进程扫盘给出，
+  // 渲染层不做任何文件判断。只服务「视频生成」页，图片侧走上面那条 img:models。
+  ipcMain.handle('video:loraSlots', (e, slotId) =>
+    loraSlots.list(profiles.active('video'), slotId || 'action'));
   // 视频档位清单：渲染层下拉直接用主进程给的档位名渲染（UI 不硬编码、不出现模型信息）
   ipcMain.handle('res:tiers', () => videoTiers.list());
   ipcMain.handle('project:res:get', (e, projectId) => projects.getProjectRes(db, projectId));

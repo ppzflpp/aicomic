@@ -14,6 +14,8 @@ const tools = require('./tools.cjs');
 const models = require('./models.cjs');
 const videoTiers = require('./videoTiers.cjs');
 const profiles = require('./profiles.cjs');
+const imgRecipe = require('./imgRecipe.cjs');
+const loraSlots = require('./loraSlots.cjs');
 const projects = require('./projects.cjs');
 const llmProvider = require('./llmProvider.cjs');
 const comfyProbe = require('./comfyProbe.cjs');
@@ -1649,13 +1651,36 @@ function writeSidecar(dir, name, meta) {
 }
 
 async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, timeoutMs = 1800000 }) {
-  const tplFile = workflowPath(templateKey);
+  const isVideo = templateKey === 'video';
+  const isEdit = templateKey === 'character_edit';
+
+  // 本次生成用哪套模型方案 —— 代码不再认任何模型名，一切从方案里读
+  const imgP = profiles.active('image');
+  const vidP = profiles.active('video');
+
+  // 生图「档位配方」（基础模型 / 加速 LoRA / 风格 LoRA）：
+  // 🔴 唯一开关是 params.imageModel —— 只有「图片生成」页会传它。
+  //    角色卡 / 场景卡 / 三视图 / 装扮 / 片头封面 / 素材库都不传 → recipe 为 null
+  //    → 模板与参数与改造前完全一致（这条靠参数缺失隔离，不靠自觉）。
+  let recipe = null;
+  if (!isVideo && params.imageModel) {
+    recipe = imgRecipe.resolve(imgP, {
+      modelId: params.imageModel,
+      loraId: params.imageLora,
+      styleId: params.imageStyle,
+      styleW: params.imageStyleW,
+      mode: isEdit ? 'edit' : 't2i',
+      want: { steps: params.steps, cfg: params.cfg, sampler: params.sampler, scheduler: params.scheduler }
+    });
+    if (recipe && recipe.ok === false) throw new Error(recipe.error);
+  }
+
+  const tplFile = (recipe && recipe.tpl) ? path.join(ws() || '', recipe.tpl) : workflowPath(templateKey);
   if (!fs.existsSync(tplFile)) {
     throw new Error('工作流模板缺失：' + tplFile + '。请先在 workspace/workflows/ 放置对应工作流 JSON（规范见 README）。');
   }
   const tplText = fs.readFileSync(tplFile, 'utf-8');
 
-  const isVideo = templateKey === 'video';
   const refImages = Array.isArray(params.refImages) ? params.refImages.filter(Boolean) : [];
   const refVideos = Array.isArray(params.refVideos) ? params.refVideos.filter(Boolean) : [];
   const wantFirst = params.firstFrame || params.image || null;
@@ -1663,8 +1688,6 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
   const refMode = refImages.length > 0 || refVideos.length > 0;
 
   // 本次生成用哪套模型方案 —— 代码不再认任何模型名，一切从方案里读
-  const imgP = profiles.active('image');
-  const vidP = profiles.active('video');
   const vidN = (vidP && vidP.nodes) || {};
   const vidC = (vidP && vidP.classes) || {};
 
@@ -1769,6 +1792,30 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
       realParams.width = p.width;
       realParams.height = p.height;
     }
+
+    // —— 动作 / 交互 LoRA（「视频生成」页可选，目录即清单）——
+    // 只负责两件事：把 LoRA 挂上、把触发词拼进提示词。
+    // 🔴 2026-11-17 用户定：**不锁「视频质量」** —— 步数 / 采样器 / 加速 LoRA / 分辨率 / 二采
+    //    全部按用户在档位区自己选的那档走，LoRA 侧一律不覆盖。
+    //    （原实现按 LoRA 的 requires 强行改这些，等于绕过用户的选择。）
+    const stl = loraSlots.resolve(vidP, 'action', params.styleLoraId);
+    if (stl) {
+      realParams.h3_styleLora = stl.file;                  // 已转成平台分隔符
+      realParams.h3_styleWeight = Number(params.styleLoraWeight) > 0
+        ? Number(params.styleLoraWeight) : Number(stl.weight);
+      // 触发词前置拼接（去重）：动作 LoRA 靠它激活，漏了就是「选了没反应」
+      const trig = String(params.styleLoraTrigger || stl.trigger || '').trim();
+      if (trig) {
+        const cur = String(realParams.prompt || '');
+        const esc = t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (!new RegExp('(^|[\\s,，])' + esc(trig) + '([\\s,，]|$)', 'i').test(cur)) {
+          realParams.prompt = trig + (cur ? ', ' + cur : '');
+        }
+      }
+      logger.detail('动作 LoRA：' + stl.id + '（强度 ' + realParams.h3_styleWeight
+        + ' · 按档位 ' + realParams.steps + ' 步'
+        + (realParams.h3_lora ? ' · 叠加速 LoRA' : '') + '）');
+    }
   } else {
     realParams = { ...models.workflowModels(), ...params };
     const N = (imgP && imgP.nodes) || {};
@@ -1792,6 +1839,30 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     // （角色卡换装/三视图等，只传 resolution）退回正方形 = 与改造前行为一致。
     realParams.ew = Number(params.ew) > 0 ? Math.round(params.ew) : (Number(realParams.resolution) > 0 ? Math.round(realParams.resolution) : 1024);
     realParams.eh = Number(params.eh) > 0 ? Math.round(params.eh) : (Number(realParams.resolution) > 0 ? Math.round(realParams.resolution) : 1024);
+
+    // —— 档位配方：底模与采样参数以配方为准 ——
+    // 🔴 必须「覆盖」而不是「有就用」：加速档的 σ 网格是训练定死的，改了步数会直接崩画面。
+    //    渲染层的下拉候选值本来也来自同一份配方，这里只是兜住手工填值 / 老调用方。
+    if (recipe) {
+      realParams.steps = recipe.steps;
+      realParams.cfg = recipe.cfg;
+      realParams.sampler = recipe.sampler;
+      realParams.scheduler = recipe.scheduler;
+      // 没有 σ 网格的档（turbo8）给一个语法合法的中性值：模板里 33 号节点随后会被摘掉
+      realParams.sigmas = recipe.sigmas || '1, 0';
+      realParams.q_unet = recipe.unet || realParams.q_unet;
+      realParams.q_lora = recipe.loraFile || 'none';
+      realParams.lora_strength = recipe.loraStrength == null ? 1 : recipe.loraStrength;
+      // 风格 LoRA 触发词：界面文案承诺「生成时自动加上」，真正拼接就在这里。
+      // 前置拼接（多数风格 LoRA 训练习惯触发词打头）；用户自己写过的就不重复加。
+      const trigs = recipe.styles.map(s => String(s.trigger || '').trim()).filter(Boolean);
+      if (trigs.length) {
+        const cur = String(realParams.prompt || '');
+        const esc = t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const add = trigs.filter(t => !new RegExp('(^|[\\s,，])' + esc(t) + '([\\s,，]|$)', 'i').test(cur));
+        if (add.length) realParams.prompt = add.join(', ') + (cur ? ', ' + cur : '');
+      }
+    }
   }
   // 多图参考（Qwen-Image 2.1 原生编辑官方支持多图）：params.images = [abs path, ...]。
   // 第 1 张走既有 image 槽（驱动编辑/图生图支路），第 2..N 张上传后出图前动态注入 LoadImage。
@@ -1830,6 +1901,18 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     wf = JSON.parse(filled);
   } catch (e) {
     throw new Error('工作流 JSON 解析失败（' + path.basename(tplFile) + '）：' + (e && e.message));
+  }
+
+  // 档位装配：加速 LoRA 槽 / σ 网格（ManualSigmas ↔ BasicScheduler）/ 位移修正 / 风格 LoRA 链。
+  // 只有传了 imageModel 的「图片生成」页会走到这里；其它生图入口 recipe 为 null，工作流原样提交。
+  if (recipe) {
+    imgRecipe.apply(wf, recipe, {
+      customSampler: !!recipe.accel,
+      // denoise=1 才能用固定 σ 网格；图生图（0.62）要交给 BasicScheduler 按 denoise 截断
+      useManual: !!(recipe.sigmas && Number(realParams.denoise) === 1),
+      width: realParams.width,
+      height: realParams.height
+    });
   }
 
   // 生图的「图生图」支路：节点 id 由方案声明（nodes.i2iImage / i2iEncode），代码不认数字
@@ -1943,6 +2026,35 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
       }
     }
 
+    // 动作 / 交互 LoRA：串在「最终模型」后面，接的是 Guider 与 Scheduler 都在用的那一路。
+    // 🔴 不能写死接 10 号底模 —— 上面可能还挂着加速 LoRA（虽然本功能会强制关掉它），
+    //    这里按「下游当前实际指向谁」找入口，改完再把下游一起指过来，顺序天然正确。
+    // 🔴 节点 id 用 26（模板是 10–25，二采 3x、加速 7xx、媒体 9xx，都不冲突）。
+    if (realParams.h3_styleLora) {
+      const ga = wf[vidN.guider] && wf[vidN.guider].inputs.model;
+      if (Array.isArray(ga) && wf[ga[0]]) {
+        const sid = '26';
+        wf[sid] = {
+          class_type: 'LoraLoaderModelOnly',
+          inputs: {
+            model: [ga[0], ga[1]],
+            lora_name: realParams.h3_styleLora,
+            strength_model: Number(realParams.h3_styleWeight) || 0.65
+          }
+        };
+        // 所有指向「入口」的 model 输入（guider / scheduler / σ-shift）改指链尾
+        for (const [id, node] of Object.entries(wf)) {
+          if (id === sid) continue;
+          const m = node && node.inputs && node.inputs.model;
+          if (Array.isArray(m) && String(m[0]) === String(ga[0]) && m[1] === ga[1]) {
+            node.inputs.model = [sid, 0];
+          }
+        }
+      } else {
+        logger.warn('动作 LoRA 找不到可挂载的模型入口（wiring.nodes.guider=' + vidN.guider + '），本次未挂载');
+      }
+    }
+
     // 加速优化开关（全局）：INT8 注意力 + BlockCache T8。
     // 🔴 开关是全局设置（wiring.attentionBoost.settingKey），与档位正交 —— 用户不管选哪个档位
     //    都能一键开关。开时在「最终模型 → Guider」之间串入两个 model patch 节点；
@@ -2040,6 +2152,9 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     const tr = realParams.tierRes || {};
     logger.info('本次使用模型：' + (realParams.h3_unet || '(未解析到权重文件)') +
       '｜LoRA：' + (realParams.h3_lora || '无（基础模型直跑）') +
+      (realParams.h3_styleLora
+        ? '｜动作 LoRA：' + realParams.h3_styleLora + ' @ ' + realParams.h3_styleWeight
+        : '') +
       '｜模型族：' + videoTiers.branchLabel(tr.family, vidP) + '（' + tr.family + '）' +
       '｜采样网格：' + (realParams.sigmas
         ? '方案自带 ' + realParams.steps + ' 步蒸馏序列（ManualSigmas）'
@@ -2056,6 +2171,14 @@ async function comfyGenerateInner({ templateKey, dir, baseName, params = {}, tim
     logger.info('本次图片生成配置：' + realParams.width + 'x' + realParams.height +
       (realParams.image ? '，图生图（denoise ' + realParams.denoise + '）' : '，文生图') +
       '，工作流 ' + models.activeImageTemplate());
+    // 档位来源单独记一行：出图异常时第一件事就是确认「这张到底跑的哪一档」
+    if (recipe) {
+      logger.info('生图档位：' + recipe.modelId
+        + (recipe.loraId ? ' + ' + recipe.loraId : '')
+        + (recipe.styles.length ? ' + 风格 ' + recipe.styles.map(s => s.label || s.file).join(' / ') : '')
+        + '｜' + recipe.steps + ' 步 · CFG ' + recipe.cfg
+        + '｜' + (recipe.sigmas ? '固定 σ 网格' : 'BasicScheduler'));
+    }
   }
   logger.info('提交 ComfyUI 工作流：' + (templateKey === 'video' ? ((vidP && vidP.label) || '视频') : '角色图') + ' → ' + baseName);
 

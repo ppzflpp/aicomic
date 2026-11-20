@@ -584,6 +584,9 @@ function check() {
       const r = resolveAsset(a);
       items.push({
         key: a.slot, label: a.label, short: a.short || a.role, group: 'asset',
+        // 出自哪套方案（image / video / upscale）—— 三套方案的文件混在同一个
+        // diffusion_models 里，界面要按用途分组显示时得有这个标记
+        kind: p.kind,
         hint: a.why || a.hint, required: a.required, sub: a.dir,
         path: dirOfSub(a.dir) || '', ok: !!r.name,
         count: r.name ? Math.max(1, r.files.length) : 0,

@@ -52,6 +52,18 @@
     }
   ],
 
+  "loraSlots": [
+    {
+      "id": "action",
+      "label": "动作 LoRA",
+      "dir": "h3-action",
+      "arch": "h3",
+      "max": 1,
+      "note": "打斗 / 招式 / 交互类 LoRA。文件放进 loras\\h3-action\\ 就会出现在下拉里；旁边的同名 .json 可写中文名、触发词、推荐权重。",
+      "weight": { "default": 0.65, "min": 0.2, "max": 1.2 }
+    }
+  ],
+
   "nodes": {
     "model": "10", "textEncoder": "11", "videoVae": "12", "audioVae": "13",
     "lora": "14", "shift": "15", "conditioning": "16",
@@ -94,16 +106,17 @@
     { "key": "ref2v", "when": "ref", "label": "参考图 / 参考视频支路" }
   ],
 
-  "tierOrder": ["fasta", "fastb", "balanceda", "balancedb", "hqa", "hqb"],
+  "tierOrder": ["fasta", "fastb", "balanceda", "balancedb", "hqa", "hqb", "native20"],
   "defaultTier": "fasta",
-  "tierLabels": { "fasta": "速度优先A", "fastb": "速度优先B", "balanceda": "平衡A", "balancedb": "平衡B", "hqa": "质量最优A", "hqb": "质量最优B" },
+  "tierLabels": { "fasta": "速度优先A", "fastb": "速度优先B", "balanceda": "平衡A", "balancedb": "平衡B", "hqa": "质量最优A", "hqb": "质量最优B", "native20": "原生 20 步" },
   "tierDescs": {
     "fasta": "剪枝模型 + 4步 turbo LoRA · 480p。显存低于 16G 推荐",
     "fastb": "原始模型 + PDD 8步 LoRA · 480p。显存高于 16G 推荐",
     "balanceda": "剪枝模型 + 8步 turbo LoRA · 544p。显存低于 16G 推荐",
     "balancedb": "原始模型 + PDD 8步 LoRA · 544p。显存高于 16G 推荐",
     "hqa": "剪枝模型 + 8步 LoRA · 768p 单遍。清晰且最快，显存低于 16G 推荐",
-    "hqb": "原始模型 + PDD 二采 768p。细节最足、最慢，显存高于 16G 推荐"
+    "hqb": "原始模型 + PDD 二采 768p。细节最足、最慢，显存高于 16G 推荐",
+    "native20": "基础模型直跑 20 步 · 480p · 不叠加速 LoRA。动作 / 交互类 LoRA 的原生档"
   },
 
   "tiers": {
@@ -161,6 +174,10 @@
         },
         { "match": null, "steps": 20, "shift": null, "unet": "ref2va_int8_convrot" }
       ]
+    },
+    "native20": {
+      "fl2v": [ { "match": null, "steps": 20, "shift": null, "unet": "pruned", "sampler": "euler" } ],
+      "ref2v": [ { "match": null, "steps": 20, "shift": null, "unet": "pruned", "sampler": "euler" } ]
     }
   },
 
@@ -170,7 +187,8 @@
     "balanceda":{ "16:9": "960x544",  "9:16": "544x960",  "accept": ["864x480", "480x864", "960x544", "544x960"] },
     "balancedb":{ "16:9": "960x544",  "9:16": "544x960",  "accept": ["864x480", "480x864", "960x544", "544x960"] },
     "hqa":      { "16:9": "1344x768", "9:16": "768x1344", "accept": ["1344x768", "768x1344"] },
-    "hqb":      { "16:9": "1344x768", "9:16": "768x1344", "accept": ["1344x768", "768x1344"] }
+    "hqb":      { "16:9": "1344x768", "9:16": "768x1344", "accept": ["1344x768", "768x1344"] },
+    "native20": { "16:9": "864x480",  "9:16": "480x864",  "accept": ["864x480", "480x864", "960x544", "544x960"] }
   },
 
   "wiring": {

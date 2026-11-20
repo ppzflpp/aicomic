@@ -48,7 +48,12 @@ check('asar 含 electron/main.cjs', norm.some((p) => p === '/electron/main.cjs')
 check('asar 含 skills/prompts', norm.some((p) => p.startsWith('/skills/prompts/')))
 check('asar 含 node_modules', norm.some((p) => p.startsWith('/node_modules/')))
 const asarSize = fs.statSync(asarPath).size
-check('app.asar 体积合理（<80MB）', asarSize < 80 * 1024 * 1024, (asarSize / 1048576).toFixed(1) + 'MB')
+// 正常 ~28MB（前端 dist + electron + skills + 运行时依赖）。原生模块 better-sqlite3 的
+// 编译中间产物（.obj/.lib/.pdb/.iobj，一次全量编译能到 57MB）也会被塞进来 —— 那种情况下
+// asar 会直接翻倍。阈值收到 45MB，早了能发现，而不是等安装包大到离谱。
+check('app.asar 体积合理（<45MB）', asarSize < 45 * 1024 * 1024, (asarSize / 1048576).toFixed(1) + 'MB')
+check('asar 未含编译中间产物', !norm.some((p) => /\.(obj|lib|iobj|ipdb|pdb|tlog)$/i.test(p)),
+  norm.filter((p) => /\.(obj|lib|iobj|ipdb|pdb|tlog)$/i.test(p)).slice(0, 3).join(', '))
 
 // ---- 4. 内置工具：在、且排除项生效 ----
 const toolsDir = path.join(unpacked, 'resources', 'tools')
@@ -70,9 +75,13 @@ check('已排除 crispasr', !toolFiles.some((p) => /crispasr/i.test(p)))
 check('已排除 ffmpeg/doc 与 presets', !toolFiles.some((p) => /[\\/]ffmpeg[\\/](doc|presets)[\\/]/i.test(p)))
 
 // ---- 5. 安装包体积 ----
-const exe = fs.readdirSync(path.join(ROOT, outDir)).find((f) => /Setup .*\.exe$/i.test(f))
+// 🔴 必须按当前版本号精确匹配。release\ 里并存着历史版本（0.4.1 / 0.4.2 …），
+// 「取第一个 Setup *.exe」会去校验旧包 —— 本次打出来的是好是坏都看不出来。
+const ver = require('../package.json').version
+const exeRe = new RegExp('Setup ' + ver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.exe$', 'i')
+const exe = fs.readdirSync(path.join(ROOT, outDir)).find((f) => exeRe.test(f))
 if (!exe) {
-  check('安装包 exe 存在', false, '在 ' + outDir + ' 未找到 Setup.exe')
+  check('安装包 exe 存在（' + ver + '）', false, '在 ' + outDir + ' 未找到 Setup ' + ver + '.exe')
 } else {
   const sz = fs.statSync(path.join(ROOT, outDir, exe)).size
   const mb = sz / 1048576

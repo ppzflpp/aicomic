@@ -61,6 +61,10 @@ contextBridge.exposeInMainWorld('studio', {
 
   // 分辨率配置：项目级（新建剧集的初始模板）/ 剧集级（本集生效）+ 按模型过滤的档位
   resOptions: () => ipcRenderer.invoke('res:options'),
+  // 图片生成页的档位清单（基础模型 / 加速 LoRA / 风格 LoRA）：渲染层不做任何文件判断
+  imgModels: () => ipcRenderer.invoke('img:models'),
+  // 视频生成页的「动作 LoRA」清单（扫 loras/h3-action/，目录即清单）
+  videoLoraSlots: (slotId) => ipcRenderer.invoke('video:loraSlots', slotId),
   // 视频档位清单（[速度优先/平衡/质量优先]，只给档位名与说明，不含任何模型信息）
   resTiers: () => ipcRenderer.invoke('res:tiers'),
   getProjectRes: (projectId) => ipcRenderer.invoke('project:res:get', projectId),

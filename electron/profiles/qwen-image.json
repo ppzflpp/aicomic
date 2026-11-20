@@ -6,14 +6,84 @@
   "default": true,
 
   "workflow": "workflows/character_qwen_image.json",
+  "workflowEdit": "workflows/character_edit.json",
+
+  "accel": {
+    "workflow": "workflows/character_qwen_image_accel.json",
+    "workflowEdit": "workflows/character_edit_accel.json",
+    "cfgWithStyle": [1, 1.6]
+  },
+
+  "models": [
+    {
+      "id": "base",
+      "label": "基础模型",
+      "desc": "全质量 · 4K 约 13.6 分",
+      "unet": "q_unet",
+      "accel": false,
+      "params": {
+        "steps": [20, 25, 30, 40],
+        "cfg": [2, 2.5, 3, 3.5],
+        "sampler": ["euler"],
+        "scheduler": ["simple", "normal", "beta"]
+      },
+      "loras": ["turbo8"]
+    },
+    {
+      "id": "turbo",
+      "label": "Turbo 8 步",
+      "desc": "官方蒸馏整模型 · 4K 约 79 秒",
+      "unet": "q_unet_turbo",
+      "accel": true,
+      "params": {
+        "steps": [8],
+        "cfg": [1],
+        "sampler": ["euler"],
+        "scheduler": ["simple"],
+        "sigmas": "1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0"
+      },
+      "loras": []
+    }
+  ],
+
+  "loras": [
+    {
+      "id": "turbo8",
+      "label": "Turbo LoRA",
+      "tag": "8 步 · shift 0.69",
+      "by": "社区",
+      "note": "8 步 + 位移修正",
+      "file": "qwen-image/turbo8_lora_step2500.safetensors",
+      "modelSampling": { "max_shift": 0.6935, "base_shift": 0.5 },
+      "params": {
+        "steps": [8], "cfg": [1], "sampler": ["euler"], "scheduler": ["simple"]
+      }
+    }
+  ],
+
+  "styles": {
+    "dir": "qwen-image",
+    "arch": "qwen",
+    "max": 1,
+    "defaultWeight": 0.7,
+    "weightMin": 0.2,
+    "weightMax": 1
+  },
 
   "assets": [
     {
       "slot": "q_unet", "role": "unet", "dir": "diffusion_models",
-      "match": "qwen[._-]?image[._-]?2", "importRe": "qwen[._-]?image[._-]?2(?!.*vae)", "pick": "strict", "required": true,
+      "match": "qwen[._-]?image[._-]?2(?!.*vae)(?!.*turbo)", "importRe": "qwen[._-]?image[._-]?2(?!.*vae)(?!.*turbo)", "pick": "strict", "required": true,
       "label": "生图主模型（Qwen-Image 2.1）", "short": "Q主模",
       "need": "举例：qwen_image_2.1_int8_convrot.safetensors（约 7.3 GB）",
       "why": "缺了无法生成角色图 / 场景图"
+    },
+    {
+      "slot": "q_unet_turbo", "role": "unet_turbo", "dir": "diffusion_models",
+      "match": "qwen[._-]?image[._-]?2.*turbo", "importRe": "qwen[._-]?image[._-]?2.*turbo", "pick": "strict", "required": false,
+      "label": "生图加速主模型（Turbo 8 步）", "short": "Q加速",
+      "need": "举例：qwen_image_2.1_turbo_int8_convrot.safetensors（约 6.8 GB）",
+      "why": "选了「Turbo 8 步」才需要；没装则该档不可选"
     },
     {
       "slot": "q_clip", "role": "clip", "dir": "text_encoders",
@@ -39,7 +109,7 @@
 
   "params": { "steps": 25, "cfg": 2.5, "sampler": "euler", "scheduler": "simple" },
 
-  "i2i": { "enabled": true, "denoise": 0.62, "scaleId": "30", "scaleCrop": "center" },
+  "i2i": { "enabled": true, "denoise": 0.62, "scaleId": "36", "scaleCrop": "center" },
 
   "resTier": "hi",
   "resolutions": [
@@ -48,11 +118,16 @@
     ["960x544", "960×544（16:9）"],
     ["1344x768", "1344×768（16:9）"],
     ["1920x1088", "1920×1088（16:9）"],
+    ["2560x1440", "2560×1440（16:9）"],
+    ["2880x1632", "2880×1632（16:9）"],
+    ["3840x2160", "3840×2160（16:9 · 4K 高显存）"],
     ["480x864", "480×864（9:16）"],
     ["544x960", "544×960（9:16）"],
     ["768x1344", "768×1344（9:16）"],
     ["1088x1920", "1088×1920（9:16）"],
-    ["2048x2048", "2048×2048（1:1）"]
+    ["1440x2560", "1440×2560（9:16）"],
+    ["2048x2048", "2048×2048（1:1）"],
+    ["5120x1600", "5120×1600（32:10 · 高显存）"]
   ],
 
   "capabilities": { "i2i": true, "negative": true },

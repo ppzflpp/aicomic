@@ -251,6 +251,8 @@
     </template>
     <!-- 模型与工作区信息统一放在最底状态栏，这里只留入口；设置按钮永远显示在最下面（收起态只留 ⚙） -->
     <div class="side-foot">
+      <button class="btn-new help-btn" :class="{on: st.view==='help'}" style="margin:0 0 6px"
+              @click="st.view='help'" title="装完怎么用：模型放哪、LoRA 怎么加">{{ sideCollapsed ? '?' : '? 帮助' }}</button>
       <button class="btn-new" :class="{on: st.view==='settings'}" style="margin:0"
               @click="st.view='settings'">{{ sideCollapsed ? '⚙' : '⚙ 设置' }}</button>
     </div>
@@ -262,7 +264,7 @@
     <div id="stage-mask-host"></div>
     <div class="pathbar">
       <button class="btn ghost" style="padding:3px 10px; font-size:12px"
-              v-if="st.view==='settings' || st.view==='prompts' || st.view==='imggen' || st.view==='vidgen'"
+              v-if="st.view==='settings' || st.view==='prompts' || st.view==='imggen' || st.view==='vidgen' || st.view==='help'"
               @click="st.view='dash'">← 返回</button>
       <span class="crumb">工作区 <b>{{ workspaceName }}</b></span>
       <template v-if="st.view==='dash' && st.current">
@@ -276,6 +278,9 @@
       </template>
       <template v-else-if="st.view==='vidgen'">
         <span class="crumb">/ <b>视频生成</b></span>
+      </template>
+      <template v-else-if="st.view==='help'">
+        <span class="crumb">/ <b>快速上手</b></span>
       </template>
       <template v-if="st.view==='lib'">
         <span class="crumb">/ <b>项目角色场景库</b></span>
@@ -292,6 +297,12 @@
     <!-- 设置视图 -->
     <div class="content" v-if="st.view==='settings'">
       <settings-panel />
+    </div>
+
+    <!-- 快速上手：给拿到 exe 的普通用户看的一页纸（模型放哪、LoRA 怎么加、常见问题）。
+         不常驻挂载——每次进来重新读一次本机状态，用户刚拷完文件切回来就能看到变化 -->
+    <div class="content" v-else-if="st.view==='help'">
+      <help-view />
     </div>
 
     <!-- 图片生成独立功能页（Qwen-Image 2.1：文生图 / 原生编辑 / 图生图）见本文件末尾常驻块 -->
@@ -707,6 +718,7 @@
 <script>
 import FolderNode from './FolderNode.vue'
 import SettingsPanel from './SettingsPanel.vue'
+import HelpView from './HelpView.vue'
 import StageAdapt from './StageAdapt.vue'
 import StageShots from './StageShots.vue'
 import StageChars from './StageChars.vue'
@@ -727,7 +739,7 @@ import { moduleStale, ackModule, MODULE_STALE_KINDS } from './stale.js'
 import { noteVideoMeta as _vtMeta, noteVideoError as _vtErr, shouldFallback as _vtFallback, thumbOf as _vtThumb } from './vidThumb.js'
 
 export default {
-  components: { FolderNode, SettingsPanel, StageAdapt, StageShots, StageChars, StageLibrary, StageExport, AppNavRail, PromptsView, ImageGen, VideoGen, LogPanel },
+  components: { FolderNode, SettingsPanel, HelpView, StageAdapt, StageShots, StageChars, StageLibrary, StageExport, AppNavRail, PromptsView, ImageGen, VideoGen, LogPanel },
   data() {
     return {
       chapter: '',

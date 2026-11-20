@@ -33,6 +33,49 @@
         <div class="ig-sec">
           <div class="ig-lab">负面提示词</div>
           <textarea class="ig-ta sm" v-model="negative" rows="2"></textarea>
+          <div class="ig-note warn" v-if="Number(cfg) === 1">当前档 CFG 1.0，负面词不生效（仍会存进这次生成的记录）</div>
+        </div>
+
+        <div class="ig-sec">
+          <div class="ig-lab">模型 <span class="ig-hint">{{ curModel ? curModel.desc : '' }}</span></div>
+          <select class="ig-sel" v-model="modelId">
+            <option v-for="m in imgModels" :key="m.id" :value="m.id" :disabled="!m.installed">
+              {{ m.label }}{{ m.installed ? '' : ' · 未安装' }}
+            </option>
+          </select>
+        </div>
+
+        <div class="ig-sec">
+          <div class="ig-lab">加速 LoRA
+            <span class="ig-hint">{{ loraOpts.length ? '与基础模型组合' : '该模型不支持叠加' }}</span>
+          </div>
+          <select class="ig-sel" v-model="loraId" :disabled="!loraOpts.length">
+            <option value="">{{ loraOpts.length ? '不使用' : '该模型已蒸馏，不支持加速 LoRA' }}</option>
+            <option v-for="l in loraOpts" :key="l.id" :value="l.id" :disabled="!l.installed">
+              {{ l.label }}{{ l.installed ? '' : ' · 未安装' }}
+            </option>
+          </select>
+          <div class="ig-note" v-if="curLora">{{ curLora.by }} · {{ curLora.note }}</div>
+        </div>
+
+        <div class="ig-sec">
+          <div class="ig-lab">风格 LoRA <span class="ig-hint">可与加速档叠加 · 最多 {{ styleCfg.max }} 个</span></div>
+          <div class="ig-row">
+            <select class="ig-sel" v-model="styleId">
+              <option value="">不使用</option>
+              <option v-for="s in imgStyles" :key="s.id" :value="s.id">{{ s.label }}</option>
+            </select>
+            <template v-if="styleId">
+              <span class="ig-wl">强度</span>
+              <input class="ig-num" type="number" :min="styleCfg.weightMin" :max="styleCfg.weightMax"
+                     step="0.05" v-model.number="styleW" aria-label="风格强度"
+                     :title="'风格强度 ' + styleCfg.weightMin + ' - ' + styleCfg.weightMax + '，越大风格越重'"
+                     @change="clampStyleW">
+            </template>
+          </div>
+          <div class="ig-note" v-if="!imgStyles.length">还没装风格 LoRA：把 .safetensors 放进模型目录的 <b>loras\qwen-image\</b>，回到本页就会出现。</div>
+          <div class="ig-note warn" v-else-if="curStyle && curStyle.mismatch">这个 LoRA 是 {{ curStyle.archLabel }} 用的，挂到当前模型上不会生效（权重 key 对不上），换 Qwen-Image 版的</div>
+          <div class="ig-note" v-else-if="curStyle && curStyle.trigger">生成时自动加上触发词：{{ curStyle.trigger }}</div>
         </div>
 
         <div class="ig-sec">
@@ -56,20 +99,24 @@
         </div>
 
         <div class="ig-sec">
-          <div class="ig-lab">采样参数 <span class="ig-hint">采样器 euler · 2.1 推荐默认 25 步 / CFG 2.5</span></div>
+          <div class="ig-lab">采样参数
+            <span class="ig-hint">{{ anyLocked ? '已按当前档位锁定' : '采样器 euler · 2.1 推荐默认 25 步 / CFG 2.5' }}</span>
+          </div>
           <div class="ig-row">
-            <select class="ig-sel sm" v-model.number="steps" title="采样步数：越多越精细，越慢">
-              <option :value="20">20 步</option><option :value="25">25 步</option>
-              <option :value="30">30 步</option><option :value="40">40 步</option>
+            <select class="ig-sel sm" v-model.number="steps" :disabled="stepsOpts.length < 2"
+                    :title="stepsOpts.length < 2 ? '该档位步数固定，不可调' : '采样步数：越多越精细，越慢'">
+              <option v-for="n in stepsOpts" :key="n" :value="Number(n)">{{ n }} 步</option>
             </select>
-            <select class="ig-sel sm" v-model.number="cfg" title="CFG 提示词强度：越高越贴提示词，过高会过饱和">
-              <option :value="2">CFG 2.0</option><option :value="2.5">CFG 2.5</option>
-              <option :value="3">CFG 3.0</option><option :value="3.5">CFG 3.5</option>
+            <select class="ig-sel sm" v-model.number="cfg" :disabled="cfgOpts.length < 2"
+                    :title="cfgOpts.length < 2 ? '该档位 CFG 固定，不可调' : 'CFG 提示词强度：越高越贴提示词，过高会过饱和'">
+              <option v-for="v in cfgOpts" :key="v" :value="Number(v)">CFG {{ v }}</option>
             </select>
-            <select class="ig-sel sm" v-model="scheduler" title="调度器">
-              <option value="simple">simple</option><option value="normal">normal</option><option value="beta">beta</option>
+            <select class="ig-sel sm" v-model="scheduler" :disabled="schedOpts.length < 2"
+                    :title="schedOpts.length < 2 ? '该档位调度器固定，不可调' : '调度器'">
+              <option v-for="s in schedOpts" :key="s" :value="s">{{ s }}</option>
             </select>
           </div>
+          <div class="ig-note warn" v-if="vramWarn">4K 以上 + 加速档 + 风格 LoRA：显存实测 15.8 / 16.3 GB，有失败风险</div>
         </div>
 
       </div>
@@ -179,6 +226,12 @@
               <span>CFG：{{ promptView.cfg != null ? promptView.cfg : '—' }}</span>
               <span style="opacity:.5"> · </span>
               <span>调度器：{{ promptView.scheduler || '—' }}</span>
+              <span style="opacity:.5"> · </span>
+              <span>模型：{{ promptView.model || '—' }}</span>
+              <span v-if="promptView.lora" style="opacity:.5"> · </span>
+              <span v-if="promptView.lora">加速：{{ promptView.lora }}</span>
+              <span v-if="promptView.style" style="opacity:.5"> · </span>
+              <span v-if="promptView.style">风格：{{ promptView.style }}</span>
               <span v-if="promptView.seed" style="opacity:.5"> · </span>
               <span v-if="promptView.seed">Seed：{{ promptView.seed }}</span>
             </div>
@@ -260,6 +313,14 @@ export default {
       results: [],         // 本次会话产物 [{path, mode, ms, at, snapshot}]
       history: [],         // <workspace>/图片生成/ 历史产物
       resOpts: null,       // [{value,label}] —— 独立页不依赖当前项目，直接从主进程取
+      // ── 模型 / 加速 LoRA / 风格 LoRA（2026-11-17）：三个下拉，选项与安装状态全部来自主进程 ──
+      imgModels: [],       // [{id,label,desc,installed,params,loras:[{id,label,tag,by,note,installed,params}]}]
+      imgStyles: [],       // [{id,label,note,trigger}] —— 扫 loras/qwen-image/ 得来，装什么列什么
+      styleCfg: { max: 1, weightMin: 0.2, weightMax: 1, defaultWeight: 0.7, cfgWithStyle: [] },
+      modelId: 'base',
+      loraId: '',
+      styleId: '',
+      styleW: 0.7,
       dims: {}             // path → 'W×H'（img onload 记录，悬浮 meta 显示）
     }
   },
@@ -280,6 +341,48 @@ export default {
         return [{ value: d.w + 'x' + d.h, label: '自动（' + d.w + '×' + d.h + '）' }, ...base]
       }
       return base
+    },
+    /* ── 模型 / 加速 LoRA / 风格 LoRA（2026-11-17）──
+     * 参数候选值的唯一来源是主进程下发的 params：每个键是数组，长度 1 = 该控件锁死。
+     * 页面不做业务判断（不写「选了 turbo 就禁用步数」这种 if），加新档位只改 profile。 */
+    curModel() { return this.imgModels.find(m => m.id === this.modelId) || null },
+    loraOpts() { return (this.curModel && Array.isArray(this.curModel.loras)) ? this.curModel.loras : [] },
+    curLora() { return this.loraOpts.find(l => l.id === this.loraId) || null },
+    curStyle() { return this.imgStyles.find(s => s.id === this.styleId) || null },
+    /** 组合参数：加速 LoRA 的 σ 网格/步数覆盖基础模型（σ 是训练定死的，不能混配） */
+    effParams() {
+      const out = { ...((this.curModel && this.curModel.params) || {}) }
+      const l = this.curLora
+      if (l && l.params) Object.assign(out, l.params)
+      return out
+    },
+    stepsOpts() {
+      const v = this.effParams.steps
+      return (Array.isArray(v) && v.length) ? v : [25]
+    },
+    cfgOpts() {
+      const v = this.effParams.cfg
+      const arr = (Array.isArray(v) && v.length) ? v.slice() : [2.5]
+      // 加速档默认把 CFG 锁在 1.0（负面词失效）。勾了风格 LoRA → 解锁 1.0 / 1.6，
+      // 让负面词与风格重新生效（实测 cfg1.6 的引导接近基线，代价是耗时 +50%）。
+      const styleable = Array.isArray(this.styleCfg.cfgWithStyle) ? this.styleCfg.cfgWithStyle : []
+      if (this.styleId && arr.length === 1 && styleable.length) return styleable.slice()
+      return arr
+    },
+    schedOpts() {
+      const v = this.effParams.scheduler
+      return (Array.isArray(v) && v.length) ? v : ['simple']
+    },
+    anyLocked() {
+      return this.stepsOpts.length < 2 || this.cfgOpts.length < 2 || this.schedOpts.length < 2
+    },
+    /** 是否走在加速路径上（Turbo 整模型或任一加速 LoRA） */
+    accelActive() { return !!this.loraId || !!(this.curModel && this.curModel.accel) },
+    /** 4K 以上 + 加速档 + 风格 LoRA 才提醒显存：其余组合实测都还有余量 */
+    vramWarn() {
+      if (!this.accelActive || !this.styleId) return false
+      const [w, h] = String(this.res).split('x').map(n => Number(n) || 0)
+      return w * h >= 3840 * 2160
     },
     /* 🔴 合并后的路由（2026-10-17 二轮拍板）：不再让用户选模式 ——
      *   没传参考图 = 文生图；传了图 = 默认「编辑图片」勾选（编辑通道），
@@ -304,6 +407,8 @@ export default {
     canGen() {
       // 🔴 多任务排队（2026-10-23）：不再因「有任务在跑」禁用按钮，只要参数就绪且未在提交中即可点
       if (this._submitting) return false
+      // 架构对不上的 LoRA 挂了也是白跑（ComfyUI 会静默跳过全部 key），不如直接挡住
+      if (this.curStyle && this.curStyle.mismatch) return false
       if (this.effMode === 't2i') return this.prompt.trim().length > 0
       return this.prompt.trim().length > 0 && this.refs.length > 0
     },
@@ -327,10 +432,22 @@ export default {
     // 🔴 本页常驻挂载（v-show），mounted 只跑一次、且可能早于「工作区加载完成」→
     //    那时 imgHistory('') 拿到空数组就再也不会重试，用户看到的「历史全空」就是这个：
     //    其他页面每次进入都重新拉数据，只有本页不会。盯住 workspace，一到就刷。
-    'st.workspace'() { this.reloadHistory() }
+    'st.workspace'() { this.reloadHistory() },
+    // 换基础模型：原加速 LoRA 若不在新模型的列表里就退回「不使用」，参数按新档位重算
+    modelId() {
+      if (this.loraId && !this.loraOpts.some(l => l.id === this.loraId)) this.loraId = ''
+      this.applyRecipe()
+    },
+    loraId() { this.applyRecipe() },
+    styleId(v) {
+      this.applyRecipe()
+      // 勾上风格 LoRA 时 CFG 解锁成两项，默认取大的那个（1.6）——风格和负面词才吃得住
+      if (v && this.accelActive && this.cfgOpts.length > 1) this.cfg = Number(this.cfgOpts[this.cfgOpts.length - 1])
+    }
   },
   async mounted() {
     try { this.resOpts = (await window.studio.resOptions() || {}).img || [] } catch (_) {}
+    await this.loadImgModels()
     if (this.resList.length && !this.resList.some(o => o.value === this.res)) this.res = this.resList[0].value
     this.reloadHistory()
     // 订阅任务中心事件：本模块任务结束 → 回填结果；进度 → 更新侧栏悬浮文案
@@ -354,6 +471,59 @@ export default {
   methods: {
     /** 每次切回本页时由 App 调用：常驻挂载没有 mounted 时机，历史得手动刷（见 App.vue 的 st.view watcher） */
     onShow() { this.reloadHistory() },
+    /**
+     * 拉档位清单（基础模型 / 加速 LoRA / 风格 LoRA）。
+     * 安装状态由主进程扫模型目录给出 —— 渲染层不碰文件系统，也不猜哪个文件在不在。
+     */
+    async loadImgModels() {
+      try {
+        const r = (await window.studio.imgModels()) || {}
+        this.imgModels = Array.isArray(r.models) ? r.models : []
+        this.imgStyles = Array.isArray(r.styles) ? r.styles : []
+        this.styleCfg = {
+          max: r.styleMax || 1,
+          defaultWeight: r.styleDefaultWeight || 0.7,
+          weightMin: r.weightMin != null ? Number(r.weightMin) : 0.2,
+          weightMax: r.weightMax != null ? Number(r.weightMax) : 1,
+          cfgWithStyle: Array.isArray(r.cfgWithStyle) ? r.cfgWithStyle : []
+        }
+        if (!this.imgModels.some(m => m.id === this.modelId)) {
+          this.modelId = r.defaultModel || (this.imgModels[0] && this.imgModels[0].id) || 'base'
+        }
+        if (!this.styleW) this.styleW = this.styleCfg.defaultWeight
+        this.applyRecipe()
+      } catch (_) { /* 拿不到就按默认档位跑，不影响出图 */ }
+    },
+    /**
+     * 按当前档位把三个采样参数拨到合法值：
+     *   唯一值 → 锁死；多值 → 原来那个还合法就保留，否则回到该档默认。
+     * 换模型 / 换 LoRA / 勾风格 LoRA 都走这一个口，不做跨档记忆。
+     */
+    /** 风格强度：输入框允许手打字，这里把越界/空值/NaN 收拢回合法区间 */
+    clampStyleW() {
+      const lo = Number(this.styleCfg.weightMin)
+      const hi = Number(this.styleCfg.weightMax)
+      const def = Number(this.styleCfg.defaultWeight)
+      // 空串会被 Number() 变成 0（有限数），必须单独判掉，否则清空输入会跳到下限
+      const raw = this.styleW
+      const blank = raw === '' || raw === null || raw === undefined
+        || (typeof raw === 'string' && !raw.trim())
+      let v = blank ? NaN : Number(raw)
+      if (!Number.isFinite(v)) v = Number.isFinite(def) ? def : 0.7
+      const min = Number.isFinite(lo) ? lo : 0
+      const max = Number.isFinite(hi) && hi > 0 ? hi : 1
+      v = Math.min(max, Math.max(min, v))
+      this.styleW = Math.round(v * 100) / 100
+    },
+
+    applyRecipe() {
+      const st = this.stepsOpts
+      if (!st.some(x => Number(x) === Number(this.steps))) this.steps = Number(st.includes(25) ? 25 : st[0])
+      const cf = this.cfgOpts
+      if (!cf.some(x => Number(x) === Number(this.cfg))) this.cfg = Number(cf.includes(2.5) ? 2.5 : cf[cf.length - 1])
+      const sc = this.schedOpts
+      if (!sc.includes(this.scheduler)) this.scheduler = sc.includes('simple') ? 'simple' : sc[0]
+    },
     imgSrc(abs) {
       // 2026-10-17：改走 studio-media:// 协议（原来是 IPC 读 base64 再拼 data URL）。
       // 缩略图不再常驻几 MB 的 base64 字符串，点击预览也不必再读一遍文件。
@@ -500,16 +670,34 @@ export default {
       if (this.refs.length) this.editMode = true
       if (s.res) this.res = s.res
       if (s.count) this.count = s.count
-      if (s.steps) this.steps = s.steps
-      if (s.cfg != null) this.cfg = s.cfg
-      if (s.scheduler) this.scheduler = s.scheduler
       if (s.lockSeed != null) this.lockSeed = s.lockSeed
       if (s.seed) this.seed = s.seed
-      this.toast('已回填这版生成配置，可继续微调')
+
+      // 模型 / 加速 LoRA / 风格 LoRA：原档位已被卸载 → 退回默认并明确告一声，
+      // 绝不让下拉停在一个已经不存在的值上（那会让下次生成直接报缺模型）。
+      const modelOk = !s.imageModel || this.imgModels.some(m => m.id === s.imageModel && m.installed)
+      const modelGone = !!s.imageModel && !modelOk
+      if (modelOk && s.imageModel) this.modelId = s.imageModel
+      this.styleId = (s.imageStyle && this.imgStyles.some(x => x.id === s.imageStyle)) ? s.imageStyle : ''
+      if (s.imageStyleW != null) this.styleW = Number(s.imageStyleW)
+
+      // 模型/LoRA 的 watcher 会在下一个 tick 重算参数候选，回填的步数必须等它算完再写
+      this.$nextTick(() => {
+        const loraOk = s.imageLora && this.loraOpts.some(l => l.id === s.imageLora && l.installed)
+        this.loraId = loraOk ? s.imageLora : ''
+        this.applyRecipe()
+        if (s.steps) this.steps = s.steps
+        if (s.cfg != null) this.cfg = s.cfg
+        if (s.scheduler) this.scheduler = s.scheduler
+        this.toast(modelGone ? '原模型已不可用，已退回默认档位' : '已回填这版生成配置，可继续微调')
+      })
     },
     /** 查看提示词弹框：显示用户原提示词 + 本次参数（只读） */
     viewPrompt(r) {
       const s = r.snapshot || {}
+      const m = this.imgModels.find(x => x.id === s.imageModel) || null
+      const l = (m && Array.isArray(m.loras)) ? m.loras.find(x => x.id === s.imageLora) : null
+      const st = s.imageStyle ? this.imgStyles.find(x => x.id === s.imageStyle) : null
       this.promptView = {
         raw: s.prompt || '',
         negative: s.negative || '',
@@ -517,8 +705,11 @@ export default {
         res: s.res || '',
         steps: s.steps,
         cfg: s.cfg,
-        scheduler: s.scheduler || '',
-        seed: s.seed || 0
+        scheduler: s.scheduler,
+        seed: s.seed || 0,
+        model: m ? m.label : (s.imageModel || ''),
+        lora: l ? l.label : (s.imageLora || ''),
+        style: st ? st.label + (s.imageStyleW ? ' · ' + Number(s.imageStyleW).toFixed(2) : '') : (s.imageStyle || '')
       }
     },
     /** 删除入口：弹确认框（记录来源，删除后只从对应数组局部移除，不整页重读） */
@@ -557,7 +748,13 @@ export default {
         const [w, h] = String(this.res).split('x').map(n => Number(n) || 0)
         const dir = this.st.workspace + '\\图片生成\\' + this.today
         const params = { prompt: this.prompt.trim(), negative: this.negative.trim(),
-          steps: this.steps, cfg: this.cfg, scheduler: this.scheduler }
+          steps: this.steps, cfg: this.cfg, scheduler: this.scheduler,
+          // 🔴 只有本页传这三个字段 —— 主进程拿它当「图片生成页专用档位」的唯一开关；
+          //    其余生图入口不传 → 走原模板原参数，行为一位不变。
+          imageModel: this.modelId || null,
+          imageLora: this.loraId || null,
+          imageStyle: this.styleId || null,
+          imageStyleW: this.styleId ? Number(this.styleW) : null }
         if (this.effMode === 'edit') {
           params.images = this.refs.map(r => r.path)
           params.resolution = Math.max(w, h) || 1024
@@ -583,6 +780,10 @@ export default {
           steps: this.steps,
           cfg: this.cfg,
           scheduler: this.scheduler,
+          imageModel: this.modelId || null,          // 基础模型档（base / turbo）
+          imageLora: this.loraId || null,            // 加速 LoRA id（空 = 不使用）
+          imageStyle: this.styleId || null,          // 风格 LoRA 文件名（空 = 不使用）
+          imageStyleW: this.styleId ? Number(this.styleW) : null,
           lockSeed: this.lockSeed,
           seed: Number(this.seed) || 0
         }
@@ -634,6 +835,18 @@ export default {
 .ig-hint{font-weight:400;letter-spacing:0;color:var(--sub-2);}
 .ig-ex{margin-left:auto;font-size:11px;color:var(--blue-hi);cursor:pointer;}.ig-ex{margin-left:0;}
 .ig-note{font-size:11px;color:var(--sub-2);margin-top:6px;line-height:1.6;}
+/* 锁定提示（CFG 1.0 负面词失效 / 4K 叠加显存）：只提示不拦，用户仍可生成 */
+.ig-note.warn{color:#e8bd82;}
+.ig-note b{color:var(--sub);font-weight:500;}
+/* 风格强度：下拉右侧的数值输入框（替掉原来的滑杆） */
+.ig-wl{flex:none;font-size:11px;color:var(--sub-2);letter-spacing:.04em;}
+.ig-num{width:62px;flex:none;padding:8px 6px;text-align:center;font-variant-numeric:tabular-nums;
+  background:#0e1320;border:1px solid var(--line);border-radius:10px;color:var(--text);font:12.5px/1.2 inherit;}
+.ig-num:focus{outline:none;border-color:var(--blue);}
+/* 行内下拉：让出宽度给右侧输入框（否则 width:100% 会把它挤出面板） */
+.ig-row>.ig-sel{flex:1;min-width:0;width:auto;}
+/* 参数被档位锁死：灰底 + 禁用光标（值仍显示，用户看得到这一档在跑什么） */
+.ig-sel:disabled{background:#0b1018;border-color:#232c3d;color:#6b7a8f;cursor:not-allowed;opacity:1;}
 /* 「编辑图片」勾选卡：有参考图时出现在底栏，与生成按钮同行。勾 = 编辑通道；不勾 = 图生图。 */
 .ig-bottom{display:flex;align-items:center;gap:10px;margin:0 14px 6px;}
 .ig-modecard{flex:1.5;min-width:0;display:flex;align-items:center;gap:10px;background:#0e1320;border:1px solid var(--line);border-radius:12px;padding:8px 12px;cursor:default;transition:border-color .15s;}
